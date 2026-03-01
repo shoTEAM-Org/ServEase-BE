@@ -5,7 +5,7 @@ import { supabase } from '../../../src/config/supabaseClient';
 export class AuthService {
   async register(dto: any) {
     try {
-      
+      // Step 1: Create the Identity in Supabase Auth
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: dto.email,
         password: dto.password,
@@ -14,7 +14,8 @@ export class AuthService {
       if (authError) throw new Error(`Auth Error: ${authError.message}`);
       const userId = authData.user.id;
 
-      
+      // Step 2: Insert into 'users' table (satisfies the Foreign Key)
+      // Matches columns: id, role, full_name, email, contact_number
       const { error: userTableError } = await supabase
         .from('users') 
         .insert([
@@ -29,7 +30,8 @@ export class AuthService {
 
       if (userTableError) throw new Error(`Users Table Error: ${userTableError.message}`);
 
-      
+      // Step 3: Insert into 'customer_profiles' table
+      // Matches columns: user_id, address
       const { error: profileError } = await supabase
         .from('customer_profiles')
         .insert([

@@ -1,9 +1,13 @@
 import { Module } from '@nestjs/common';
-import { AuthModule } from './modules/auth/auth.module';
+import { AuthModule } from './modules/auth/auth.module'; // Import your feature module
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
 
 @Module({
   imports: [
-    AuthModule, // This MUST be here to fix the 404
+    AuthModule, // CRITICAL: This connects your routes to the server
   ],
+  controllers: [AppController],
+  providers: [AppService],
 })
 export class AppModule {}
