@@ -1,0 +1,8 @@
+{
+	"full_name" : "John Doe",
+	"email" : "johndoe@examplemail.com",
+	"contact_number" : "09123456789",
+	"password" : "password123",
+	"address"  : "123 Main St., Manila",
+	"role" : "customer" # Since this is Customer Registration, this is set in stone.
+}
