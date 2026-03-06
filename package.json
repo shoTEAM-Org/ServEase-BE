@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "name": "auth-app",
+=======
+  "name": "sofeng2(nest.js)",
+>>>>>>> origin/customer-registration
   "version": "0.0.1",
   "description": "",
   "author": "",
@@ -21,6 +25,7 @@
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
+<<<<<<< HEAD
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
@@ -31,12 +36,27 @@
     "jsonwebtoken": "^9.0.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
+=======
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/platform-express": "^11.0.1",
+    "@supabase/supabase-js": "^2.98.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "uuid": "^13.0.0"
+>>>>>>> origin/customer-registration
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.18.0",
+<<<<<<< HEAD
     "@nestjs/cli": "^7.6.0",
     "@nestjs/schematics": "^7.3.1",
+=======
+    "@nestjs/cli": "^11.0.0",
+    "@nestjs/schematics": "^11.0.0",
+>>>>>>> origin/customer-registration
     "@nestjs/testing": "^11.0.1",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
@@ -51,6 +71,7 @@
     "source-map-support": "^0.5.21",
     "supertest": "^7.0.0",
     "ts-jest": "^29.2.5",
+<<<<<<< HEAD
     "ts-loader": "^9.2.1",
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
@@ -131,6 +152,9 @@
     "supertest": "^7.0.0",
     "ts-jest": "^29.2.5",
     "ts-loader": "^9.2.1",
+=======
+    "ts-loader": "^9.5.2",
+>>>>>>> origin/customer-registration
     "ts-node": "^10.9.2",
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.7.3",
