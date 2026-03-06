@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-<<<<<<< HEAD
 import { ConfigModule} from '@nestjs/config';
 import { UsersModule } from './modules/users/users.module';
 import { SupabaseModule } from './database/supabase.module';
 import { ProviderModule } from './modules/provider/provider.module';
+import { AuthModule } from './modules/auth/auth.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
@@ -15,18 +15,9 @@ import { AppService } from './app.service';
     SupabaseModule,   
     ProviderModule,
     UsersModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
 })
-
-=======
-import { AuthModule } from './modules/auth/auth.module';
-
-@Module({
-  imports: [
-    AuthModule, // This MUST be here to fix the 404
-  ],
-})
->>>>>>> origin/customer-registration
 export class AppModule {}
