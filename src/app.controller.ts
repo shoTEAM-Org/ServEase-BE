@@ -1,9 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
-<<<<<<< HEAD
 import { AppService } from './app.service';
-=======
-import { AppService } from './app.service'; 
->>>>>>> origin/customer-registration
 
 @Controller()
 export class AppController {
@@ -13,8 +9,4 @@ export class AppController {
   getHello(): string {
     return this.appService.getHello();
   }
-<<<<<<< HEAD
 }
-=======
-} 
->>>>>>> origin/customer-registration

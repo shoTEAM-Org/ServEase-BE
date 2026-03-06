@@ -1,6 +1,8 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { RegisterProviderDto } from './dto/register-provider.dto';
+import { Express } from 'express';
+import 'multer';
 
 @Injectable()
 export class ProviderService {
