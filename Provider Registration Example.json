@@ -1,0 +1,10 @@
+{
+	"full_name" : "John Doe",
+	"email" : "johndoe@examplemail.com",
+	"contact_number" : "09123456789",
+	"password" : "09123456789",
+	"role" : "provider", # Since this is Provider Registration, this is set in stone.
+	"business_name" : "John Doe Cleaning",
+	"document_type" : "government_id", # Choose [ business_permit | government_id | certification ]
+	"document_file" : INSERT IMAGE FILE # Maximum File Size of 5MB
+}

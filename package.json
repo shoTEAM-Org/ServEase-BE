@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "name": "auth-app",
+=======
+  "name": "backend-provider",
+>>>>>>> origin/provider-registration
   "version": "0.0.1",
   "description": "",
   "author": "",
@@ -20,15 +24,26 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+<<<<<<< HEAD
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
+=======
+    "@nestjs/common": "^11.1.14",
+    "@nestjs/config": "^4.0.3",
+    "@nestjs/core": "^11.1.14",
+    "@nestjs/platform-express": "^11.1.14",
+>>>>>>> origin/provider-registration
     "@supabase/supabase-js": "^2.98.0",
     "bcrypt": "^6.0.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
+<<<<<<< HEAD
     "jsonwebtoken": "^9.0.3",
+=======
+    "node-modules": "^0.0.1",
+>>>>>>> origin/provider-registration
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
@@ -37,9 +52,17 @@
     "@eslint/js": "^9.18.0",
     "@nestjs/cli": "^7.6.0",
     "@nestjs/schematics": "^7.3.1",
+<<<<<<< HEAD
     "@nestjs/testing": "^11.0.1",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
+=======
+    "@nestjs/testing": "^7.5.5",
+    "@types/bcrypt": "^6.0.0",
+    "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
+    "@types/multer": "^2.0.0",
+>>>>>>> origin/provider-registration
     "@types/node": "^22.10.7",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
