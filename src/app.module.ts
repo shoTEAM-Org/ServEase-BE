@@ -7,6 +7,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CustomerModule } from './modules/customer/customer.module';
+import { AdminModule } from './modules/admin/admin.module'; // SCRUM-55: alex cadaoas
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { CustomerModule } from './modules/customer/customer.module';
     UsersModule,
     AuthModule,
     CustomerModule,
+    AdminModule, // SCRUM-55: KYC Document Management
   ],
   controllers: [AppController],
   providers: [AppService],
