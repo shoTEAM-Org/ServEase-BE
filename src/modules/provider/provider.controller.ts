@@ -1,10 +1,11 @@
 import { 
   Controller, Post, Get, Body, Param, UseInterceptors, UploadedFile, 
-  ParseFilePipe, MaxFileSizeValidator, FileTypeValidator 
+  ParseFilePipe, MaxFileSizeValidator, FileTypeValidator, ParseUUIDPipe 
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ProviderService } from './provider.service';
 import { RegisterProviderDto } from './dto/register-provider.dto';
+import { ProviderDashboardResponseDto } from './dto/provider-dashboard.dto';
 
 @Controller('api/v1/auth') 
 export class ProviderController {
@@ -29,5 +30,12 @@ export class ProviderController {
   @Get(':user_id')
   async getProfile(@Param('user_id') userId: string) {
     return this.providerService.getProviderProfile(userId);
+  }
+
+  @Get(':id/dashboard')
+  async getDashboard(
+    @Param('id', ParseUUIDPipe) id: string
+  ): Promise<ProviderDashboardResponseDto> {
+    return await this.providerService.getProviderDashboard(id);
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { RegisterProviderDto } from './dto/register-provider.dto';
 import { Express } from 'express';
@@ -127,6 +127,35 @@ export class ProviderService {
         verification_status: data.verification_status,
         provider_documents: documentsWithUrls
       }
+    };
+  }
+  async getProviderDashboard(providerId: string) {
+    const now = new Date();
+    const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+
+    // Count pending job requests
+    const { count: newRequests, error: bookingErr } = await this.supabase
+      .from('bookings')
+      .select('*', { count: 'exact', head: true })
+      .eq('provider_id', providerId)
+      .eq('status', 'pending');
+
+    if (bookingErr) throw new InternalServerErrorException('Error fetching bookings');
+
+    // Sum net_amount from payouts for the current month
+    const { data: payouts, error: payoutErr } = await this.supabase
+      .from('provider_payouts')
+      .select('net_amount')
+      .eq('provider_id', providerId)
+      .gte('created_at', firstDayOfMonth);
+
+    if (payoutErr) throw new InternalServerErrorException('Error fetching payouts');
+
+    const totalEarnings = payouts?.reduce((acc, curr) => acc + Number(curr.net_amount), 0) || 0;
+
+    return {
+      new_job_requests: newRequests || 0,
+      total_earnings: totalEarnings,
     };
   }
 }
