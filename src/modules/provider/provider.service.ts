@@ -13,6 +13,13 @@ export class ProviderService {
 
     const { full_name, email, contact_number, password, role, business_name, document_type } = dto;
 
+    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$/;
+    if (!passwordRegex.test(password)) {
+      throw new BadRequestException(
+        'Password must be 8-128 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character.'
+      );
+    }
+
     const { data: authData, error: authError } = await this.supabase.auth.admin.createUser({
       email,
       password, 
