@@ -1,10 +1,18 @@
-import { Injectable, UnauthorizedException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
 import { supabase } from '../../../src/config/supabaseClient'; 
 
 @Injectable()
 export class AuthService {
   async register(dto: any) {
     try {
+
+      const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$/;
+
+      if (!passwordRegex.test(dto.password)) {
+        throw new BadRequestException(
+          'Password must be 8-128 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character.'
+        );
+      }
       
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: dto.email,
