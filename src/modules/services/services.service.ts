@@ -20,9 +20,12 @@ export class ServicesService {
           provider_profiles!inner (
             user_id,
             business_name,
-            trust_score
+            trust_score,
+            verification_status
           )
-        `);
+        `)
+        // filter out any provider that is not fully approved
+        .eq('provider_profiles.verification_status', 'approved');
 
       if (keyword) {
         query = query.ilike('service_categories.name', `%${keyword}%`);
@@ -32,9 +35,11 @@ export class ServicesService {
 
       if (error) throw new Error(`Supabase Query Failed: ${error.message}`);
 
+      // Sort results descending by trust score
       const sortedResults = data.sort((a, b) => {
-        const scoreA = a.provider_profiles?.trust_score || 0;
-        const scoreB = b.provider_profiles?.trust_score || 0;
+        // Safe access in case typings complain, though !inner guarantees existence
+        const scoreA = (a.provider_profiles as any)?.trust_score || 0;
+        const scoreB = (b.provider_profiles as any)?.trust_score || 0;
         return scoreB - scoreA; 
       });
 

@@ -11,8 +11,13 @@ export class ProviderService {
   async registerProvider(dto: RegisterProviderDto, file: Express.Multer.File) {
     if (!file) throw new BadRequestException('document_file image is required');
 
-    const { full_name, email, contact_number, password, role, business_name, document_type } = dto;
+    
+    const { 
+      full_name, email, contact_number, password, role, 
+      business_name, document_type, date_of_birth,
+    } = dto;
 
+    
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$/;
     if (!passwordRegex.test(password)) {
       throw new BadRequestException(
@@ -30,6 +35,7 @@ export class ProviderService {
 
     const newUserId = authData.user.id;
 
+    
     const { error: userError } = await this.supabase
       .from('users')
       .insert([{
@@ -39,7 +45,8 @@ export class ProviderService {
         contact_number,
         role,
         status: 'pending',
-        is_verified: false
+        is_verified: false,
+        date_of_birth 
       }]);
 
     if (userError) {
@@ -47,6 +54,7 @@ export class ProviderService {
       throw new BadRequestException(`User Profile Error: ${userError.message}`);
     }
 
+    
     const { data: profile, error: profileError } = await this.supabase
       .from('provider_profiles')
       .insert([{
@@ -58,7 +66,7 @@ export class ProviderService {
       .single();
 
     if (profileError) throw new BadRequestException(`Provider Profile Error: ${profileError.message}`);
-
+    
     const filePath = `kyc/${newUserId}/${Date.now()}_${file.originalname}`;
     const { error: uploadError } = await this.supabase.storage
       .from('verification-docs')
@@ -69,6 +77,7 @@ export class ProviderService {
 
     if (uploadError) throw new BadRequestException(`Storage Upload Error: ${uploadError.message}`);
 
+    
     const { error: docError } = await this.supabase
       .from('provider_documents')
       .insert([{
@@ -163,6 +172,69 @@ export class ProviderService {
     return {
       new_job_requests: newRequests || 0,
       total_earnings: totalEarnings,
+    };
+  }
+  async reuploadKycDocument(userId: string, file: Express.Multer.File) {
+    if (!file) throw new BadRequestException('A new document file is required for reupload');
+
+    // Verify Reject
+    const { data: profile, error: profileErr } = await this.supabase
+      .from('provider_profiles')
+      .select('verification_status')
+      .eq('user_id', userId)
+      .single();
+
+    if (profileErr || !profile) {
+      throw new NotFoundException('Provider profile not found');
+    }
+
+    if (profile.verification_status !== 'rejected') {
+      throw new BadRequestException('Only providers with a "rejected" status can reupload KYC documents');
+    }
+
+    
+    const filePath = `kyc/${userId}/${Date.now()}_${file.originalname}`;
+    const { error: uploadError } = await this.supabase.storage
+      .from('verification-docs')
+      .upload(filePath, file.buffer, {
+        contentType: file.mimetype,
+        upsert: false // New File
+      });
+
+    if (uploadError) throw new BadRequestException(`Storage Upload Error: ${uploadError.message}`);
+
+    
+    const { error: docError } = await this.supabase
+      .from('provider_documents')
+      .update({
+        document_file_path: filePath,
+        status: 'pending',
+        reject_reason: null, 
+        uploaded_at: new Date().toISOString() 
+      })
+      .eq('provider_id', userId);
+
+    if (docError) throw new BadRequestException(`Document Update Error: ${docError.message}`);
+
+    // Pending Status in Provider_profiles
+    const { error: updateProfileErr } = await this.supabase
+      .from('provider_profiles')
+      .update({ verification_status: 'pending' })
+      .eq('user_id', userId);
+
+    if (updateProfileErr) throw new BadRequestException(`Profile Update Error: ${updateProfileErr.message}`);
+
+    // Pending Status in Users
+    const { error: updateUserErr } = await this.supabase
+      .from('users')
+      .update({ status: 'pending' })
+      .eq('id', userId);
+
+    if (updateUserErr) throw new BadRequestException(`User Update Error: ${updateUserErr.message}`);
+
+    return {
+      status: 'success',
+      message: 'KYC document successfully reuploaded. Application is back under pending review.'
     };
   }
 }

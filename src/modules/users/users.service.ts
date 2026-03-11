@@ -32,6 +32,6 @@ export class UsersService {
     user: data.user,
     session: data.session
   };
-    }
+  }
 
 }

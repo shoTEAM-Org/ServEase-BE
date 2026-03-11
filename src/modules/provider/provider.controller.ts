@@ -1,17 +1,17 @@
 import { 
-  Controller, Post, Get, Body, Param, UseInterceptors, UploadedFile, 
-  ParseFilePipe, MaxFileSizeValidator, FileTypeValidator, ParseUUIDPipe 
+  Controller, Post, Patch, Get, Body, Param, UseInterceptors, UploadedFile, 
+  ParseFilePipe, MaxFileSizeValidator, FileTypeValidator, ParseUUIDPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ProviderService } from './provider.service';
 import { RegisterProviderDto } from './dto/register-provider.dto';
 import { ProviderDashboardResponseDto } from './dto/provider-dashboard.dto';
 
-@Controller('api/v1/auth') 
+@Controller('api/provider') 
 export class ProviderController {
   constructor(private readonly providerService: ProviderService) {}
 
-  @Post('register/provider')
+  @Post('v2/register')
   @UseInterceptors(FileInterceptor('document_file')) 
   async register(
     @Body() dto: RegisterProviderDto,
@@ -37,5 +37,14 @@ export class ProviderController {
     @Param('id', ParseUUIDPipe) id: string
   ): Promise<ProviderDashboardResponseDto> {
     return await this.providerService.getProviderDashboard(id);
+  }
+
+  @Patch('v1/kyc/reupload')
+  @UseInterceptors(FileInterceptor('document_file'))
+  async reuploadKyc(
+    @Body('provider_id') providerId: string,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    return this.providerService.reuploadKycDocument(providerId, file);
   }
 }
