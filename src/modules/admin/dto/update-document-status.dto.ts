@@ -1,18 +1,15 @@
-import { IsEnum, IsString, IsOptional } from 'class-validator';
-
-// SCRUM-55: KYC Document Approval/Rejection
-// Developer: alex cadaoas
-export enum DocumentStatus {
-  APPROVED = 'approved',
-  REJECTED = 'rejected',
-  PENDING = 'pending'
-}
+import { IsEnum, IsNotEmpty, IsOptional, IsString, IsUUID } from 'class-validator';
 
 export class UpdateDocumentStatusDto {
-  @IsEnum(DocumentStatus)
-  status: DocumentStatus;
+  @IsEnum(['approved', 'rejected'])
+  @IsNotEmpty()
+  status: 'approved' | 'rejected';
 
   @IsString()
   @IsOptional()
-  remarks?: string; // Optional notes for rejection reason
+  reject_reason?: string;
+
+  @IsUUID()
+  @IsOptional()
+  admin_id?: string;
 }

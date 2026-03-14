@@ -1,4 +1,4 @@
-import { IsEmail, IsString, IsEnum, MinLength, IsNotEmpty } from 'class-validator';
+import { IsEmail, IsString, IsEnum, MinLength, IsNotEmpty, IsUUID } from 'class-validator';
 
 export enum DocumentType {
   PERMIT = 'business_permit',
@@ -33,4 +33,9 @@ export class RegisterProviderDto {
 
   @IsEnum(DocumentType, { message: 'Invalid document_type' })
   document_type: DocumentType; 
+
+  @IsString()
+  @IsNotEmpty()
+  date_of_birth: string;
+
 }
