@@ -3,20 +3,22 @@ import { Controller, Post, Body, HttpCode, ParseFilePipe, MaxFileSizeValidator,
 import { AuthService } from './auth.service';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { RegisterProviderDto } from '../auth/dto/create-provider.dto';
+import { CreateUserDto } from './dto/create-user.dto';
+import { LoginUserDto } from './dto/login-user.dto';
 import 'multer';
 
-@Controller('api/auth')
+@Controller('api/v2/auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Post('register/customer')
-  async register(@Body() createUserDto: any) {
+  async register(@Body() createUserDto: CreateUserDto) {
     return this.authService.register(createUserDto);
   }
 
-  @Post('login/customer')
+  @Post('login')
   @HttpCode(200)
-  async login(@Body() loginDto: any) {
+  async login(@Body() loginDto: LoginUserDto) {
     return this.authService.login(loginDto);
   }
 
