@@ -1,4 +1,4 @@
-import { Injectable, UnauthorizedException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
 import { supabase } from '../../../src/config/supabaseClient'; 
 import { RegisterProviderDto } from '../auth/dto/create-provider.dto';
 import { LoginUserDto } from './dto/login-user.dto';
