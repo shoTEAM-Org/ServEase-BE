@@ -10,8 +10,7 @@ import { AdminModule } from './modules/admin/admin.module'; // SCRUM-55: alex ca
 import { ServicesModule } from './modules/services/services.module';
 import { BookingModule } from './modules/booking/booking.module'
 import { ReferenceModule } from './modules/reference/reference.module';
-import { PaymentsModule } from './modules/payments/payments.module';
-import { LocationsModule} from './modules/locations/locations.module';
+import { UsersModule } from './modules/users/users.module';
 
 @Module({
   imports: [
@@ -22,12 +21,11 @@ import { LocationsModule} from './modules/locations/locations.module';
     ProviderModule,
     AuthModule,
     CustomerModule,
-    AdminModule, 
+    AdminModule, // SCRUM-55: KYC Document Management
     ServicesModule,
     BookingModule,
     ReferenceModule,
-    PaymentsModule
-    LocationsModule,
+    UsersModule
   ],
   controllers: [AppController],
   providers: [AppService],

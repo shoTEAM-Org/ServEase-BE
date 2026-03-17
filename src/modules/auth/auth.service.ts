@@ -2,6 +2,8 @@ import { Injectable, UnauthorizedException, InternalServerErrorException, BadReq
 import { supabase } from '../../../src/config/supabaseClient'; 
 import { RegisterProviderDto } from '../auth/dto/create-provider.dto';
 import { LoginUserDto } from './dto/login-user.dto';
+import { CustomerGoogleLoginDto } from './dto/customer-google-login.dto';
+import { ProviderGoogleLoginDto } from './dto/provider-google-login.dto';
 import 'multer';
 
 @Injectable()
@@ -59,17 +61,17 @@ export class AuthService {
 
   async login(loginDto: LoginUserDto) {
     try {
-      const identifier = loginDto.identifier; 
+      const email = loginDto.email; 
       const password = loginDto.password;
 
-      const isEmail = identifier.includes('@');
-      let loginEmail = identifier;
+      const isEmail = email.includes('@');
+      let loginEmail = email;
 
       if (!isEmail) {
         const { data: userRecord, error: dbError } = await supabase
           .from('users')
           .select('email')
-          .eq('contact_number', identifier)
+          .eq('contact_number', email)
           .single(); 
 
         if (dbError || !userRecord) {
@@ -121,13 +123,11 @@ export class AuthService {
   async registerProvider(dto: RegisterProviderDto, file: Express.Multer.File) {
       if (!file) throw new BadRequestException('document_file image is required');
   
-      
       const { 
         full_name, email, contact_number, password, role, 
         business_name, document_type, date_of_birth,
       } = dto;
   
-      
       const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$/;
       if (!passwordRegex.test(password)) {
         throw new BadRequestException(
@@ -164,7 +164,6 @@ export class AuthService {
         throw new BadRequestException(`User Profile Error: ${userError.message}`);
       }
   
-      
       const { data: profile, error: profileError } = await supabase
         .from('provider_profiles')
         .insert([{
@@ -187,7 +186,6 @@ export class AuthService {
   
       if (uploadError) throw new BadRequestException(`Storage Upload Error: ${uploadError.message}`);
   
-      
       const { error: docError } = await supabase
         .from('provider_documents')
         .insert([{
@@ -208,5 +206,155 @@ export class AuthService {
           verification_status: profile.verification_status
         }
       };
+  }
+
+  //Google Auth Login for Customers and Providers
+  async googleLoginCustomer(dto: CustomerGoogleLoginDto) {
+    try {
+      // 1. Verify the Google ID token and get/create a Supabase auth user
+      const { data: authData, error: authError } = await supabase.auth.signInWithIdToken({
+        provider: 'google',
+        token: dto.id_token,
+      });
+
+      if (authError) throw new UnauthorizedException(`Google Auth Error: ${authError.message}`);
+
+      const userId = authData.user.id;
+      const email = authData.user.email;
+      const fullName = authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || '';
+
+      // 2. Check if this user already exists in the users table
+      const { data: existingUser, error: lookupError } = await supabase
+        .from('users')
+        .select('id, role, status')
+        .eq('id', userId)
+        .single();
+
+      // User exists — return their session
+      if (existingUser) {
+        if (existingUser.role !== 'customer') {
+          throw new UnauthorizedException('This Google account is registered as a provider. Please use the provider login.');
+        }
+
+        return {
+          message: 'STATUS 200 OK',
+          access_token: authData.session?.access_token,
+          user_id: userId,
+          role: existingUser.role,
+        };
+      }
+
+      // 3. New user — auto-create rows in users + customer_profiles
+      const { error: userTableError } = await supabase
+        .from('users')
+        .insert([{
+          id: userId,
+          email,
+          full_name: fullName,
+          role: 'customer',
+          status: 'active',
+        }]);
+
+      if (userTableError) throw new InternalServerErrorException(`Users Table Error: ${userTableError.message}`);
+
+      const { error: profileError } = await supabase
+        .from('customer_profiles')
+        .insert([{ user_id: userId }]);
+
+      if (profileError) throw new InternalServerErrorException(`Customer Profile Error: ${profileError.message}`);
+
+      return {
+        message: 'STATUS 201 CREATED',
+        access_token: authData.session?.access_token,
+        user_id: userId,
+        role: 'customer',
+      };
+
+    } catch (err) {
+      console.error('Google Customer Login Error:', err.message);
+      if (err instanceof UnauthorizedException || err instanceof InternalServerErrorException) throw err;
+      throw new UnauthorizedException(err.message);
     }
+  }
+
+  async googleLoginProvider(dto: ProviderGoogleLoginDto) {
+    try {
+      // 1. Verify the Google ID token and get/create a Supabase auth user
+      const { data: authData, error: authError } = await supabase.auth.signInWithIdToken({
+        provider: 'google',
+        token: dto.id_token,
+      });
+
+      if (authError) throw new UnauthorizedException(`Google Auth Error: ${authError.message}`);
+
+      const userId = authData.user.id;
+      const email = authData.user.email;
+      const fullName = authData.user.user_metadata?.full_name || authData.user.user_metadata?.name || '';
+
+      // 2. Check if this user already exists in the users table
+      const { data: existingUser, error: lookupError } = await supabase
+        .from('users')
+        .select('id, role, status')
+        .eq('id', userId)
+        .single();
+
+      // User exists — return their session
+      if (existingUser) {
+        if (existingUser.role !== 'provider') {
+          throw new UnauthorizedException('This Google account is registered as a customer. Please use the customer login.');
+        }
+
+        if (existingUser.status === 'pending' || existingUser.status === 'rejected') {
+          throw new UnauthorizedException({
+            message: 'Access Denied: Provider account is not yet active.',
+            current_status: existingUser.status,
+          });
+        }
+
+        return {
+          message: 'STATUS 200 OK',
+          access_token: authData.session?.access_token,
+          user_id: userId,
+          role: existingUser.role,
+        };
+      }
+
+      // 3. New user — auto-create rows in users + provider_profiles
+      //    Provider starts as 'pending' since they still need KYC verification
+      const { error: userTableError } = await supabase
+        .from('users')
+        .insert([{
+          id: userId,
+          email,
+          full_name: fullName,
+          role: 'provider',
+          status: 'pending',
+          is_verified: false,
+        }]);
+
+      if (userTableError) throw new InternalServerErrorException(`Users Table Error: ${userTableError.message}`);
+
+      const { error: profileError } = await supabase
+        .from('provider_profiles')
+        .insert([{
+          user_id: userId,
+          verification_status: 'pending',
+        }]);
+
+      if (profileError) throw new InternalServerErrorException(`Provider Profile Error: ${profileError.message}`);
+
+      return {
+        message: 'STATUS 201 CREATED',
+        access_token: authData.session?.access_token,
+        user_id: userId,
+        role: 'provider',
+        note: 'Provider account created. KYC verification is still required.',
+      };
+
+    } catch (err) {
+      console.error('Google Provider Login Error:', err.message);
+      if (err instanceof UnauthorizedException || err instanceof InternalServerErrorException) throw err;
+      throw new UnauthorizedException(err.message);
+    }
+  }
 }

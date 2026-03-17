@@ -1,17 +1,8 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { supabase } from '../../../src/config/supabaseClient';
-import { serviceDetails } from '../../mock-data/providers-by-service';
 
 @Injectable()
 export class ServicesService {
-
-  getMockServices() {
-    return {
-      success:true,
-      data: serviceDetails,
-    }
-  }
-  
   async searchServices(keyword?: string) {
     try {
       let query = supabase
