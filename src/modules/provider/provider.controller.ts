@@ -1,5 +1,5 @@
 import { 
-  Controller, Patch, Get, Body, Param, UseInterceptors, UploadedFile, ParseUUIDPipe, Query
+  Controller, Query, Patch, Get, Body, Param, UseInterceptors, UploadedFile, ParseUUIDPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ProviderService } from './provider.service';
@@ -21,6 +21,17 @@ export class ProviderController {
   async getProviderReviews(@Param('id', ParseUUIDPipe) id: string):
    Promise<ProviderReviewsDto> {
     return this.providerService.getProviderReviews(id);
+   }
+  
+  @Get()
+  getProviders(
+    @Query('serviceId')serviceId: string,
+    @Query('search') search: string
+  ) {
+    if (search) {
+      return this.providerService.searchMockProviders(search);
+    }
+    return this.providerService.getMockProvidersByService(Number(serviceId));
   }
 
   @Get(':user_id')

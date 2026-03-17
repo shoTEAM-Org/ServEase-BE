@@ -11,6 +11,7 @@ import { ServicesModule } from './modules/services/services.module';
 import { BookingModule } from './modules/booking/booking.module'
 import { ReferenceModule } from './modules/reference/reference.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { LocationsModule} from './modules/locations/locations.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
     BookingModule,
     ReferenceModule,
     PaymentsModule
+    LocationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
+import { providersByService } from '../../mock-data/providers-by-service';
 import 'multer';
 
 @Injectable()
@@ -70,6 +71,30 @@ export class ProviderService {
     };
   }
 
+  getMockProvidersByService(serviceId: number) {
+    const providers = providersByService[serviceId];
+
+    return {
+      success: true,
+      data: providers || []
+    }
+  }
+ searchMockProviders(searchTerm: string){
+   const allProviders = Object.values(providersByService).flat();
+
+   const lowerCaseSearch = searchTerm.toLowerCase();
+  const filteredProviders = allProviders.filter(provider => {
+      const matchName = provider.name.toLowerCase().includes(lowerCaseSearch);
+      const matchBusiness = (provider.businessName || '').toLowerCase().includes(lowerCaseSearch);
+      const matchDesc = provider.description.toLowerCase().includes(lowerCaseSearch);
+      return matchName || matchBusiness || matchDesc;
+    });
+
+    return { 
+      success: true, 
+      data: filteredProviders 
+    };
+ }
 
   async getProviderProfile(userId: string) {
     const { data, error } = await this.supabase
