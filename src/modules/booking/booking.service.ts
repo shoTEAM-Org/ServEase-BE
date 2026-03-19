@@ -75,4 +75,59 @@ export class BookingService {
       throw new BadRequestException(err.response || err.message);
     }
   }
+
+  async getHistory() {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('*')
+      .in('status', ['Completed', 'Cancelled', 'Rejected']);
+
+    if (error) {
+      console.error('Booking History Error:', error.message);
+      throw new BadRequestException(error.message);
+    }
+
+    return {
+      history: data
+    };
+  }
+
+  async getRequests() {
+    const { data, error } = await supabase
+      .from('bookings')
+      .select('*')
+      .eq('status', 'Pending');
+
+    if (error) {
+      console.error('Booking Requests Error:', error.message);
+      throw new BadRequestException(error.message);
+    }
+
+    return {
+      requests: data
+    };
+  }
+
+  async updateStatus(id: string, status: string) {
+    const { data, error } = await supabase
+      .from('bookings')
+      .update({ status })
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Update Booking Status Error:', error.message);
+      throw new BadRequestException(error.message);
+    }
+
+    if (!data || Object.keys(data).length === 0) {
+      throw new NotFoundException(`Booking with id ${id} not found`);
+    }
+
+    return {
+      message: 'Booking status updated successfully.',
+      booking: data
+    };
+  }
 }

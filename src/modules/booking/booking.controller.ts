@@ -1,4 +1,4 @@
-import {Controller, Post, Body, Req, UnauthorizedException } from '@nestjs/common';
+import {Controller, Post, Get, Put, Param, Body, Req, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import { BookingService } from './booking.service';
 import { CreateBookingDto} from './dto/create-booking.dto';
@@ -31,5 +31,23 @@ export class BookingController {
         const customerId = user.id;
         return this.bookingService.createBooking(dto, customerId);
 
+    }
+
+    @Get('history')
+    async getHistory() {
+        return this.bookingService.getHistory();
+    }
+
+    @Get('requests')
+    async getRequests() {
+        return this.bookingService.getRequests();
+    }
+
+    @Put(':id/status')
+    async updateStatus(
+        @Param('id') id: string,
+        @Body('status') status: string
+    ) {
+        return this.bookingService.updateStatus(id, status);
     }
 }
