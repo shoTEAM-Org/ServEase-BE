@@ -23,7 +23,7 @@ export class ProviderController {
     return this.providerService.getProviderReviews(id);
    }
   
-  @Get()
+  @Get('v1')
   getProviders(
     @Query('serviceId')serviceId: string,
     @Query('search') search: string
@@ -34,12 +34,12 @@ export class ProviderController {
     return this.providerService.getMockProvidersByService(Number(serviceId));
   }
 
-  @Get(':user_id')
+  @Get('v1/:user_id')
   async getProfile(@Param('user_id') userId: string) {
     return this.providerService.getProviderProfile(userId);
   }
 
-  @Get(':id/v1/dashboard')
+  @Get('v1/dashboard/:id')
   async getDashboard(
     @Param('id', ParseUUIDPipe) id: string
   ): Promise<ProviderDashboardResponseDto> {

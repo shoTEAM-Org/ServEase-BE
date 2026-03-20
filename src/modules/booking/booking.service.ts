@@ -80,7 +80,7 @@ export class BookingService {
     const { data, error } = await supabase
       .from('bookings')
       .select('*')
-      .in('status', ['Completed', 'Cancelled', 'Rejected']);
+      .in('status', ['completed', 'cancelled', 'disputed']);
 
     if (error) {
       console.error('Booking History Error:', error.message);
@@ -96,7 +96,7 @@ export class BookingService {
     const { data, error } = await supabase
       .from('bookings')
       .select('*')
-      .eq('status', 'Pending');
+      .eq('status', 'pending');
 
     if (error) {
       console.error('Booking Requests Error:', error.message);
@@ -118,11 +118,10 @@ export class BookingService {
 
     if (error) {
       console.error('Update Booking Status Error:', error.message);
+      if (error.code === 'PGRST116') {
+        throw new NotFoundException(`Booking with id ${id} not found`);
+      }
       throw new BadRequestException(error.message);
-    }
-
-    if (!data || Object.keys(data).length === 0) {
-      throw new NotFoundException(`Booking with id ${id} not found`);
     }
 
     return {
