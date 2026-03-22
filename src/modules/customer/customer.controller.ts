@@ -6,7 +6,7 @@ import { CustomerDashboardResponseDto } from './dto/customer-dashboard.dto';
 export class CustomerController {
     constructor(private readonly customerService: CustomerService) {}
 
-    @Get(':id/dashboard')
+    @Get('v1/dashboard/:id')
     async getDashboard(
         @Param('id', ParseUUIDPipe) customerId: string
     ): Promise<CustomerDashboardResponseDto[]> {

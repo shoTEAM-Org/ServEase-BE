@@ -5,7 +5,7 @@ import { ServicesService } from './services.service';
 export class ServicesController {
   constructor(private readonly servicesService: ServicesService) {}
 
-  @Get()
+  @Get('v1')
   getAllServices() {
     return this.servicesService.getMockServices();
   }

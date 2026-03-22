@@ -7,16 +7,16 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { LoginUserDto } from './dto/login-user.dto';
 import 'multer';
 
-@Controller('api/v2/auth')
+@Controller('api/auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  @Post('register/customer')
+  @Post('v1/register/customer')
   async register(@Body() createUserDto: CreateUserDto) {
     return this.authService.register(createUserDto);
   }
 
-  @Post('login')
+  @Post('v1/login')
   @HttpCode(200)
   async login(@Body() loginDto: LoginUserDto) {
     return this.authService.login(loginDto);

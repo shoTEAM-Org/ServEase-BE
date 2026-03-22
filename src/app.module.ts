@@ -26,7 +26,7 @@ import { LocationsModule} from './modules/locations/locations.module';
     ServicesModule,
     BookingModule,
     ReferenceModule,
-    PaymentsModule
+    PaymentsModule,
     LocationsModule,
   ],
   controllers: [AppController],

@@ -1,14 +1,15 @@
-import {Controller, Post, Body, Req, UnauthorizedException } from '@nestjs/common';
+import {Controller, Post, Get, Patch, Param, Body, Req, UnauthorizedException } from '@nestjs/common';
 import type { Request } from 'express';
 import { BookingService } from './booking.service';
-import { CreateBookingDto} from './dto/create-booking.dto';
+import { CreateBookingDto } from './dto/create-booking.dto';
+import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
 import { supabase } from '../../../src/config/supabaseClient';
 
-@Controller('api/v1/booking')
+@Controller('api/booking')
 export class BookingController {
     constructor(private readonly bookingService: BookingService) {}
 
-    @Post('create')
+    @Post('v1/create')
     async createBooking(
         @Body() dto: CreateBookingDto,
         @Req() req: Request
@@ -31,5 +32,23 @@ export class BookingController {
         const customerId = user.id;
         return this.bookingService.createBooking(dto, customerId);
 
+    }
+
+    @Get('v1/history')
+    async getHistory() {
+        return this.bookingService.getHistory();
+    }
+
+    @Get('v1/requests')
+    async getRequests() {
+        return this.bookingService.getRequests();
+    }
+
+    @Patch('v1/:id/status')
+    async updateStatus(
+        @Param('id') id: string,
+        @Body() dto: UpdateBookingStatusDto
+    ) {
+        return this.bookingService.updateStatus(id, dto.status);
     }
 }
