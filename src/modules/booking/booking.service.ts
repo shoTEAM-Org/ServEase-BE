@@ -1,10 +1,13 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { supabase } from '../../../src/config/supabaseClient'; // Make sure this path points to your supabase client!
 import { CreateBookingDto } from './dto/create-booking.dto';
+import { KafkaService } from '../../kafka/kafka.service';
+import { KAFKA_TOPICS } from '../../kafka/kafka.topics';
 
 @Injectable()
 export class BookingService {
-  
+  constructor(private readonly kafkaService: KafkaService) {}
+
   async createBooking(dto: CreateBookingDto, customerId: string) {
     try {
       const { data: userRecord, error: userError } = await supabase
@@ -65,6 +68,16 @@ export class BookingService {
 
       if (bookingError) throw new Error(bookingError.message);
 
+      await this.kafkaService.emit(KAFKA_TOPICS.BOOKING_CREATED, {
+        bookingId: newBooking.id,
+        bookingReference: newBooking.booking_reference,
+        customerId,
+        providerId: dto.provider_id,
+        serviceId: dto.service_id,
+        scheduledAt: dto.scheduled_at,
+        totalAmount: totalAmount,
+      });
+
       return {
         message: 'Booking successfully created!',
         booking: newBooking
@@ -123,6 +136,11 @@ export class BookingService {
       }
       throw new BadRequestException(error.message);
     }
+
+    await this.kafkaService.emit(KAFKA_TOPICS.BOOKING_STATUS_UPDATED, {
+      bookingId: id,
+      status,
+    });
 
     return {
       message: 'Booking status updated successfully.',

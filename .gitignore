@@ -1,5 +1,7 @@
 # Agents
-.CLAUDE.md
+CLAUDE.md
+.claude/*
+.github/*
 
 # compiled output
 /dist

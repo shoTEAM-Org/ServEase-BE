@@ -12,6 +12,7 @@ import { BookingModule } from './modules/booking/booking.module'
 import { ReferenceModule } from './modules/reference/reference.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { LocationsModule} from './modules/locations/locations.module';
+import { KafkaModule } from './kafka/kafka.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { LocationsModule} from './modules/locations/locations.module';
     ReferenceModule,
     PaymentsModule,
     LocationsModule,
+    KafkaModule,
   ],
   controllers: [AppController],
   providers: [AppService],

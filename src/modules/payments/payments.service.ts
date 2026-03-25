@@ -1,10 +1,15 @@
 import { Injectable, InternalServerErrorException, BadRequestException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { KafkaService } from '../../kafka/kafka.service';
+import { KAFKA_TOPICS } from '../../kafka/kafka.topics';
 
 @Injectable()
 export class PaymentsService {
-  constructor(private readonly supabase: SupabaseClient) {}
+  constructor(
+    private readonly supabase: SupabaseClient,
+    private readonly kafkaService: KafkaService,
+  ) {}
 
   async createPayment(dto: CreatePaymentDto) {
     const paymentPayload = {
@@ -27,6 +32,16 @@ export class PaymentsService {
     if (insertError) {
       throw new InternalServerErrorException(`Failed to process payment: ${insertError.message}`);
     }
+
+    await this.kafkaService.emit(KAFKA_TOPICS.PAYMENT_CREATED, {
+      paymentId: newPayment.id,
+      bookingId: newPayment.booking_id,
+      customerId: newPayment.customer_id,
+      providerId: newPayment.provider_id,
+      amount: newPayment.amount,
+      method: newPayment.method,
+      status: newPayment.status,
+    });
 
     return {
       status: 'success',
