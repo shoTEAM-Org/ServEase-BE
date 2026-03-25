@@ -1,5 +1,5 @@
 {
-  "name": "auth-app",
+  "name": "servease-be-api",
   "version": "0.0.1",
   "description": "",
   "author": "",
@@ -7,12 +7,28 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "build:gateway": "nest build gateway",
+    "build:auth": "nest build auth-service",
+    "build:booking": "nest build booking-service",
+    "build:payment": "nest build payment-service",
+    "build:provider": "nest build provider-service",
+    "build:customer": "nest build customer-service",
+    "build:admin": "nest build admin-service",
+    "build:catalog": "nest build catalog-service",
+    "format": "prettier --write \"{apps,libs}/**/*.ts\"",
     "start": "nest start",
-    "start:dev": "nest start --watch",
-    "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "start:dev": "nest start gateway --watch",
+    "start:debug": "nest start gateway --debug --watch",
+    "start:prod": "node dist/apps/gateway/main",
+    "start:dev:auth": "nest start auth-service --watch",
+    "start:dev:booking": "nest start booking-service --watch",
+    "start:dev:payment": "nest start payment-service --watch",
+    "start:dev:provider": "nest start provider-service --watch",
+    "start:dev:customer": "nest start customer-service --watch",
+    "start:dev:admin": "nest start admin-service --watch",
+    "start:dev:catalog": "nest start catalog-service --watch",
+    "start:dev:all": "concurrently -k -n auth,booking,payment,provider,customer,admin,catalog,gateway -c blue,green,yellow,magenta,cyan,white,gray,red \"npm run start:dev:auth\" \"npm run start:dev:booking\" \"npm run start:dev:payment\" \"npm run start:dev:provider\" \"npm run start:dev:customer\" \"npm run start:dev:admin\" \"npm run start:dev:catalog\" \"npm run start:dev\"",
+    "lint": "eslint \"{apps,libs}/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -52,6 +68,7 @@
     "@types/node": "^22.10.7",
     "@types/passport-google-oauth20": "^2.0.17",
     "@types/supertest": "^6.0.2",
+    "concurrently": "^9.2.1",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",
@@ -73,7 +90,11 @@
       "json",
       "ts"
     ],
-    "rootDir": "src",
+    "rootDir": ".",
+    "roots": [
+      "<rootDir>/apps/",
+      "<rootDir>/libs/"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
@@ -83,5 +104,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "overrides": {
+    "picomatch": "^4.0.4"
   }
 }

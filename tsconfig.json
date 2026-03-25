@@ -21,6 +21,12 @@
     "noImplicitAny": false,
     "strictBindCallApply": false,
     "noFallthroughCasesInSwitch": false,
-    "types": ["node","express","multer", "jest"]
+    "types": ["node", "express", "multer", "jest"],
+    "paths": {
+      "@app/common": ["libs/common/src"],
+      "@app/common/*": ["libs/common/src/*"],
+      "@app/database": ["libs/database/src"],
+      "@app/database/*": ["libs/database/src/*"]
+    }
   }
 }
