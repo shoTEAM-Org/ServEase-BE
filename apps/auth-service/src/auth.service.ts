@@ -26,13 +26,20 @@ export class AuthService {
           contact_number: dto.contact_number,
         }]);
 
-      if (userTableError) throw new Error(`Users Table Error: ${userTableError.message}`);
+      if (userTableError) {
+        await supabase.auth.admin.deleteUser(userId);
+        throw new Error(`Users Table Error: ${userTableError.message}`);
+      }
 
       const { error: profileError } = await supabase
         .from('customer_profiles')
-        .insert([{ user_id: userId, address: dto.address }]);
+        .insert([{ user_id: userId, full_name: dto.full_name, address: dto.address }]);
 
-      if (profileError) throw new Error(`Profile Table Error: ${profileError.message}`);
+      if (profileError) {
+        await supabase.from('users').delete().eq('id', userId);
+        await supabase.auth.admin.deleteUser(userId);
+        throw new Error(`Profile Table Error: ${profileError.message}`);
+      }
 
       return {
         status: 201,
