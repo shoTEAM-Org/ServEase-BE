@@ -11,8 +11,13 @@ async function bootstrap() {
       client: {
         clientId: 'payment-service',
         brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
+        retry: { initialRetryTime: 300, retries: 10 },
       },
-      consumer: { groupId: 'payment-service-group' },
+      consumer: {
+        groupId: 'payment-service-group',
+        allowAutoTopicCreation: true,
+        retry: { initialRetryTime: 300, retries: 10 },
+      },
       producer: { createPartitioner: Partitioners.LegacyPartitioner },
     },
   });
