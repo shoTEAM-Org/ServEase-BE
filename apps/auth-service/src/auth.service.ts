@@ -63,7 +63,7 @@ export class AuthService {
         const { data: userRecord, error: dbError } = await supabase
           .from('users')
           .select('email')
-          .eq('contact_number', email)
+          .eq('contact_number', email)  
           .single();
 
         if (dbError || !userRecord) throw new UnauthorizedException('Phone number not registered.');
