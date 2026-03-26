@@ -4,8 +4,8 @@ import { Partitioners } from 'kafkajs';
 import { KafkaLoggingInterceptor } from '@app/common';
 import { ProviderServiceModule } from './provider-service.module';
 
-const MAX_RETRIES = 10;
-const RETRY_DELAY_MS = 3000;
+const MAX_RETRIES = 15;
+const RETRY_DELAY_MS = 5000;
 
 async function bootstrap(retryCount = 0) {
   try {
@@ -15,13 +15,16 @@ async function bootstrap(retryCount = 0) {
         client: {
           clientId: 'provider-service',
           brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
-          retry: { initialRetryTime: 300, retries: 10 },
+          retry: { initialRetryTime: 1000, retries: 15 },
         },
         consumer: {
           groupId: 'provider-service-group',
-          retry: { initialRetryTime: 300, retries: 10 },
+          retry: { initialRetryTime: 1000, retries: 15 },
         },
-        producer: { createPartitioner: Partitioners.LegacyPartitioner },
+        producer: {
+          createPartitioner: Partitioners.LegacyPartitioner,
+          allowAutoTopicCreation: true,
+        },
       },
     });
     app.useGlobalInterceptors(new KafkaLoggingInterceptor());

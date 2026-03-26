@@ -24,15 +24,18 @@ function kafkaClient(name: string, clientId: string, groupId: string) {
         clientId,
         brokers: [kafkaBroker],
         retry: {
-          initialRetryTime: 300,
-          retries: 10,
+          initialRetryTime: 1000,
+          retries: 15,
         },
       },
       consumer: {
         groupId,
-        retry: { initialRetryTime: 300, retries: 10 },
+        retry: { initialRetryTime: 1000, retries: 15 },
       },
-      producer: { createPartitioner: Partitioners.LegacyPartitioner },
+      producer: {
+        createPartitioner: Partitioners.LegacyPartitioner,
+        allowAutoTopicCreation: true,
+      },
     },
   };
 }
