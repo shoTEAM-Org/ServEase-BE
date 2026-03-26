@@ -1,6 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { supabase } from '@app/database';
-import { serviceDetails } from '@app/common/mock-data/providers-by-service.js';
+import { serviceDetails } from '@app/common/mock-data/providers-by-service';
 
 @Injectable()
 export class ServicesService {

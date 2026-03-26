@@ -1,7 +1,7 @@
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { CUSTOMER_PATTERNS } from '@app/common';
-import { CustomerService } from './customer.service.js';
+import { CustomerService } from './customer.service';
 
 @Controller()
 export class CustomerController {

@@ -1,1 +1,1 @@
-export * from './update-document-status.dto.js';
+export * from './update-document-status.dto';

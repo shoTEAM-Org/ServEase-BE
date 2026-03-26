@@ -2,16 +2,16 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { Partitioners } from 'kafkajs';
-import { AuthController } from './controllers/auth.controller.js';
-import { BookingController } from './controllers/booking.controller.js';
-import { PaymentController } from './controllers/payment.controller.js';
-import { ProviderController } from './controllers/provider.controller.js';
-import { CustomerController } from './controllers/customer.controller.js';
-import { AdminController } from './controllers/admin.controller.js';
-import { UsersController } from './controllers/users.controller.js';
-import { ServicesController } from './controllers/services.controller.js';
-import { ReferenceController } from './controllers/reference.controller.js';
-import { LocationsController } from './controllers/locations.controller.js';
+import { AuthController } from './controllers/auth.controller';
+import { BookingController } from './controllers/booking.controller';
+import { PaymentController } from './controllers/payment.controller';
+import { ProviderController } from './controllers/provider.controller';
+import { CustomerController } from './controllers/customer.controller';
+import { AdminController } from './controllers/admin.controller';
+import { UsersController } from './controllers/users.controller';
+import { ServicesController } from './controllers/services.controller';
+import { ReferenceController } from './controllers/reference.controller';
+import { LocationsController } from './controllers/locations.controller';
 
 const kafkaBroker = process.env.KAFKA_BROKER || 'localhost:9092';
 

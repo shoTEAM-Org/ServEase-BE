@@ -1,3 +1,3 @@
-export * from './topics.js';
-export * from './patterns.js';
-export * from './kafka.client.js';
+export * from './topics';
+export * from './patterns';
+export * from './kafka.client';

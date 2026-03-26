@@ -1,7 +1,7 @@
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { PROVIDER_PATTERNS } from '@app/common';
-import { ProviderService } from './provider.service.js';
+import { ProviderService } from './provider.service';
 
 @Controller()
 export class ProviderController {

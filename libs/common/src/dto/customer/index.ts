@@ -1,1 +1,1 @@
-export * from './customer-dashboard.dto.js';
+export * from './customer-dashboard.dto';

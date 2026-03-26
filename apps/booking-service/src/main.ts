@@ -2,7 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { Partitioners } from 'kafkajs';
 import { KafkaLoggingInterceptor } from '@app/common';
-import { BookingServiceModule } from './booking-service.module.js';
+import { BookingServiceModule } from './booking-service.module';
 
 async function bootstrap() {
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(BookingServiceModule, {

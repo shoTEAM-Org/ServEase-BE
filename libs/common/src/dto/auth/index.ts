@@ -1,3 +1,3 @@
-export * from './create-user.dto.js';
-export * from './create-provider.dto.js';
-export * from './login-user.dto.js';
+export * from './create-user.dto';
+export * from './create-provider.dto';
+export * from './login-user.dto';

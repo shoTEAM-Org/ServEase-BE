@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException, InternalServerErrorException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { providersByService } from '@app/common/mock-data/providers-by-service.js';
+import { providersByService } from '@app/common/mock-data/providers-by-service';
 import 'multer';
 
 @Injectable()

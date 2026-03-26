@@ -1,7 +1,7 @@
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { BOOKING_PATTERNS } from '@app/common';
-import { BookingService } from './booking.service.js';
+import { BookingService } from './booking.service';
 
 @Controller()
 export class BookingController {

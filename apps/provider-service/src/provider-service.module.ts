@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { SupabaseModule } from '@app/database';
-import { ProviderController } from './provider.controller.js';
-import { ProviderService } from './provider.service.js';
+import { ProviderController } from './provider.controller';
+import { ProviderService } from './provider.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true }), SupabaseModule],

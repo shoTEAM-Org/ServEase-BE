@@ -1,9 +1,9 @@
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { CATALOG_PATTERNS } from '@app/common';
-import { philippineLocations } from '@app/common/mock-data/ph-locations.js';
-import { ServicesService } from './services.service.js';
-import { ReferenceService } from './reference.service.js';
+import { philippineLocations } from '@app/common/mock-data/ph-locations';
+import { ServicesService } from './services.service';
+import { ReferenceService } from './reference.service';
 
 @Controller()
 export class CatalogController {

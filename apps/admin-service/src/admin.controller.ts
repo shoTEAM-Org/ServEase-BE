@@ -1,7 +1,7 @@
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { ADMIN_PATTERNS } from '@app/common';
-import { AdminService } from './admin.service.js';
+import { AdminService } from './admin.service';
 
 @Controller()
 export class AdminController {

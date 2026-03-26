@@ -2,7 +2,7 @@ import { Controller, Get, Req, UseGuards, Inject, OnModuleInit } from '@nestjs/c
 import { ClientKafka } from '@nestjs/microservices';
 import { lastValueFrom } from 'rxjs';
 import { AUTH_PATTERNS } from '@app/common';
-import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
+import { SupabaseAuthGuard } from '../guards/supabase-auth.guard';
 
 @Controller('api/users')
 export class UsersController implements OnModuleInit {
