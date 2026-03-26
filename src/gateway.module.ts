@@ -30,7 +30,6 @@ function kafkaClient(name: string, clientId: string, groupId: string) {
       },
       consumer: {
         groupId,
-        allowAutoTopicCreation: true,
         retry: { initialRetryTime: 300, retries: 10 },
       },
       producer: { createPartitioner: Partitioners.LegacyPartitioner },
