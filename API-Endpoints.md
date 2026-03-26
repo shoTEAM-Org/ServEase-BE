@@ -12,8 +12,8 @@ Base URL: `http://localhost:5000`
 ## Booking (start `booking-service`)
 | Method | URL | Notes |
 |--------|-----|-------|
-| POST | `/api/booking/v1/create` | Requires `Authorization: Bearer <token>` |
-| GET | `/api/booking/v1/history?user_id=xxx` | | FUNCTIONAL
+| POST | `/api/booking/v1/create` | Requires `Authorization: Bearer <token>` | FUNCTIONAL
+| GET | `/api/booking/v1/history?user_id=xxx` | | SEMI-FUNCTIONAL NOT IN TERMINAL
 | GET | `/api/booking/v1/requests?provider_id=xxx` | | FUNCTIONAL
 | PATCH | `/api/booking/v1/:id/status` | `{ status }` | FUNCTIONAL
 
@@ -38,7 +38,7 @@ Base URL: `http://localhost:5000`
 ## Customer (start `customer-service`)
 | Method | URL |
 |--------|-----|
-| GET | `/api/customer/v1/dashboard/:id` | FUNCTIONAL
+| GET | `/api/customer/v1/dashboard/:id` | SEMI-FUNCTIONAL INTERNAL SERVER ERROR
 
 ## Payment (start `payment-service`)
 | Method | URL |
@@ -54,4 +54,4 @@ Base URL: `http://localhost:5000`
 ## Users (start `auth-service`)
 | Method | URL | Notes |
 |--------|-----|-------|
-| GET | `/api/users/v1/profile` | Requires `Authorization: Bearer <token>` (SupabaseAuthGuard) |
+| GET | `/api/users/v1/profile` | Requires `Authorization: Bearer <token>` (SupabaseAuthGuard) | FUNCTIONAL
