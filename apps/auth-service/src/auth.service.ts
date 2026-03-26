@@ -54,16 +54,16 @@ export class AuthService {
 
   async login(loginDto: LoginUserDto) {
     try {
-      const identifier = loginDto.identifier;
+      const email = loginDto.email;
       const password = loginDto.password;
-      const isEmail = identifier.includes('@');
-      let loginEmail = identifier;
+      const isEmail = email.includes('@');
+      let loginEmail = email;
 
       if (!isEmail) {
         const { data: userRecord, error: dbError } = await supabase
           .from('users')
           .select('email')
-          .eq('contact_number', identifier)
+          .eq('contact_number', email)
           .single();
 
         if (dbError || !userRecord) throw new UnauthorizedException('Phone number not registered.');
