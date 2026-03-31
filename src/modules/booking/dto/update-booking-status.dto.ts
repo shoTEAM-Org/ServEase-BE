@@ -14,3 +14,10 @@ export class UpdateBookingStatusDto {
   })
   status: BookingStatus;
 }
+
+export class ProviderBookingResponseDto {
+  @IsEnum([BookingStatus.CONFIRMED, BookingStatus.CANCELLED], {
+    message: 'Provider can only respond with Confirmed or Cancelled.'
+  })
+  status: BookingStatus;
+}

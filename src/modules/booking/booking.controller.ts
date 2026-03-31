@@ -1,8 +1,10 @@
-import {Controller, Post, Get, Patch, Param, Body, Req, UnauthorizedException } from '@nestjs/common';
+import {Controller, Post, Get, Patch, Param, Body, Req, UnauthorizedException, ParseUUIDPipe } from '@nestjs/common';
 import type { Request } from 'express';
 import { BookingService } from './booking.service';
 import { CreateBookingDto } from './dto/create-booking.dto';
-import { UpdateBookingStatusDto } from './dto/update-booking-status.dto';
+import { ProviderBookingResponseDto, UpdateBookingStatusDto, } from './dto/update-booking-status.dto';
+import { ProviderCounterOfferDto } from './dto/booking-counter-offer.dto';
+import { CancelBookingDto } from './dto/cancel-booking.dto';
 import { supabase } from '../../../src/config/supabaseClient';
 
 @Controller('api/booking')
@@ -51,4 +53,39 @@ export class BookingController {
     ) {
         return this.bookingService.updateStatus(id, dto.status);
     }
+
+    @Patch('v1/provider-response/:providerId/:bookingId')
+  async providerResponse(
+    @Param('providerId', ParseUUIDPipe) providerId: string,
+    @Param('bookingId', ParseUUIDPipe) bookingId: string,
+    @Body() dto: ProviderBookingResponseDto
+  ) {
+    return this.bookingService.providerBookingResponse(bookingId, providerId, dto);
+  }
+
+    @Post('v1/counter-offer/:providerId/:bookingId')
+  async submitCounterOffer(
+    @Param('providerId', ParseUUIDPipe) providerId: string,
+    @Param('bookingId', ParseUUIDPipe) bookingId: string,
+    @Body() dto: ProviderCounterOfferDto
+  ) {
+    return this.bookingService.providerCounterOffer(bookingId, providerId, dto);
+  }
+
+  @Get('v1/my-bookings/:providerId/:bookingId')
+  async getMyBookings(
+    @Param('providerId', ParseUUIDPipe) providerId: string,
+    @Param('bookingId', ParseUUIDPipe) bookingId: string
+  ) {
+    return this.bookingService.getMyBookings(bookingId, providerId);
+  }
+
+  @Post('provider/:providerId/:bookingId/cancel')
+  async cancelBooking(
+    @Param('providerId', ParseUUIDPipe) providerId: string,
+    @Param('bookingId', ParseUUIDPipe) bookingId: string,
+    @Body() dto: CancelBookingDto
+  ) {
+    return this.bookingService.cancelBooking(bookingId, providerId, dto);
+  }
 }
