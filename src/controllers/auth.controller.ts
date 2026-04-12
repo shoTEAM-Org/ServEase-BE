@@ -1,54 +1,64 @@
-import { Controller, Post, Body, HttpCode, Inject, OnModuleInit,
-         UseInterceptors, UploadedFile, ParseFilePipe, MaxFileSizeValidator, FileTypeValidator } from '@nestjs/common';
-import { ClientKafka } from '@nestjs/microservices';
+import { Controller, Post, Get, Body, Request, UseGuards, UseInterceptors, UploadedFile, Inject, OnModuleInit, HttpCode } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { ClientKafka } from '@nestjs/microservices';
 import { lastValueFrom } from 'rxjs';
-import { CreateUserDto, RegisterProviderDto, LoginUserDto, AUTH_PATTERNS } from '@app/common';
+import { AUTH_PATTERNS } from '@app/common';
+import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 import 'multer';
 
 @Controller('api/auth')
 export class AuthController implements OnModuleInit {
-  constructor(@Inject('AUTH_SERVICE') private readonly authClient: ClientKafka) {}
+  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
 
   async onModuleInit() {
-    this.authClient.subscribeToResponseOf(AUTH_PATTERNS.REGISTER_CUSTOMER);
-    this.authClient.subscribeToResponseOf(AUTH_PATTERNS.LOGIN);
-    this.authClient.subscribeToResponseOf(AUTH_PATTERNS.REGISTER_PROVIDER);
-    await this.authClient.connect();
+    [AUTH_PATTERNS.REGISTER_CUSTOMER, AUTH_PATTERNS.LOGIN, AUTH_PATTERNS.REGISTER_PROVIDER, AUTH_PATTERNS.REFRESH, AUTH_PATTERNS.GET_ME]
+      .forEach((p) => this.kafka.subscribeToResponseOf(p));
+    await this.kafka.connect();
   }
 
   @Post('v1/register/customer')
-  async register(@Body() dto: CreateUserDto) {
-    return lastValueFrom(this.authClient.send(AUTH_PATTERNS.REGISTER_CUSTOMER, dto));
+  async register(@Body() dto: any) {
+    return lastValueFrom(this.kafka.send(AUTH_PATTERNS.REGISTER_CUSTOMER, dto));
   }
 
   @Post('v1/login')
-  @HttpCode(200)
-  async login(@Body() dto: LoginUserDto) {
-    return lastValueFrom(this.authClient.send(AUTH_PATTERNS.LOGIN, dto));
+  async login(@Body() dto: any) {
+    return lastValueFrom(this.kafka.send(AUTH_PATTERNS.LOGIN, dto));
   }
 
   @Post('v2/register')
   @UseInterceptors(FileInterceptor('document_file'))
-  async registerProvider(
-    @Body() dto: RegisterProviderDto,
-    @UploadedFile(
-      new ParseFilePipe({
-        validators: [
-          new MaxFileSizeValidator({ maxSize: 5 * 1024 * 1024 }),
-          new FileTypeValidator({ fileType: 'image/(jpeg|jpg|png)' }),
-        ],
-      }),
-    ) file: Express.Multer.File,
-  ) {
-    const payload = {
-      ...dto,
-      file: {
-        originalname: file.originalname,
-        mimetype: file.mimetype,
-        buffer: file.buffer.toString('base64'),
-      },
-    };
-    return lastValueFrom(this.authClient.send(AUTH_PATTERNS.REGISTER_PROVIDER, payload));
+  async registerProvider(@Body() dto: any, @UploadedFile() file: Express.Multer.File) {
+    const payload = { ...dto, file: file ? { originalname: file.originalname, mimetype: file.mimetype, buffer: file.buffer.toString('base64') } : null };
+    return lastValueFrom(this.kafka.send(AUTH_PATTERNS.REGISTER_PROVIDER, payload));
+  }
+
+  @Post('v1/refresh') @HttpCode(200)
+  async refreshSession(@Body() body: { refresh_token: string }) {
+    return lastValueFrom(this.kafka.send(AUTH_PATTERNS.REFRESH, body));
+  }
+
+  @Get('v1/me') @UseGuards(SupabaseAuthGuard)
+  async getCurrentUser(@Request() req: any) {
+    return lastValueFrom(this.kafka.send(AUTH_PATTERNS.GET_ME, { userId: req['user'].id }));
+  }
+
+  @Post('v1/logout') @UseGuards(SupabaseAuthGuard) @HttpCode(202)
+  async logout(@Request() req: any) {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    this.kafka.emit(AUTH_PATTERNS.LOGOUT, { accessToken: token });
+    return { status: 'accepted' };
+  }
+
+  @Post('v1/forgot-password') @HttpCode(202)
+  async forgotPassword(@Body() body: { email: string; redirect_to?: string }) {
+    this.kafka.emit(AUTH_PATTERNS.FORGOT_PASSWORD, body);
+    return { status: 'accepted' };
+  }
+
+  @Post('v1/reset-password') @HttpCode(202)
+  async resetPassword(@Body() body: any) {
+    this.kafka.emit(AUTH_PATTERNS.RESET_PASSWORD, body);
+    return { status: 'accepted' };
   }
 }

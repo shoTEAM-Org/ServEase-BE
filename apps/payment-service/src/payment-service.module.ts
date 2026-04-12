@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { SupabaseModule } from '@app/database';
-import { PaymentController } from './payment.controller';
-import { PaymentsService } from './payments.service';
+import { PaymentService } from './payments.service.js';
+import { PaymentKafkaController } from './payment.controller.js';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), SupabaseModule],
-  controllers: [PaymentController],
-  providers: [PaymentsService],
+  imports: [SupabaseModule],
+  controllers: [PaymentKafkaController],
+  providers: [PaymentService],
+  exports: [PaymentService],
 })
 export class PaymentServiceModule {}

@@ -1,69 +1,59 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
-import { Partitioners } from 'kafkajs';
-import { AuthController } from './controllers/auth.controller';
-import { BookingController } from './controllers/booking.controller';
-import { PaymentController } from './controllers/payment.controller';
-import { ProviderController } from './controllers/provider.controller';
-import { CustomerController } from './controllers/customer.controller';
-import { AdminController } from './controllers/admin.controller';
-import { UsersController } from './controllers/users.controller';
-import { ServicesController } from './controllers/services.controller';
-import { ReferenceController } from './controllers/reference.controller';
-import { LocationsController } from './controllers/locations.controller';
-
-const kafkaBroker = process.env.KAFKA_BROKER || 'localhost:9092';
-
-function kafkaClient(name: string, clientId: string, groupId: string) {
-  return {
-    name,
-    transport: Transport.KAFKA as const,
-    options: {
-      client: {
-        clientId,
-        brokers: [kafkaBroker],
-        retry: {
-          initialRetryTime: 1000,
-          retries: 15,
-        },
-      },
-      consumer: {
-        groupId,
-        retry: { initialRetryTime: 1000, retries: 15 },
-      },
-      producer: {
-        createPartitioner: Partitioners.LegacyPartitioner,
-        allowAutoTopicCreation: true,
-      },
-    },
-  };
-}
+import { SupabaseModule } from '@app/database';
+import { AuthController } from './controllers/auth.controller.js';
+import { UsersController } from './controllers/users.controller.js';
+import { BookingController } from './controllers/booking.controller.js';
+import { ChatController } from './controllers/chat.controller.js';
+import { PaymentController } from './controllers/payment.controller.js';
+import { ProviderController } from './controllers/provider.controller.js';
+import { CustomerController } from './controllers/customer.controller.js';
+import { AdminController } from './controllers/admin.controller.js';
+import { ServicesController } from './controllers/services.controller.js';
+import { ReferenceController } from './controllers/reference.controller.js';
+import { LocationsController } from './controllers/locations.controller.js';
+import { NotificationsController } from './controllers/notifications.controller.js';
+import { SupportController } from './controllers/support.controller.js';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    ClientsModule.register([
-      kafkaClient('AUTH_SERVICE', 'gateway-auth', 'gateway-auth-group'),
-      kafkaClient('BOOKING_SERVICE', 'gateway-booking', 'gateway-booking-group'),
-      kafkaClient('PAYMENT_SERVICE', 'gateway-payment', 'gateway-payment-group'),
-      kafkaClient('PROVIDER_SERVICE', 'gateway-provider', 'gateway-provider-group'),
-      kafkaClient('CUSTOMER_SERVICE', 'gateway-customer', 'gateway-customer-group'),
-      kafkaClient('ADMIN_SERVICE', 'gateway-admin', 'gateway-admin-group'),
-      kafkaClient('CATALOG_SERVICE', 'gateway-catalog', 'gateway-catalog-group'),
+    SupabaseModule,
+    ClientsModule.registerAsync([
+      {
+        name: 'KAFKA_CLIENT',
+        imports: [ConfigModule],
+        inject: [ConfigService],
+        useFactory: (config: ConfigService) => ({
+          transport: Transport.KAFKA,
+          options: {
+            client: {
+              clientId: 'servease-gateway',
+              brokers: [config.get<string>('KAFKA_BROKER', 'localhost:9092')],
+            },
+            consumer: {
+              groupId: 'servease-gateway-consumer',
+            },
+          },
+        }),
+      },
     ]),
   ],
   controllers: [
     AuthController,
+    UsersController,
     BookingController,
+    ChatController,
     PaymentController,
     ProviderController,
     CustomerController,
     AdminController,
-    UsersController,
     ServicesController,
     ReferenceController,
     LocationsController,
+    NotificationsController,
+    SupportController,
   ],
 })
 export class GatewayModule {}

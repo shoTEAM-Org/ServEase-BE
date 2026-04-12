@@ -1,13 +1,14 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { SupabaseModule } from '@app/database';
-import { CatalogController } from './catalog.controller';
-import { ServicesService } from './services.service';
-import { ReferenceService } from './reference.service';
+import { ServicesService } from './services.service.js';
+import { ReferenceService } from './reference.service.js';
+import { LocationsService } from './locations.service.js';
+import { CatalogKafkaController } from './catalog.controller.js';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), SupabaseModule],
-  controllers: [CatalogController],
-  providers: [ServicesService, ReferenceService],
+  imports: [SupabaseModule],
+  controllers: [CatalogKafkaController],
+  providers: [ServicesService, ReferenceService, LocationsService],
+  exports: [ServicesService, ReferenceService, LocationsService],
 })
 export class CatalogServiceModule {}

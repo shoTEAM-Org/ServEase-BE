@@ -1,13 +1,13 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { SupabaseModule } from '@app/database';
-import { AuthService } from './auth.service';
-import { UsersService } from './users.service';
-import { AuthController } from './auth.controller';
+import { AuthService } from './auth.service.js';
+import { UsersService } from './users.service.js';
+import { AuthKafkaController } from './auth.controller.js';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), SupabaseModule],
-  controllers: [AuthController],
+  imports: [SupabaseModule],
+  controllers: [AuthKafkaController],
   providers: [AuthService, UsersService],
+  exports: [AuthService, UsersService],
 })
 export class AuthServiceModule {}

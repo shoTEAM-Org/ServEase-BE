@@ -1,44 +1,18 @@
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
-import { Partitioners } from 'kafkajs';
-import { KafkaLoggingInterceptor } from '@app/common';
-import { ProviderServiceModule } from './provider-service.module';
+import { ProviderServiceModule } from './provider-service.module.js';
+import { ensureKafkaTopics } from '@app/common';
 
-const MAX_RETRIES = 15;
-const RETRY_DELAY_MS = 5000;
-
-async function bootstrap(retryCount = 0) {
-  try {
-    const app = await NestFactory.createMicroservice<MicroserviceOptions>(ProviderServiceModule, {
-      transport: Transport.KAFKA,
-      options: {
-        client: {
-          clientId: 'provider-service',
-          brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
-          retry: { initialRetryTime: 1000, retries: 15 },
-        },
-        consumer: {
-          groupId: 'provider-service-group',
-          retry: { initialRetryTime: 1000, retries: 15 },
-        },
-        producer: {
-          createPartitioner: Partitioners.LegacyPartitioner,
-          allowAutoTopicCreation: true,
-        },
-      },
-    });
-    app.useGlobalInterceptors(new KafkaLoggingInterceptor());
-    await app.listen();
-    console.log('Provider Service is running');
-  } catch (error) {
-    if (retryCount < MAX_RETRIES) {
-      console.warn(`Provider Service failed to start (attempt ${retryCount + 1}/${MAX_RETRIES}): ${error.message}`);
-      console.warn(`Retrying in ${RETRY_DELAY_MS / 1000}s...`);
-      await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
-      return bootstrap(retryCount + 1);
-    }
-    console.error('Provider Service failed to start after max retries:', error);
-    process.exit(1);
-  }
+async function bootstrap() {
+  await ensureKafkaTopics();
+  const app = await NestFactory.createMicroservice<MicroserviceOptions>(ProviderServiceModule, {
+    transport: Transport.KAFKA,
+    options: {
+      client: { clientId: 'provider-service', brokers: [process.env.KAFKA_BROKER || 'localhost:9092'] },
+      consumer: { groupId: 'provider-service-consumer' },
+    },
+  });
+  await app.listen();
+  console.log('Provider Service is listening on Kafka');
 }
 bootstrap();

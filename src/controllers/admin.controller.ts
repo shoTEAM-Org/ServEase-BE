@@ -1,19 +1,16 @@
-import { Controller, Patch, Param, Body, Inject, OnModuleInit } from '@nestjs/common';
+import { Controller, Patch, Param, Body, UseGuards, Inject, HttpCode } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
-import { lastValueFrom } from 'rxjs';
-import { UpdateDocumentStatusDto, ADMIN_PATTERNS } from '@app/common';
+import { ADMIN_PATTERNS, UpdateDocumentStatusDto } from '@app/common';
+import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 
 @Controller('api/admin')
-export class AdminController implements OnModuleInit {
-  constructor(@Inject('ADMIN_SERVICE') private readonly adminClient: ClientKafka) {}
+@UseGuards(SupabaseAuthGuard)
+export class AdminController {
+  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
 
-  async onModuleInit() {
-    this.adminClient.subscribeToResponseOf(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS);
-    await this.adminClient.connect();
-  }
-
-  @Patch('v2/documents/status/:id')
-  async updateDocumentStatus(@Param('id') documentId: string, @Body() dto: UpdateDocumentStatusDto) {
-    return lastValueFrom(this.adminClient.send(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS, { documentId, dto }));
+  @Patch('v2/documents/status/:id') @HttpCode(202)
+  updateDocumentStatus(@Param('id') id: string, @Body() dto: UpdateDocumentStatusDto) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS, { documentId: id, ...dto });
+    return { status: 'accepted' };
   }
 }

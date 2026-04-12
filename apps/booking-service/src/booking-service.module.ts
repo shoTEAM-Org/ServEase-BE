@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { SupabaseModule } from '@app/database';
-import { BookingController } from './booking.controller';
-import { BookingService } from './booking.service';
+import { BookingService } from './booking.service.js';
+import { BookingKafkaController } from './booking.controller.js';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), SupabaseModule],
-  controllers: [BookingController],
+  imports: [SupabaseModule],
+  controllers: [BookingKafkaController],
   providers: [BookingService],
+  exports: [BookingService],
 })
 export class BookingServiceModule {}

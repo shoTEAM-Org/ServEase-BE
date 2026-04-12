@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
 import { SupabaseModule } from '@app/database';
-import { AdminController } from './admin.controller';
-import { AdminService } from './admin.service';
+import { AdminService } from './admin.service.js';
+import { AdminKafkaController } from './admin.controller.js';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), SupabaseModule],
-  controllers: [AdminController],
+  imports: [SupabaseModule],
+  controllers: [AdminKafkaController],
   providers: [AdminService],
+  exports: [AdminService],
 })
 export class AdminServiceModule {}

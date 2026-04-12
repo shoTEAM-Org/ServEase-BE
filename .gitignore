@@ -1,10 +1,15 @@
 # Agents
 CLAUDE.md
-.claude/*
-.github/*
+/.claude
+/.github
+
+# MCP Server
+/mcp-server
+.mcp.json
 
 # compiled output
 /dist
+/dist-new
 /node_modules
 /build
 

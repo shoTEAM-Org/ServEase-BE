@@ -1,8 +1,14 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "./dist/apps/gateway"
+    "outDir": "./dist"
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  "include": ["src/**/*", "apps/**/*", "libs/**/*"],
+  "exclude": [
+    "node_modules", "test", "dist", "dist-new", "**/*spec.ts",
+    "src/modules",
+    "libs/common/src/kafka",
+    "libs/common/src/interceptors",
+    "libs/common/src/mock-data"
+  ]
 }

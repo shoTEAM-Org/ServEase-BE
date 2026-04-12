@@ -1,46 +1,47 @@
-import { Controller, Post, Get, Patch, Param, Body, Req, Inject, OnModuleInit, UnauthorizedException } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Param, UseGuards, Request, Inject, OnModuleInit, HttpCode } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { lastValueFrom } from 'rxjs';
-import type { Request } from 'express';
-import { CreateBookingDto, UpdateBookingStatusDto, BOOKING_PATTERNS } from '@app/common';
-import { supabase } from '@app/database';
+import { BOOKING_PATTERNS } from '@app/common';
+import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 
 @Controller('api/booking')
+@UseGuards(SupabaseAuthGuard)
 export class BookingController implements OnModuleInit {
-  constructor(@Inject('BOOKING_SERVICE') private readonly bookingClient: ClientKafka) {}
+  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
 
   async onModuleInit() {
-    this.bookingClient.subscribeToResponseOf(BOOKING_PATTERNS.CREATE);
-    this.bookingClient.subscribeToResponseOf(BOOKING_PATTERNS.GET_HISTORY);
-    this.bookingClient.subscribeToResponseOf(BOOKING_PATTERNS.GET_REQUESTS);
-    this.bookingClient.subscribeToResponseOf(BOOKING_PATTERNS.UPDATE_STATUS);
-    await this.bookingClient.connect();
+    [BOOKING_PATTERNS.CREATE, BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS, BOOKING_PATTERNS.GET_HISTORY, BOOKING_PATTERNS.GET_REQUESTS, BOOKING_PATTERNS.GET_BY_ID, BOOKING_PATTERNS.GET_ATTACHMENTS]
+      .forEach((p) => this.kafka.subscribeToResponseOf(p));
+    await this.kafka.connect();
   }
 
   @Post('v1/create')
-  async createBooking(@Body() dto: CreateBookingDto, @Req() req: Request) {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) throw new UnauthorizedException('Access denied. No token provided');
+  async create(@Body() dto: any, @Request() req: any) { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.CREATE, { ...dto, customerId: req['user'].id })); }
 
-    const token = authHeader.split(' ')[1];
-    const { data: { user }, error } = await supabase.auth.getUser(token);
-    if (error || !user) throw new UnauthorizedException('Invalid or expired token. Please login again');
-
-    return lastValueFrom(this.bookingClient.send(BOOKING_PATTERNS.CREATE, { dto, customerId: user.id }));
-  }
+  @Get('v1/customer')
+  async getCustomerBookings(@Request() req: any) { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS, { customerId: req['user'].id })); }
 
   @Get('v1/history')
-  async getHistory() {
-    return lastValueFrom(this.bookingClient.send(BOOKING_PATTERNS.GET_HISTORY, {}));
-  }
+  async getHistory() { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.GET_HISTORY, {})); }
 
   @Get('v1/requests')
-  async getRequests() {
-    return lastValueFrom(this.bookingClient.send(BOOKING_PATTERNS.GET_REQUESTS, {}));
-  }
+  async getRequests() { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.GET_REQUESTS, {})); }
 
-  @Patch('v1/:id/status')
-  async updateStatus(@Param('id') id: string, @Body() dto: UpdateBookingStatusDto) {
-    return lastValueFrom(this.bookingClient.send(BOOKING_PATTERNS.UPDATE_STATUS, { id, status: dto.status }));
-  }
+  @Get('v1/:id')
+  async getById(@Param('id') id: string) { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.GET_BY_ID, { id })); }
+
+  @Patch('v1/:id/status') @HttpCode(202)
+  async updateStatus(@Param('id') id: string, @Body() body: any) { this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, { id, status: body.status }); return { status: 'accepted' }; }
+
+  @Patch('v1/:id/cancel') @HttpCode(202)
+  async cancel(@Param('id') id: string, @Request() req: any, @Body() body: any) { this.kafka.emit(BOOKING_PATTERNS.CANCEL, { id, userId: req['user'].id, reason: body.reason, explanation: body.explanation }); return { status: 'accepted' }; }
+
+  @Get('v1/:id/attachments')
+  async getAttachments(@Param('id') id: string) { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.GET_ATTACHMENTS, { bookingId: id })); }
+
+  @Post('v1/:id/attachments') @HttpCode(202)
+  async saveAttachments(@Param('id') id: string, @Body() body: any) { this.kafka.emit(BOOKING_PATTERNS.SAVE_ATTACHMENTS, { bookingId: id, attachments: body.attachments }); return { status: 'accepted' }; }
+
+  @Post('v1/:id/disputes') @HttpCode(202)
+  async createDispute(@Param('id') id: string, @Request() req: any, @Body() body: any) { this.kafka.emit(BOOKING_PATTERNS.CREATE_DISPUTE, { bookingId: id, userId: req['user'].id, reason: body.reason }); return { status: 'accepted' }; }
 }

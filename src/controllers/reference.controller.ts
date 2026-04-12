@@ -5,15 +5,13 @@ import { CATALOG_PATTERNS } from '@app/common';
 
 @Controller('api/reference')
 export class ReferenceController implements OnModuleInit {
-  constructor(@Inject('CATALOG_SERVICE') private readonly catalogClient: ClientKafka) {}
+  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
 
   async onModuleInit() {
-    this.catalogClient.subscribeToResponseOf(CATALOG_PATTERNS.GET_CATEGORIES);
-    await this.catalogClient.connect();
+    this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.GET_REFERENCE_CATEGORIES);
+    await this.kafka.connect();
   }
 
   @Get('v1/categories')
-  async getCategories() {
-    return lastValueFrom(this.catalogClient.send(CATALOG_PATTERNS.GET_CATEGORIES, {}));
-  }
+  async getCategories() { return lastValueFrom(this.kafka.send(CATALOG_PATTERNS.GET_REFERENCE_CATEGORIES, {})); }
 }
