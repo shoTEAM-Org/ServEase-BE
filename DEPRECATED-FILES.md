@@ -45,18 +45,7 @@ src/modules/users/
 
 ---
 
-## 3. `libs/common/src/interceptors/` — Kafka logging interceptor
-
-`KafkaLoggingInterceptor` logged raw Kafka message payloads. Not registered or
-imported anywhere in the current codebase.
-
-```
-libs/common/src/interceptors/kafka-logging.interceptor.ts
-```
-
----
-
-## 4. `libs/common/src/mock-data/` — hardcoded mock data
+## 3. `libs/common/src/mock-data/` — hardcoded mock data
 
 Static arrays of mock providers and Philippine location data used before live
 Supabase queries were wired up. Not imported anywhere active.
@@ -68,7 +57,7 @@ libs/common/src/mock-data/providers-by-service.ts
 
 ---
 
-## 6. `test/` — stale e2e test
+## 4. `test/` — stale e2e test
 
 References the deprecated `AppModule` from `src/app.module.ts` and tests a
 `GET /` route that no longer exists in the gateway. Needs a full rewrite against
