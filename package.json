@@ -1,5 +1,5 @@
 {
-  "name": "auth-app",
+  "name": "servease-be-api",
   "version": "0.0.1",
   "description": "",
   "author": "",
@@ -7,12 +7,24 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "nest start",
-    "start:dev": "nest start --watch",
-    "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/main",
-    "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+    "format": "prettier --write \"src/**/*.ts\" \"libs/**/*.ts\"",
+    "start:gateway": "nest start",
+    "start:gateway:dev": "nest start --watch",
+    "start:gateway:debug": "nest start --debug --watch",
+    "start:gateway:prod": "node dist/src/main.js",
+    "start:auth": "node dist/apps/auth-service/src/main.js",
+    "start:booking": "node dist/apps/booking-service/src/main.js",
+    "start:chat": "node dist/apps/chat-service/src/main.js",
+    "start:payment": "node dist/apps/payment-service/src/main.js",
+    "start:provider": "node dist/apps/provider-service/src/main.js",
+    "start:customer": "node dist/apps/customer-service/src/main.js",
+    "start:admin": "node dist/apps/admin-service/src/main.js",
+    "start:catalog": "node dist/apps/catalog-service/src/main.js",
+    "start:notifications": "node dist/apps/notifications-service/src/main.js",
+    "start:support": "node dist/apps/support-service/src/main.js",
+    "start:all": "concurrently \"npm:start:gateway\" \"npm:start:auth\" \"npm:start:booking\" \"npm:start:chat\" \"npm:start:payment\" \"npm:start:provider\" \"npm:start:customer\" \"npm:start:admin\" \"npm:start:catalog\" \"npm:start:notifications\" \"npm:start:support\"",
+    "start:dev:all": "concurrently -n gateway,auth,booking,chat,payment,provider,customer,admin,catalog,notify,support -c blue,green,yellow,cyan,magenta,red,white,gray,blue,green,yellow \"npm:start:gateway:dev\" \"npm:start:auth\" \"npm:start:booking\" \"npm:start:chat\" \"npm:start:payment\" \"npm:start:provider\" \"npm:start:customer\" \"npm:start:admin\" \"npm:start:catalog\" \"npm:start:notifications\" \"npm:start:support\"",
+    "lint": "eslint \"src/**/*.ts\" \"libs/**/*.ts\" --fix",
     "test": "jest",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
@@ -24,6 +36,7 @@
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.0.1",
     "@nestjs/event-emitter": "^3.0.1",
+    "@nestjs/microservices": "^11.0.1",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
     "@supabase/supabase-js": "^2.98.0",
@@ -35,6 +48,8 @@
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "reflect-metadata": "^0.2.2",
+    "concurrently": "^9.0.0",
+    "kafkajs": "^2.2.4",
     "rxjs": "^7.8.1",
     "uuid": "^13.0.0"
   },
@@ -71,7 +86,11 @@
       "json",
       "ts"
     ],
-    "rootDir": "src",
+    "rootDir": ".",
+    "roots": [
+      "<rootDir>/src/",
+      "<rootDir>/libs/"
+    ],
     "testRegex": ".*\\.spec\\.ts$",
     "transform": {
       "^.+\\.(t|j)s$": "ts-jest"
@@ -81,5 +100,8 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
+  },
+  "overrides": {
+    "picomatch": "^4.0.4"
   }
 }

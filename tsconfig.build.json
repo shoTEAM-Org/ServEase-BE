@@ -1,4 +1,14 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  "compilerOptions": {
+    "outDir": "./dist"
+  },
+  "include": ["src/**/*", "apps/**/*", "libs/**/*"],
+  "exclude": [
+    "node_modules", "test", "dist", "dist-new", "**/*spec.ts",
+    "src/modules",
+    "libs/common/src/kafka",
+    "libs/common/src/interceptors",
+    "libs/common/src/mock-data"
+  ]
 }
