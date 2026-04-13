@@ -214,15 +214,97 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 
 ## Admin — `api/admin`
 
+All endpoints require auth (`Bearer <token>`). Endpoints marked **(async)** use Kafka `emit` and return `{ "status": "accepted" }` with HTTP 202.
+
+### KYC Documents
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | PATCH | `/api/admin/v2/documents/status/:id` | Yes | Approve or reject a KYC document **(async)** |
 
-### Request Body
-
+**Request body:**
 ```json
 { "status": "approved|rejected", "reject_reason": "required if rejected", "admin_id": "optional" }
 ```
+
+### User Management
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/v1/users/customers?page=&limit=` | Yes | Paginated list of customers |
+| GET | `/api/admin/v1/users/customers/:id` | Yes | Customer detail (user + profile + booking count) |
+| PATCH | `/api/admin/v1/users/customers/:id/status` | Yes | Suspend/activate/ban a customer **(async)** |
+| GET | `/api/admin/v1/users/reviews?page=&limit=` | Yes | Paginated list of all reviews |
+| DELETE | `/api/admin/v1/users/reviews/:id` | Yes | Remove a review **(async)** |
+
+### Account
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/v1/account/profile` | Yes | Get admin's own profile |
+| PATCH | `/api/admin/v1/account/profile` | Yes | Update admin's own profile **(async)** |
+
+### Operations
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/v1/operations/ongoing` | Yes | Active bookings (confirmed + in_progress) with provider/customer names |
+| GET | `/api/admin/v1/operations/disputes?page=&limit=` | Yes | Paginated list of all disputes |
+| PATCH | `/api/admin/v1/operations/disputes/:id` | Yes | Update dispute status **(async)** |
+| GET | `/api/admin/v1/operations/support?page=&limit=` | Yes | Paginated list of all support tickets |
+| PATCH | `/api/admin/v1/operations/support/:id` | Yes | Update support ticket status **(async)** |
+
+### Finance
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/v1/finance/earnings?page=&limit=` | Yes | Paginated completed provider payments |
+| GET | `/api/admin/v1/finance/payouts?page=&limit=` | Yes | Paginated provider payout records |
+| PATCH | `/api/admin/v1/finance/payouts/:id` | Yes | Approve or reject a payout **(async)** |
+| GET | `/api/admin/v1/finance/refunds?page=&limit=` | Yes | Paginated refunded/cancelled payments |
+| PATCH | `/api/admin/v1/finance/refunds/:id` | Yes | Mark a payment as refunded **(async)** |
+| GET | `/api/admin/v1/finance/failed?page=&limit=` | Yes | Paginated failed payments |
+
+### Marketplace & Marketing
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/admin/v1/marketplace/categories` | Yes | Create a service category |
+| PATCH | `/api/admin/v1/marketplace/categories/:id` | Yes | Update a category **(async)** |
+| DELETE | `/api/admin/v1/marketplace/categories/:id` | Yes | Delete a category **(async)** |
+| GET | `/api/admin/v1/marketplace/services?page=&limit=` | Yes | All service listings (unfiltered admin view) |
+| PATCH | `/api/admin/v1/marketplace/services/:id` | Yes | Update a service listing **(async)** |
+| DELETE | `/api/admin/v1/marketplace/services/:id` | Yes | Remove a service listing **(async)** |
+| GET | `/api/admin/v1/marketplace/service-areas` | Yes | All service areas |
+| POST | `/api/admin/v1/marketplace/service-areas` | Yes | Create a service area |
+| PATCH | `/api/admin/v1/marketplace/service-areas/:id` | Yes | Update a service area **(async)** |
+| DELETE | `/api/admin/v1/marketplace/service-areas/:id` | Yes | Delete a service area **(async)** |
+| POST | `/api/admin/v1/marketplace/broadcasts` | Yes | Send notification broadcast to users **(async)** |
+
+**Broadcast request body:**
+```json
+{
+  "title": "",
+  "message": "",
+  "type": "broadcast",
+  "role": "customer|provider (send to all users of this role)",
+  "user_ids": ["optional array of specific user IDs"]
+}
+```
+
+### Reports & Analytics
+
+All report endpoints accept optional `?from=YYYY-MM-DD&to=YYYY-MM-DD` query params.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/admin/v1/reports/revenue` | Yes | Total revenue, platform fees, net to providers |
+| GET | `/api/admin/v1/reports/bookings` | Yes | Booking counts by status |
+| GET | `/api/admin/v1/reports/business` | Yes | Combined revenue + booking + user overview |
+| GET | `/api/admin/v1/reports/financial` | Yes | All payments and payouts in range |
+| GET | `/api/admin/v1/reports/users` | Yes | User counts by role and status |
+| GET | `/api/admin/v1/reports/performance` | Yes | Provider ratings and trust scores |
+| GET | `/api/admin/v1/reports/compliance` | Yes | Disputes and provider profile reports |
 
 ---
 
