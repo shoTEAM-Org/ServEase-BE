@@ -1,11 +1,11 @@
-# NOTE!!! OUTDATED ENDPOINTS. REQUIRES UPDATING.
-
 # ServEase API Endpoints
 
 Base URL: `http://localhost:5000`
 
 All protected endpoints require a `Bearer <token>` in the `Authorization` header.
 The token is a Supabase access token obtained from login or registration.
+
+> **Note on async endpoints:** Endpoints marked **(async)** use Kafka `emit` (fire-and-forget) and return `{ "status": "accepted" }` with HTTP 202. They do not return the operation result directly.
 
 ---
 
@@ -18,9 +18,9 @@ The token is a Supabase access token obtained from login or registration.
 | POST | `/api/auth/v2/register` | No | Register a provider (multipart — includes `document_file`) |
 | POST | `/api/auth/v1/refresh` | No | Refresh access token using a refresh token |
 | GET | `/api/auth/v1/me` | Yes | Get the current authenticated user |
-| POST | `/api/auth/v1/logout` | Yes | Sign out the current session |
-| POST | `/api/auth/v1/forgot-password` | No | Request a password-reset email |
-| POST | `/api/auth/v1/reset-password` | No | Reset password with token from email |
+| POST | `/api/auth/v1/logout` | Yes | Sign out the current session **(async)** |
+| POST | `/api/auth/v1/forgot-password` | No | Request a password-reset email **(async)** |
+| POST | `/api/auth/v1/reset-password` | No | Reset password with token from email **(async)** |
 
 ### Request Bodies
 
@@ -59,13 +59,13 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/users/v1/profile` | Yes | Get authenticated user's profile |
-| PATCH | `/api/users/v1/profile` | Yes | Update user profile (full_name, contact_number, date_of_birth) |
+| PATCH | `/api/users/v1/profile` | Yes | Update user profile (full_name, contact_number, date_of_birth) **(async)** |
 | GET | `/api/users/v1/customer-profile` | Yes | Get customer profile |
-| PATCH | `/api/users/v1/customer-profile` | Yes | Update customer profile |
+| PATCH | `/api/users/v1/customer-profile` | Yes | Update customer profile **(async)** |
 | GET | `/api/users/v1/addresses` | Yes | List user addresses |
-| POST | `/api/users/v1/addresses` | Yes | Add a new address |
-| PATCH | `/api/users/v1/addresses/:id` | Yes | Update an address |
-| DELETE | `/api/users/v1/addresses/:id` | Yes | Delete an address |
+| POST | `/api/users/v1/addresses` | Yes | Add a new address **(async)** |
+| PATCH | `/api/users/v1/addresses/:id` | Yes | Update an address **(async)** |
+| DELETE | `/api/users/v1/addresses/:id` | Yes | Delete an address **(async)** |
 
 ---
 
@@ -78,11 +78,11 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 | GET | `/api/booking/v1/history` | Yes | Get completed/cancelled/disputed bookings |
 | GET | `/api/booking/v1/requests` | Yes | Get pending booking requests (provider view) |
 | GET | `/api/booking/v1/:id` | Yes | Get a single booking by ID |
-| PATCH | `/api/booking/v1/:id/status` | Yes | Update booking status |
-| PATCH | `/api/booking/v1/:id/cancel` | Yes | Cancel a booking (with reason + explanation) |
+| PATCH | `/api/booking/v1/:id/status` | Yes | Update booking status **(async)** |
+| PATCH | `/api/booking/v1/:id/cancel` | Yes | Cancel a booking (with reason + explanation) **(async)** |
 | GET | `/api/booking/v1/:id/attachments` | Yes | Get booking attachments |
-| POST | `/api/booking/v1/:id/attachments` | Yes | Save booking attachment records |
-| POST | `/api/booking/v1/:id/disputes` | Yes | Create a dispute for a booking |
+| POST | `/api/booking/v1/:id/attachments` | Yes | Save booking attachment records **(async)** |
+| POST | `/api/booking/v1/:id/disputes` | Yes | Create a dispute for a booking **(async)** |
 
 ### Request Bodies
 
@@ -110,7 +110,7 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 | GET | `/api/chat/v1/conversations?role=customer\|provider` | Yes | List chat conversation summaries |
 | GET | `/api/chat/v1/conversations/:bookingId/messages` | Yes | Get messages for a booking conversation |
 | POST | `/api/chat/v1/conversations/:bookingId/messages` | Yes | Send a message in a booking conversation |
-| PATCH | `/api/chat/v1/conversations/:bookingId/read` | Yes | Mark conversation messages as read |
+| PATCH | `/api/chat/v1/conversations/:bookingId/read` | Yes | Mark conversation messages as read **(async)** |
 
 ---
 
@@ -124,9 +124,9 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 | GET | `/api/payments/v1/provider/history` | Yes | Get provider's payment history with details |
 | GET | `/api/payments/v1/provider/earnings-summary` | Yes | Get provider earnings summary and stats |
 | POST | `/api/payments/v1/booking/ensure` | Yes | Ensure a payment exists for a booking (upsert) |
-| PATCH | `/api/payments/v1/booking/mark-paid` | Yes | Mark a booking payment as paid |
-| PATCH | `/api/payments/v1/booking/:bookingId/cancel` | Yes | Cancel a booking payment |
-| PATCH | `/api/payments/v1/booking/:bookingId/amount` | Yes | Update payment amount for a booking |
+| PATCH | `/api/payments/v1/booking/mark-paid` | Yes | Mark a booking payment as paid **(async)** |
+| PATCH | `/api/payments/v1/booking/:bookingId/cancel` | Yes | Cancel a booking payment **(async)** |
+| PATCH | `/api/payments/v1/booking/:bookingId/amount` | Yes | Update payment amount for a booking **(async)** |
 
 ---
 
@@ -136,13 +136,13 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/provider/v1?serviceId=X` | Yes | Get providers by service category |
-| GET | `/api/provider/v1?search=X` | Yes | Search providers by keyword |
-| GET | `/api/provider/v1/:user_id` | Yes | Get provider profile with documents |
+| GET | `/api/provider/v1?serviceId=X` | No | Get providers by service category |
+| GET | `/api/provider/v1?search=X` | No | Search providers by keyword |
+| GET | `/api/provider/v1/:user_id` | No | Get provider profile with documents |
 | GET | `/api/provider/v1/dashboard/:id` | Yes | Get provider dashboard (jobs + earnings) |
-| GET | `/api/provider/v1/trust-score/:provider_id` | Yes | Get provider trust score |
-| GET | `/api/provider/v1/reviews/:id` | Yes | Get provider reviews and ratings |
-| PATCH | `/api/provider/v1/kyc/reupload` | Yes | Reupload KYC document (multipart) |
+| GET | `/api/provider/v1/trust-score/:provider_id` | No | Get provider trust score |
+| GET | `/api/provider/v1/reviews/:id` | No | Get provider reviews and ratings |
+| PATCH | `/api/provider/v1/kyc/reupload` | Yes | Reupload KYC document (multipart) **(async)** |
 
 ### Provider Bookings
 
@@ -150,55 +150,55 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 |--------|------|------|-------------|
 | GET | `/api/provider/v1/bookings` | Yes | Get all bookings for authenticated provider |
 | GET | `/api/provider/v1/booking/:id` | Yes | Get a specific booking (provider view) |
-| PATCH | `/api/provider/v1/booking/:id/status` | Yes | Update booking status (confirm, start, complete, cancel) |
+| PATCH | `/api/provider/v1/booking/:id/status` | Yes | Update booking status (confirm, start, complete, cancel) **(async)** |
 
 ### Availability
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/provider/v1/:id/availability` | Yes | Get weekly schedule and days off |
-| PUT | `/api/provider/v1/availability` | Yes | Save weekly schedule and days off |
-| GET | `/api/provider/v1/:id/reserved-slots?date=YYYY-MM-DD` | Yes | Get reserved time slots for a date |
-| GET | `/api/provider/v1/:id/availability/check?scheduled_at=&hours_required=` | Yes | Check if a time slot is available |
+| GET | `/api/provider/v1/:id/availability` | No | Get weekly schedule and days off |
+| PUT | `/api/provider/v1/availability` | Yes | Save weekly schedule and days off **(async)** |
+| GET | `/api/provider/v1/:id/reserved-slots?date=YYYY-MM-DD` | No | Get reserved time slots for a date |
+| GET | `/api/provider/v1/:id/availability/check?scheduled_at=&hours_required=` | No | Check if a time slot is available |
 
 ### Provider Services (Catalog)
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/provider/v1/my-services` | Yes | Get authenticated provider's service listings |
-| POST | `/api/provider/v1/my-services` | Yes | Create a new service listing |
-| PATCH | `/api/provider/v1/my-services/:serviceId` | Yes | Update a service listing |
-| DELETE | `/api/provider/v1/my-services/:serviceId` | Yes | Delete a service listing |
+| POST | `/api/provider/v1/my-services` | Yes | Create a new service listing **(async)** |
+| PATCH | `/api/provider/v1/my-services/:serviceId` | Yes | Update a service listing **(async)** |
+| DELETE | `/api/provider/v1/my-services/:serviceId` | Yes | Delete a service listing **(async)** |
 
 ### Profile Draft
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/provider/v1/:id/profile-draft` | Yes | Get provider profile draft |
-| PATCH | `/api/provider/v1/:id/profile-draft` | Yes | Save/update provider profile draft |
+| GET | `/api/provider/v1/:id/profile-draft` | No | Get provider profile draft |
+| PATCH | `/api/provider/v1/:id/profile-draft` | No | Save/update provider profile draft **(async)** |
 
 ### Reschedule Requests
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/provider/v1/reschedule-requests` | Yes | Create a reschedule request |
+| POST | `/api/provider/v1/reschedule-requests` | Yes | Create a reschedule request **(async)** |
 | GET | `/api/provider/v1/reschedule-requests/:bookingId` | Yes | Get reschedule requests for a booking |
-| PATCH | `/api/provider/v1/reschedule-requests/:requestId/review` | Yes | Approve or decline a reschedule request |
+| PATCH | `/api/provider/v1/reschedule-requests/:requestId/review` | Yes | Approve or decline a reschedule request **(async)** |
 
 ### Additional Charges
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/provider/v1/additional-charges` | Yes | Submit additional charge items |
+| POST | `/api/provider/v1/additional-charges` | Yes | Submit additional charge items **(async)** |
 | GET | `/api/provider/v1/additional-charges/:bookingId` | Yes | Get additional charges for a booking |
-| PATCH | `/api/provider/v1/additional-charges/review` | Yes | Approve or decline additional charges |
+| PATCH | `/api/provider/v1/additional-charges/review` | Yes | Approve or decline additional charges **(async)** |
 
 ### Reviews & Reports
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/provider/v1/reviews` | Yes | Submit a provider review |
-| POST | `/api/provider/v1/reports` | Yes | Submit a provider profile report |
+| POST | `/api/provider/v1/reviews` | Yes | Submit a provider review **(async)** |
+| POST | `/api/provider/v1/reports` | Yes | Submit a provider profile report **(async)** |
 
 ---
 
@@ -208,7 +208,7 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 |--------|------|------|-------------|
 | GET | `/api/customer/v1/dashboard/:id` | Yes | Get customer dashboard (pending + completed bookings) |
 | GET | `/api/customer/v1/profile` | Yes | Get customer profile |
-| PATCH | `/api/customer/v1/profile` | Yes | Update customer profile |
+| PATCH | `/api/customer/v1/profile` | Yes | Update customer profile **(async)** |
 
 ---
 
@@ -216,7 +216,7 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| PATCH | `/api/admin/v2/documents/status/:id` | Yes | Approve or reject a KYC document |
+| PATCH | `/api/admin/v2/documents/status/:id` | Yes | Approve or reject a KYC document **(async)** |
 
 ### Request Body
 
@@ -262,9 +262,9 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/notifications/v1` | Yes | Get all notifications for authenticated user |
-| PATCH | `/api/notifications/v1/read-all` | Yes | Mark all notifications as read |
+| PATCH | `/api/notifications/v1/read-all` | Yes | Mark all notifications as read **(async)** |
 | GET | `/api/notifications/v1/unread-count` | Yes | Get count of unread notifications |
-| PATCH | `/api/notifications/v1/:id/read` | Yes | Mark a single notification as read |
+| PATCH | `/api/notifications/v1/:id/read` | Yes | Mark a single notification as read **(async)** |
 
 ---
 
@@ -272,7 +272,7 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/support/v1/tickets` | Yes | Create a support ticket |
+| POST | `/api/support/v1/tickets` | Yes | Create a support ticket **(async)** |
 
 ### Request Body
 
@@ -287,6 +287,7 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 - **Framework**: NestJS monorepo — microservice logic lives in `apps/` (e.g. `apps/auth-service/`, `apps/booking-service/`), gateway controllers in `src/controllers/`, shared code in `libs/`
 - **Database**: Supabase (PostgreSQL) via `@supabase/supabase-js`
 - **Auth**: Bearer tokens validated via Supabase Auth (`SupabaseAuthGuard`)
+- **Messaging**: Kafka — request/response via `send`, fire-and-forget via `emit` (returns 202)
 - **File Uploads**: Multer for multipart handling, stored in Supabase Storage
 - **Validation**: `class-validator` DTOs with global `ValidationPipe`
 - **Port**: 5000 (configurable via `PORT` env var)
