@@ -112,30 +112,24 @@ export class AdminService {
       .single();
     if (error) throw new NotFoundException(`Customer ${id} not found`);
 
-    const { data: profile } = await this.supabase
-      .schema('identity_and_user')
-      .from('customer_profiles')
-      .select('*')
-      .eq('user_id', id)
-      .single();
-
-    const { count: bookingCount } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('*', { count: 'exact', head: true })
-      .eq('customer_id', id);
+    const [{ data: profile }, { count: bookingCount }] = await Promise.all([
+      this.supabase.schema('identity_and_user').from('customer_profiles').select('*').eq('user_id', id).single(),
+      this.supabase.schema('booking').from('bookings').select('*', { count: 'exact', head: true }).eq('customer_id', id),
+    ]);
 
     return { user, profile: profile || null, booking_count: bookingCount || 0 };
   }
 
   async updateCustomerStatus(id: string, status: string) {
-    const { error } = await this.supabase
+    const { data, error } = await this.supabase
       .schema('identity_and_user')
       .from('users')
       .update({ status })
       .eq('id', id)
-      .eq('role', 'customer');
+      .eq('role', 'customer')
+      .select('id');
     if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Customer ${id} not found`);
     return { ok: true };
   }
 
@@ -152,12 +146,14 @@ export class AdminService {
   }
 
   async deleteReview(id: string) {
-    const { error } = await this.supabase
+    const { data, error } = await this.supabase
       .schema('trust_and_reputation')
       .from('reviews')
       .delete()
-      .eq('id', id);
+      .eq('id', id)
+      .select('id');
     if (error) throw new InternalServerErrorException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Review ${id} not found`);
     return { ok: true };
   }
 
@@ -180,6 +176,9 @@ export class AdminService {
     const filtered: Record<string, any> = {};
     for (const key of allowed) {
       if (updates[key] !== undefined) filtered[key] = updates[key];
+    }
+    if (Object.keys(filtered).length === 0) {
+      throw new BadRequestException('No valid fields provided for update');
     }
     const { error } = await this.supabase
       .schema('identity_and_user')
