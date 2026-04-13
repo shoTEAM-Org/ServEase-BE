@@ -198,7 +198,8 @@ export class AdminService {
       .from('bookings')
       .select('*')
       .in('status', ['confirmed', 'in_progress'])
-      .order('scheduled_at', { ascending: true });
+      .order('scheduled_at', { ascending: true })
+      .range(0, 99);
     if (error) throw new InternalServerErrorException(error.message);
 
     const bookings = await Promise.all((data || []).map(async (b: any) => {
@@ -218,14 +219,16 @@ export class AdminService {
     return { bookings };
   }
 
-  async getDisputes() {
-    const { data, error } = await this.supabase
+  async getDisputes(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
       .schema('notification_and_support')
       .from('disputes')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
     if (error) throw new InternalServerErrorException(error.message);
-    return { disputes: data || [] };
+    return { disputes: data || [], total: count || 0, page, limit };
   }
 
   async updateDisputeStatus(id: string, status: string) {
@@ -240,14 +243,16 @@ export class AdminService {
     return { ok: true };
   }
 
-  async getSupportTickets() {
-    const { data, error } = await this.supabase
+  async getSupportTickets(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
       .schema('notification_and_support')
       .from('support_tickets')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
     if (error) throw new InternalServerErrorException(error.message);
-    return { tickets: data || [] };
+    return { tickets: data || [], total: count || 0, page, limit };
   }
 
   async updateSupportTicket(id: string, status: string) {
@@ -264,25 +269,29 @@ export class AdminService {
 
   // === FINANCE ===
 
-  async getProviderEarnings() {
-    const { data, error } = await this.supabase
+  async getProviderEarnings(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
       .schema('payment')
       .from('payments')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('status', 'completed')
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
     if (error) throw new InternalServerErrorException(error.message);
-    return { payments: data || [] };
+    return { payments: data || [], total: count || 0, page, limit };
   }
 
-  async getPayouts() {
-    const { data, error } = await this.supabase
+  async getPayouts(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
       .schema('payment')
       .from('provider_payouts')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
     if (error) throw new InternalServerErrorException(error.message);
-    return { payouts: data || [] };
+    return { payouts: data || [], total: count || 0, page, limit };
   }
 
   async updatePayout(id: string, status: string) {
@@ -297,15 +306,17 @@ export class AdminService {
     return { ok: true };
   }
 
-  async getRefunds() {
-    const { data, error } = await this.supabase
+  async getRefunds(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
       .schema('payment')
       .from('payments')
-      .select('*')
+      .select('*', { count: 'exact' })
       .in('status', ['refunded', 'cancelled'])
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
     if (error) throw new InternalServerErrorException(error.message);
-    return { payments: data || [] };
+    return { payments: data || [], total: count || 0, page, limit };
   }
 
   async markRefund(id: string) {
@@ -320,14 +331,16 @@ export class AdminService {
     return { ok: true };
   }
 
-  async getFailedPayments() {
-    const { data, error } = await this.supabase
+  async getFailedPayments(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
       .schema('payment')
       .from('payments')
-      .select('*')
+      .select('*', { count: 'exact' })
       .eq('status', 'failed')
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
     if (error) throw new InternalServerErrorException(error.message);
-    return { payments: data || [] };
+    return { payments: data || [], total: count || 0, page, limit };
   }
 }
