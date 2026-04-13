@@ -343,4 +343,288 @@ export class AdminService {
     if (error) throw new InternalServerErrorException(error.message);
     return { payments: data || [], total: count || 0, page, limit };
   }
+
+  // === MARKETPLACE ===
+
+  async createCategory(body: any) {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('service_categories')
+      .insert([body])
+      .select()
+      .single();
+    if (error) throw new BadRequestException(error.message);
+    return { category: data };
+  }
+
+  async updateCategory(id: string, body: any) {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('service_categories')
+      .update(body)
+      .eq('id', id)
+      .select('id');
+    if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Category ${id} not found`);
+    return { ok: true };
+  }
+
+  async deleteCategory(id: string) {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('service_categories')
+      .delete()
+      .eq('id', id)
+      .select('id');
+    if (error) throw new InternalServerErrorException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Category ${id} not found`);
+    return { ok: true };
+  }
+
+  async getAllServicesAdmin(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { services: data || [], total: count || 0, page, limit };
+  }
+
+  async updateService(id: string, body: any) {
+    const { provider_id, id: _id, ...updates } = body;
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .update(updates)
+      .eq('id', id)
+      .select('id');
+    if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Service ${id} not found`);
+    return { ok: true };
+  }
+
+  async deleteService(id: string) {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .delete()
+      .eq('id', id)
+      .select('id');
+    if (error) throw new InternalServerErrorException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Service ${id} not found`);
+    return { ok: true };
+  }
+
+  async getServiceAreas() {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('location')
+      .select('*');
+    if (error) throw new InternalServerErrorException(error.message);
+    return { areas: data || [] };
+  }
+
+  async createServiceArea(body: any) {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('location')
+      .insert([body])
+      .select()
+      .single();
+    if (error) throw new BadRequestException(error.message);
+    return { area: data };
+  }
+
+  async updateServiceArea(id: string, body: any) {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('location')
+      .update(body)
+      .eq('id', id)
+      .select('id');
+    if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Service area ${id} not found`);
+    return { ok: true };
+  }
+
+  async deleteServiceArea(id: string) {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('location')
+      .delete()
+      .eq('id', id)
+      .select('id');
+    if (error) throw new InternalServerErrorException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Service area ${id} not found`);
+    return { ok: true };
+  }
+
+  async sendBroadcast(body: {
+    user_ids?: string[];
+    role?: string;
+    title: string;
+    message: string;
+    type?: string;
+  }) {
+    let userIds: string[] = body.user_ids || [];
+
+    if (!userIds.length && body.role) {
+      const { data: users } = await this.supabase
+        .schema('identity_and_user')
+        .from('users')
+        .select('id')
+        .eq('role', body.role);
+      userIds = (users || []).map((u: any) => u.id);
+    }
+
+    if (!userIds.length) throw new BadRequestException('No target users found');
+
+    const notifications = userIds.map((uid: string) => ({
+      user_id: uid,
+      title: body.title,
+      message: body.message,
+      type: body.type || 'broadcast',
+      is_read: false,
+    }));
+
+    const { error } = await this.supabase
+      .schema('notification_and_support')
+      .from('notifications')
+      .insert(notifications);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { ok: true, sent_to: userIds.length };
+  }
+
+  // === REPORTS ===
+
+  private buildDateFilter(query: any, from?: string, to?: string, column = 'created_at') {
+    if (from) query = query.gte(column, from);
+    if (to) query = query.lte(column, to);
+    return query;
+  }
+
+  async getRevenueReport(from?: string, to?: string) {
+    let query = this.supabase
+      .schema('payment')
+      .from('payments')
+      .select('amount, status, created_at, provider_id');
+    query = this.buildDateFilter(query, from, to);
+    const { data, error } = await query;
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const completed = (data || []).filter((p: any) => p.status === 'completed');
+    const total = completed.reduce((acc: number, p: any) => acc + Number(p.amount), 0);
+    const platformFees = total * 0.1;
+    return {
+      total_revenue: total,
+      platform_fees: platformFees,
+      net_to_providers: total - platformFees,
+      transaction_count: completed.length,
+    };
+  }
+
+  async getBookingAnalytics(from?: string, to?: string) {
+    let query = this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('status, created_at');
+    query = this.buildDateFilter(query, from, to);
+    const { data, error } = await query;
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const bookings = data || [];
+    const byStatus = bookings.reduce((acc: any, b: any) => {
+      acc[b.status] = (acc[b.status] || 0) + 1;
+      return acc;
+    }, {});
+    return { total: bookings.length, by_status: byStatus };
+  }
+
+  async getUserReport(from?: string, to?: string) {
+    let query = this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .select('role, status, created_at');
+    query = this.buildDateFilter(query, from, to);
+    const { data, error } = await query;
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const users = data || [];
+    const byRole = users.reduce((acc: any, u: any) => {
+      acc[u.role] = (acc[u.role] || 0) + 1;
+      return acc;
+    }, {});
+    const byStatus = users.reduce((acc: any, u: any) => {
+      acc[u.status] = (acc[u.status] || 0) + 1;
+      return acc;
+    }, {});
+    return { total: users.length, by_role: byRole, by_status: byStatus };
+  }
+
+  async getBusinessReport(from?: string, to?: string) {
+    const [revenue, bookings, users] = await Promise.all([
+      this.getRevenueReport(from, to),
+      this.getBookingAnalytics(from, to),
+      this.getUserReport(from, to),
+    ]);
+    return { revenue, bookings, users };
+  }
+
+  async getFinancialReport(from?: string, to?: string) {
+    let paymentsQuery = this.supabase
+      .schema('payment')
+      .from('payments')
+      .select('*');
+    let payoutsQuery = this.supabase
+      .schema('payment')
+      .from('provider_payouts')
+      .select('*');
+    paymentsQuery = this.buildDateFilter(paymentsQuery, from, to);
+    payoutsQuery = this.buildDateFilter(payoutsQuery, from, to);
+
+    const [{ data: payments }, { data: payouts }] = await Promise.all([
+      paymentsQuery,
+      payoutsQuery,
+    ]);
+    return { payments: payments || [], payouts: payouts || [] };
+  }
+
+  async getPerformanceReport(from?: string, to?: string) {
+    let query = this.supabase
+      .schema('trust_and_reputation')
+      .from('reviews')
+      .select('reviewee_id, rating, created_at');
+    query = this.buildDateFilter(query, from, to);
+    const { data: reviews, error } = await query;
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const { data: profiles } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('user_id, business_name, average_rating, total_reviews, trust_score, verification_status');
+
+    return { reviews: reviews || [], provider_profiles: profiles || [] };
+  }
+
+  async getComplianceReport(from?: string, to?: string) {
+    let disputesQuery = this.supabase
+      .schema('notification_and_support')
+      .from('disputes')
+      .select('*');
+    let reportsQuery = this.supabase
+      .schema('trust_and_reputation')
+      .from('provider_profile_reports')
+      .select('*');
+    disputesQuery = this.buildDateFilter(disputesQuery, from, to);
+    reportsQuery = this.buildDateFilter(reportsQuery, from, to);
+
+    const [{ data: disputes }, { data: reports }] = await Promise.all([
+      disputesQuery,
+      reportsQuery,
+    ]);
+    return { disputes: disputes || [], provider_reports: reports || [] };
+  }
 }
