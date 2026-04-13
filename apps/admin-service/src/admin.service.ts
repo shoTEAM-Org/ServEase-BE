@@ -394,7 +394,7 @@ export class AdminService {
   }
 
   async updateService(id: string, body: any) {
-    const { provider_id, id: _id, ...updates } = body;
+    const { provider_id: _provider_id, id: _id, ...updates } = body;
     const { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
@@ -585,10 +585,12 @@ export class AdminService {
     paymentsQuery = this.buildDateFilter(paymentsQuery, from, to);
     payoutsQuery = this.buildDateFilter(payoutsQuery, from, to);
 
-    const [{ data: payments }, { data: payouts }] = await Promise.all([
+    const [{ data: payments, error: paymentsError }, { data: payouts, error: payoutsError }] = await Promise.all([
       paymentsQuery,
       payoutsQuery,
     ]);
+    if (paymentsError) throw new InternalServerErrorException(paymentsError.message);
+    if (payoutsError) throw new InternalServerErrorException(payoutsError.message);
     return { payments: payments || [], payouts: payouts || [] };
   }
 
@@ -621,10 +623,12 @@ export class AdminService {
     disputesQuery = this.buildDateFilter(disputesQuery, from, to);
     reportsQuery = this.buildDateFilter(reportsQuery, from, to);
 
-    const [{ data: disputes }, { data: reports }] = await Promise.all([
+    const [{ data: disputes, error: disputesError }, { data: reports, error: reportsError }] = await Promise.all([
       disputesQuery,
       reportsQuery,
     ]);
+    if (disputesError) throw new InternalServerErrorException(disputesError.message);
+    if (reportsError) throw new InternalServerErrorException(reportsError.message);
     return { disputes: disputes || [], provider_reports: reports || [] };
   }
 }
