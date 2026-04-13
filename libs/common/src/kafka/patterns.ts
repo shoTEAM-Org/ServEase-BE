@@ -87,7 +87,56 @@ export const CUSTOMER_PATTERNS = {
 } as const;
 
 export const ADMIN_PATTERNS = {
+  // Existing
   UPDATE_DOCUMENT_STATUS: 'admin.update-document-status',
+
+  // User Management
+  GET_CUSTOMERS: 'admin.users.get-customers',
+  GET_CUSTOMER_BY_ID: 'admin.users.get-customer-by-id',
+  UPDATE_CUSTOMER_STATUS: 'admin.users.update-customer-status',
+  GET_REVIEWS: 'admin.users.get-reviews',
+  DELETE_REVIEW: 'admin.users.delete-review',
+
+  // Account
+  GET_ADMIN_PROFILE: 'admin.account.get-profile',
+  UPDATE_ADMIN_PROFILE: 'admin.account.update-profile',
+
+  // Operations
+  GET_ONGOING: 'admin.ops.get-ongoing',
+  GET_DISPUTES: 'admin.ops.get-disputes',
+  UPDATE_DISPUTE: 'admin.ops.update-dispute',
+  GET_SUPPORT_TICKETS: 'admin.ops.get-support-tickets',
+  UPDATE_SUPPORT_TICKET: 'admin.ops.update-support-ticket',
+
+  // Finance
+  GET_EARNINGS: 'admin.finance.get-earnings',
+  GET_PAYOUTS: 'admin.finance.get-payouts',
+  UPDATE_PAYOUT: 'admin.finance.update-payout',
+  GET_REFUNDS: 'admin.finance.get-refunds',
+  MARK_REFUND: 'admin.finance.mark-refund',
+  GET_FAILED_PAYMENTS: 'admin.finance.get-failed-payments',
+
+  // Marketplace
+  CREATE_CATEGORY: 'admin.marketplace.create-category',
+  UPDATE_CATEGORY: 'admin.marketplace.update-category',
+  DELETE_CATEGORY: 'admin.marketplace.delete-category',
+  GET_ALL_SERVICES: 'admin.marketplace.get-all-services',
+  UPDATE_SERVICE: 'admin.marketplace.update-service',
+  DELETE_SERVICE: 'admin.marketplace.delete-service',
+  GET_SERVICE_AREAS: 'admin.marketplace.get-service-areas',
+  CREATE_SERVICE_AREA: 'admin.marketplace.create-service-area',
+  UPDATE_SERVICE_AREA: 'admin.marketplace.update-service-area',
+  DELETE_SERVICE_AREA: 'admin.marketplace.delete-service-area',
+  SEND_BROADCAST: 'admin.marketplace.send-broadcast',
+
+  // Reports
+  GET_REVENUE_REPORT: 'admin.reports.revenue',
+  GET_BOOKING_ANALYTICS: 'admin.reports.bookings',
+  GET_BUSINESS_REPORT: 'admin.reports.business',
+  GET_FINANCIAL_REPORT: 'admin.reports.financial',
+  GET_USER_REPORT: 'admin.reports.users',
+  GET_PERFORMANCE_REPORT: 'admin.reports.performance',
+  GET_COMPLIANCE_REPORT: 'admin.reports.compliance',
 } as const;
 
 export const CATALOG_PATTERNS = {
