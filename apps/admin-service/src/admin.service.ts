@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 
@@ -84,5 +85,109 @@ export class AdminService {
         reviewed_at: updatedDoc.reviewed_at,
       },
     };
+  }
+
+  // === USER MANAGEMENT ===
+
+  async getCustomers(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .select('id, full_name, email, contact_number, status, created_at', { count: 'exact' })
+      .eq('role', 'customer')
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { customers: data || [], total: count || 0, page, limit };
+  }
+
+  async getCustomerById(id: string) {
+    const { data: user, error } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .select('id, full_name, email, contact_number, status, created_at')
+      .eq('id', id)
+      .eq('role', 'customer')
+      .single();
+    if (error) throw new NotFoundException(`Customer ${id} not found`);
+
+    const { data: profile } = await this.supabase
+      .schema('identity_and_user')
+      .from('customer_profiles')
+      .select('*')
+      .eq('user_id', id)
+      .single();
+
+    const { count: bookingCount } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('*', { count: 'exact', head: true })
+      .eq('customer_id', id);
+
+    return { user, profile: profile || null, booking_count: bookingCount || 0 };
+  }
+
+  async updateCustomerStatus(id: string, status: string) {
+    const { error } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .update({ status })
+      .eq('id', id)
+      .eq('role', 'customer');
+    if (error) throw new BadRequestException(error.message);
+    return { ok: true };
+  }
+
+  async getReviews(page = 1, limit = 20) {
+    const offset = (page - 1) * limit;
+    const { data, error, count } = await this.supabase
+      .schema('trust_and_reputation')
+      .from('reviews')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { reviews: data || [], total: count || 0, page, limit };
+  }
+
+  async deleteReview(id: string) {
+    const { error } = await this.supabase
+      .schema('trust_and_reputation')
+      .from('reviews')
+      .delete()
+      .eq('id', id);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { ok: true };
+  }
+
+  // === ACCOUNT ===
+
+  async getAdminProfile(userId: string) {
+    const { data, error } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .select('id, full_name, email, contact_number, status, created_at')
+      .eq('id', userId)
+      .eq('role', 'admin')
+      .single();
+    if (error) throw new NotFoundException('Admin profile not found');
+    return { profile: data };
+  }
+
+  async updateAdminProfile(userId: string, updates: Record<string, any>) {
+    const allowed = ['full_name', 'contact_number'];
+    const filtered: Record<string, any> = {};
+    for (const key of allowed) {
+      if (updates[key] !== undefined) filtered[key] = updates[key];
+    }
+    const { error } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .update(filtered)
+      .eq('id', userId)
+      .eq('role', 'admin');
+    if (error) throw new InternalServerErrorException(error.message);
+    return { ok: true };
   }
 }
