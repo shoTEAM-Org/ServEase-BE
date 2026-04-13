@@ -189,4 +189,145 @@ export class AdminService {
     if (error) throw new InternalServerErrorException(error.message);
     return { ok: true };
   }
+
+  // === OPERATIONS ===
+
+  async getOngoingServices() {
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('*')
+      .in('status', ['confirmed', 'in_progress'])
+      .order('scheduled_at', { ascending: true });
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const bookings = await Promise.all((data || []).map(async (b: any) => {
+      const { data: provider } = await this.supabase
+        .schema('identity_and_user').from('users')
+        .select('full_name').eq('id', b.provider_id).single();
+      const { data: customer } = await this.supabase
+        .schema('identity_and_user').from('users')
+        .select('full_name').eq('id', b.customer_id).single();
+      return {
+        ...b,
+        provider_name: provider?.full_name || '',
+        customer_name: customer?.full_name || '',
+      };
+    }));
+
+    return { bookings };
+  }
+
+  async getDisputes() {
+    const { data, error } = await this.supabase
+      .schema('notification_and_support')
+      .from('disputes')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+    return { disputes: data || [] };
+  }
+
+  async updateDisputeStatus(id: string, status: string) {
+    const { data, error } = await this.supabase
+      .schema('notification_and_support')
+      .from('disputes')
+      .update({ status })
+      .eq('id', id)
+      .select('id');
+    if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Dispute ${id} not found`);
+    return { ok: true };
+  }
+
+  async getSupportTickets() {
+    const { data, error } = await this.supabase
+      .schema('notification_and_support')
+      .from('support_tickets')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+    return { tickets: data || [] };
+  }
+
+  async updateSupportTicket(id: string, status: string) {
+    const { data, error } = await this.supabase
+      .schema('notification_and_support')
+      .from('support_tickets')
+      .update({ status })
+      .eq('id', id)
+      .select('id');
+    if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Support ticket ${id} not found`);
+    return { ok: true };
+  }
+
+  // === FINANCE ===
+
+  async getProviderEarnings() {
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('payments')
+      .select('*')
+      .eq('status', 'completed')
+      .order('created_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+    return { payments: data || [] };
+  }
+
+  async getPayouts() {
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('provider_payouts')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+    return { payouts: data || [] };
+  }
+
+  async updatePayout(id: string, status: string) {
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('provider_payouts')
+      .update({ status })
+      .eq('id', id)
+      .select('id');
+    if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Payout ${id} not found`);
+    return { ok: true };
+  }
+
+  async getRefunds() {
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('payments')
+      .select('*')
+      .in('status', ['refunded', 'cancelled'])
+      .order('created_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+    return { payments: data || [] };
+  }
+
+  async markRefund(id: string) {
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('payments')
+      .update({ status: 'refunded' })
+      .eq('id', id)
+      .select('id');
+    if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) throw new NotFoundException(`Payment ${id} not found`);
+    return { ok: true };
+  }
+
+  async getFailedPayments() {
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('payments')
+      .select('*')
+      .eq('status', 'failed')
+      .order('created_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+    return { payments: data || [] };
+  }
 }
