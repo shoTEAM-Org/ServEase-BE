@@ -37,6 +37,20 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.GET_USER_REPORT,
       ADMIN_PATTERNS.GET_PERFORMANCE_REPORT,
       ADMIN_PATTERNS.GET_COMPLIANCE_REPORT,
+      // Account settings & activity log (stubs)
+      ADMIN_PATTERNS.GET_ACCOUNT_SETTINGS,
+      ADMIN_PATTERNS.GET_ACTIVITY_LOG,
+      // Promotions (stubs)
+      ADMIN_PATTERNS.GET_PROMOTIONS,
+      ADMIN_PATTERNS.CREATE_PROMOTION,
+      // Settings (stubs)
+      ADMIN_PATTERNS.GET_COMMISSION,
+      ADMIN_PATTERNS.GET_ROLES,
+      ADMIN_PATTERNS.CREATE_ROLE,
+      ADMIN_PATTERNS.GET_SECURITY,
+      ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS,
+      ADMIN_PATTERNS.GET_AUDIT_LOGS,
+      ADMIN_PATTERNS.GET_INTEGRATIONS,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
     await this.kafka.connect();
   }
@@ -86,6 +100,30 @@ export class AdminController implements OnModuleInit {
   updateAdminProfile(@Request() req: any, @Body() body: any) {
     this.kafka.emit(ADMIN_PATTERNS.UPDATE_ADMIN_PROFILE, { userId: req['user'].id, ...body });
     return { status: 'accepted' };
+  }
+
+  @Get('v1/account/settings')
+  getAccountSettings(@Request() req: any) {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_ACCOUNT_SETTINGS, { userId: req['user'].id }));
+  }
+
+  @Patch('v1/account/settings') @HttpCode(202)
+  updateAccountSettings(@Request() req: any, @Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_ACCOUNT_SETTINGS, { userId: req['user'].id, ...body });
+    return { status: 'accepted' };
+  }
+
+  @Get('v1/account/activity-log')
+  getActivityLog(
+    @Request() req: any,
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_ACTIVITY_LOG, {
+      userId: req['user'].id, page: +page, limit: +limit, from, to,
+    }));
   }
 
   // ── OPERATIONS ────────────────────────────────────────────
@@ -209,6 +247,123 @@ export class AdminController implements OnModuleInit {
   @Post('v1/marketplace/broadcasts') @HttpCode(202)
   sendBroadcast(@Body() body: any) {
     this.kafka.emit(ADMIN_PATTERNS.SEND_BROADCAST, body);
+    return { status: 'accepted' };
+  }
+
+  @Get('v1/marketplace/promotions')
+  getPromotions(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('status') status?: string,
+    @Query('type') type?: string,
+    @Query('search') search?: string,
+  ) {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_PROMOTIONS, {
+      page: +page, limit: +limit, status, type, search,
+    }));
+  }
+
+  @Post('v1/marketplace/promotions')
+  createPromotion(@Body() body: any) {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.CREATE_PROMOTION, body));
+  }
+
+  @Patch('v1/marketplace/promotions/:id') @HttpCode(202)
+  updatePromotion(@Param('id') id: string, @Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_PROMOTION, { id, ...body });
+    return { status: 'accepted' };
+  }
+
+  @Delete('v1/marketplace/promotions/:id') @HttpCode(202)
+  deletePromotion(@Param('id') id: string) {
+    this.kafka.emit(ADMIN_PATTERNS.DELETE_PROMOTION, { id });
+    return { status: 'accepted' };
+  }
+
+  // ── SETTINGS ─────────────────────────────────────────────
+  @Get('v1/settings/commission')
+  getCommission() {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_COMMISSION, {}));
+  }
+
+  @Patch('v1/settings/commission') @HttpCode(202)
+  updateCommission(@Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_COMMISSION, body);
+    return { status: 'accepted' };
+  }
+
+  @Get('v1/settings/roles')
+  getRoles(@Query('page') page = '1', @Query('limit') limit = '20') {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_ROLES, { page: +page, limit: +limit }));
+  }
+
+  @Post('v1/settings/roles')
+  createRole(@Body() body: any) {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.CREATE_ROLE, body));
+  }
+
+  @Patch('v1/settings/roles/:id') @HttpCode(202)
+  updateRole(@Param('id') id: string, @Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_ROLE, { id, ...body });
+    return { status: 'accepted' };
+  }
+
+  @Delete('v1/settings/roles/:id') @HttpCode(202)
+  deleteRole(@Param('id') id: string) {
+    this.kafka.emit(ADMIN_PATTERNS.DELETE_ROLE, { id });
+    return { status: 'accepted' };
+  }
+
+  @Post('v1/settings/roles/assign') @HttpCode(202)
+  assignRole(@Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.ASSIGN_ROLE, body);
+    return { status: 'accepted' };
+  }
+
+  @Get('v1/settings/security')
+  getSecuritySettings() {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_SECURITY, {}));
+  }
+
+  @Patch('v1/settings/security') @HttpCode(202)
+  updateSecuritySettings(@Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_SECURITY, body);
+    return { status: 'accepted' };
+  }
+
+  @Get('v1/settings/notifications')
+  getNotificationSettings(@Query('page') page = '1', @Query('limit') limit = '20') {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS, { page: +page, limit: +limit }));
+  }
+
+  @Patch('v1/settings/notifications/:id') @HttpCode(202)
+  updateNotificationSetting(@Param('id') id: string, @Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTING, { id, ...body });
+    return { status: 'accepted' };
+  }
+
+  @Get('v1/settings/logs')
+  getAuditLogs(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('user_id') userId?: string,
+    @Query('action') action?: string,
+  ) {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_AUDIT_LOGS, {
+      page: +page, limit: +limit, from, to, user_id: userId, action,
+    }));
+  }
+
+  @Get('v1/settings/integrations')
+  getIntegrations() {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_INTEGRATIONS, {}));
+  }
+
+  @Patch('v1/settings/integrations/:id') @HttpCode(202)
+  updateIntegration(@Param('id') id: string, @Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_INTEGRATION, { id, ...body });
     return { status: 'accepted' };
   }
 

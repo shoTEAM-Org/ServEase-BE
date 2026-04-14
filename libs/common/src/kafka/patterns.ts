@@ -100,6 +100,9 @@ export const ADMIN_PATTERNS = {
   // Account
   GET_ADMIN_PROFILE: 'admin.account.get-profile',
   UPDATE_ADMIN_PROFILE: 'admin.account.update-profile',
+  GET_ACCOUNT_SETTINGS: 'admin.account.get-settings',
+  UPDATE_ACCOUNT_SETTINGS: 'admin.account.update-settings',
+  GET_ACTIVITY_LOG: 'admin.account.get-activity-log',
 
   // Operations
   GET_ONGOING: 'admin.ops.get-ongoing',
@@ -128,6 +131,26 @@ export const ADMIN_PATTERNS = {
   UPDATE_SERVICE_AREA: 'admin.marketplace.update-service-area',
   DELETE_SERVICE_AREA: 'admin.marketplace.delete-service-area',
   SEND_BROADCAST: 'admin.marketplace.send-broadcast',
+  GET_PROMOTIONS: 'admin.marketplace.get-promotions',
+  CREATE_PROMOTION: 'admin.marketplace.create-promotion',
+  UPDATE_PROMOTION: 'admin.marketplace.update-promotion',
+  DELETE_PROMOTION: 'admin.marketplace.delete-promotion',
+
+  // Settings
+  GET_COMMISSION: 'admin.settings.get-commission',
+  UPDATE_COMMISSION: 'admin.settings.update-commission',
+  GET_ROLES: 'admin.settings.get-roles',
+  CREATE_ROLE: 'admin.settings.create-role',
+  UPDATE_ROLE: 'admin.settings.update-role',
+  DELETE_ROLE: 'admin.settings.delete-role',
+  ASSIGN_ROLE: 'admin.settings.assign-role',
+  GET_SECURITY: 'admin.settings.get-security',
+  UPDATE_SECURITY: 'admin.settings.update-security',
+  GET_NOTIFICATION_SETTINGS: 'admin.settings.get-notifications',
+  UPDATE_NOTIFICATION_SETTING: 'admin.settings.update-notification',
+  GET_AUDIT_LOGS: 'admin.settings.get-logs',
+  GET_INTEGRATIONS: 'admin.settings.get-integrations',
+  UPDATE_INTEGRATION: 'admin.settings.update-integration',
 
   // Reports
   GET_REVENUE_REPORT: 'admin.reports.revenue',

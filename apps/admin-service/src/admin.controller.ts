@@ -50,6 +50,22 @@ export class AdminKafkaController {
     return this.adminService.updateAdminProfile(data.userId, data);
   }
 
+  @MessagePattern(ADMIN_PATTERNS.GET_ACCOUNT_SETTINGS)
+  async getAccountSettings(@Payload() data: any) {
+    return this.adminService.getAccountSettings(data.userId);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_ACCOUNT_SETTINGS)
+  async updateAccountSettings(@Payload() data: any) {
+    const { userId, ...body } = data;
+    return this.adminService.updateAccountSettings(userId, body);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_ACTIVITY_LOG)
+  async getActivityLog(@Payload() data: any) {
+    return this.adminService.getActivityLog(data.userId, data.page, data.limit, data.from, data.to);
+  }
+
   // === OPERATIONS ===
   @MessagePattern(ADMIN_PATTERNS.GET_ONGOING)
   async getOngoing(@Payload() data: any) {
@@ -164,6 +180,103 @@ export class AdminKafkaController {
   @EventPattern(ADMIN_PATTERNS.SEND_BROADCAST)
   async sendBroadcast(@Payload() data: any) {
     return this.adminService.sendBroadcast(data);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_PROMOTIONS)
+  async getPromotions(@Payload() data: any) {
+    const { page, limit, ...filters } = data;
+    return this.adminService.getPromotions(page, limit, filters);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.CREATE_PROMOTION)
+  async createPromotion(@Payload() data: any) {
+    return this.adminService.createPromotion(data);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_PROMOTION)
+  async updatePromotion(@Payload() data: any) {
+    const { id, ...body } = data;
+    return this.adminService.updatePromotion(id, body);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.DELETE_PROMOTION)
+  async deletePromotion(@Payload() data: any) {
+    return this.adminService.deletePromotion(data.id);
+  }
+
+  // === SETTINGS ===
+  @MessagePattern(ADMIN_PATTERNS.GET_COMMISSION)
+  async getCommission() {
+    return this.adminService.getCommission();
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_COMMISSION)
+  async updateCommission(@Payload() data: any) {
+    return this.adminService.updateCommission(data);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_ROLES)
+  async getRoles(@Payload() data: any) {
+    return this.adminService.getRoles(data.page, data.limit);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.CREATE_ROLE)
+  async createRole(@Payload() data: any) {
+    return this.adminService.createRole(data);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_ROLE)
+  async updateRole(@Payload() data: any) {
+    const { id, ...body } = data;
+    return this.adminService.updateRole(id, body);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.DELETE_ROLE)
+  async deleteRole(@Payload() data: any) {
+    return this.adminService.deleteRole(data.id);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.ASSIGN_ROLE)
+  async assignRole(@Payload() data: any) {
+    return this.adminService.assignRole(data);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_SECURITY)
+  async getSecuritySettings() {
+    return this.adminService.getSecuritySettings();
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_SECURITY)
+  async updateSecuritySettings(@Payload() data: any) {
+    return this.adminService.updateSecuritySettings(data);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS)
+  async getNotificationSettings(@Payload() data: any) {
+    return this.adminService.getNotificationSettings(data.page, data.limit);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTING)
+  async updateNotificationSetting(@Payload() data: any) {
+    const { id, ...body } = data;
+    return this.adminService.updateNotificationSetting(id, body);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_AUDIT_LOGS)
+  async getAuditLogs(@Payload() data: any) {
+    const { page, limit, ...filters } = data;
+    return this.adminService.getAuditLogs(page, limit, filters);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_INTEGRATIONS)
+  async getIntegrations() {
+    return this.adminService.getIntegrations();
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_INTEGRATION)
+  async updateIntegration(@Payload() data: any) {
+    const { id, ...body } = data;
+    return this.adminService.updateIntegration(id, body);
   }
 
   // === REPORTS ===

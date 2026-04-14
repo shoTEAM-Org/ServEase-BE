@@ -171,6 +171,36 @@ export class AdminService {
     return { profile: data };
   }
 
+  // === ACCOUNT SETTINGS (STUB) ===
+
+  async getAccountSettings(userId: string) {
+    // STUB — table `admin_settings` not yet created
+    return {
+      settings: {
+        language: 'en',
+        timezone: 'Asia/Manila',
+        theme: 'light',
+        email_notifications: true,
+        push_notifications: false,
+        booking_alerts: true,
+        payment_alerts: true,
+        dispute_alerts: true,
+        data_retention_days: 90,
+        updated_at: new Date().toISOString(),
+      },
+    };
+  }
+
+  async updateAccountSettings(_userId: string, _body: Record<string, any>) {
+    // STUB — table `admin_settings` not yet created
+    return { ok: true };
+  }
+
+  async getActivityLog(userId: string, page = 1, limit = 20, _from?: string, _to?: string) {
+    // STUB — table `audit_log` not yet created
+    return { logs: [], total: 0, page, limit };
+  }
+
   async updateAdminProfile(userId: string, updates: Record<string, any>) {
     const allowed = ['full_name', 'contact_number'];
     const filtered: Record<string, any> = {};
@@ -462,6 +492,28 @@ export class AdminService {
     return { ok: true };
   }
 
+  // === PROMOTIONS (STUB) ===
+
+  async getPromotions(page = 1, limit = 20, _filters?: Record<string, any>) {
+    // STUB — table `promotions` not yet created
+    return { promotions: [], total: 0, page, limit };
+  }
+
+  async createPromotion(_body: Record<string, any>) {
+    // STUB — table `promotions` not yet created
+    return { promotion: null };
+  }
+
+  async updatePromotion(_id: string, _body: Record<string, any>) {
+    // STUB — table `promotions` not yet created
+    return { ok: true };
+  }
+
+  async deletePromotion(_id: string) {
+    // STUB — table `promotions` not yet created
+    return { ok: true };
+  }
+
   async sendBroadcast(body: {
     user_ids?: string[];
     role?: string;
@@ -496,6 +548,86 @@ export class AdminService {
       .insert(notifications);
     if (error) throw new InternalServerErrorException(error.message);
     return { ok: true, sent_to: userIds.length };
+  }
+
+  // === SETTINGS (STUBS) ===
+
+  async getCommission() {
+    // STUB — table `platform_config` not yet created
+    return {
+      default_commission_rate: 0.18,
+      category_overrides: [],
+    };
+  }
+
+  async updateCommission(_body: Record<string, any>) {
+    // STUB — table `platform_config` not yet created
+    return { ok: true };
+  }
+
+  async getRoles(page = 1, limit = 20) {
+    // STUB — table `admin_roles` not yet created
+    return { roles: [], total: 0, page, limit };
+  }
+
+  async createRole(_body: Record<string, any>) {
+    // STUB — table `admin_roles` not yet created
+    return { role: null };
+  }
+
+  async updateRole(_id: string, _body: Record<string, any>) {
+    // STUB — table `admin_roles` not yet created
+    return { ok: true };
+  }
+
+  async deleteRole(_id: string) {
+    // STUB — table `admin_roles` not yet created
+    return { ok: true };
+  }
+
+  async assignRole(_body: Record<string, any>) {
+    // STUB — table `admin_role_assignments` not yet created
+    return { ok: true };
+  }
+
+  async getSecuritySettings() {
+    // STUB — table `platform_config` not yet created
+    return {
+      require_2fa: false,
+      session_timeout_minutes: 60,
+      ip_whitelist_enabled: false,
+      ip_whitelist: [],
+    };
+  }
+
+  async updateSecuritySettings(_body: Record<string, any>) {
+    // STUB — table `platform_config` not yet created
+    return { ok: true };
+  }
+
+  async getNotificationSettings(page = 1, limit = 20) {
+    // STUB — table `notification_config` not yet created
+    return { notifications: [], total: 0, page, limit };
+  }
+
+  async updateNotificationSetting(_id: string, _body: Record<string, any>) {
+    // STUB — table `notification_config` not yet created
+    return { ok: true };
+  }
+
+  async getAuditLogs(page = 1, limit = 20, _filters?: Record<string, any>) {
+    // STUB — table `audit_log` not yet created
+    return { logs: [], total: 0, page, limit };
+  }
+
+  async getIntegrations() {
+    // STUB — table `integrations_config` not yet created
+    return { integrations: [] };
+  }
+
+  async updateIntegration(_id: string, _body: Record<string, any>) {
+    // STUB — table `integrations_config` not yet created
+    return { ok: true };
   }
 
   // === REPORTS ===
