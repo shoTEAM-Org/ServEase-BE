@@ -94,24 +94,31 @@ export const ADMIN_PATTERNS = {
   GET_CUSTOMERS: 'admin.users.get-customers',
   GET_CUSTOMER_BY_ID: 'admin.users.get-customer-by-id',
   UPDATE_CUSTOMER_STATUS: 'admin.users.update-customer-status',
+  GET_PROVIDERS: 'admin.users.get-providers',
+  GET_PROVIDER_BY_ID: 'admin.users.get-provider-by-id',
+  UPDATE_PROVIDER_STATUS: 'admin.users.update-provider-status',
+  GET_PROVIDER_APPLICATIONS: 'admin.users.get-provider-applications',
+  GET_PROVIDER_APPLICATION_BY_ID: 'admin.users.get-provider-application-by-id',
+  UPDATE_PROVIDER_APPLICATION_STATUS: 'admin.users.update-provider-application-status',
   GET_REVIEWS: 'admin.users.get-reviews',
   DELETE_REVIEW: 'admin.users.delete-review',
 
   // Account
   GET_ADMIN_PROFILE: 'admin.account.get-profile',
   UPDATE_ADMIN_PROFILE: 'admin.account.update-profile',
-  GET_ACCOUNT_SETTINGS: 'admin.account.get-settings',
-  UPDATE_ACCOUNT_SETTINGS: 'admin.account.update-settings',
-  GET_ACTIVITY_LOG: 'admin.account.get-activity-log',
 
   // Operations
+  GET_ALL_BOOKINGS: 'admin.ops.get-all-bookings',
   GET_ONGOING: 'admin.ops.get-ongoing',
+  UPDATE_BOOKING_STATUS: 'admin.ops.update-booking-status',
+  CREATE_BOOKING_DISPUTE: 'admin.ops.create-booking-dispute',
   GET_DISPUTES: 'admin.ops.get-disputes',
   UPDATE_DISPUTE: 'admin.ops.update-dispute',
   GET_SUPPORT_TICKETS: 'admin.ops.get-support-tickets',
   UPDATE_SUPPORT_TICKET: 'admin.ops.update-support-ticket',
 
   // Finance
+  GET_TRANSACTIONS: 'admin.finance.get-transactions',
   GET_EARNINGS: 'admin.finance.get-earnings',
   GET_PAYOUTS: 'admin.finance.get-payouts',
   UPDATE_PAYOUT: 'admin.finance.update-payout',
@@ -120,6 +127,7 @@ export const ADMIN_PATTERNS = {
   GET_FAILED_PAYMENTS: 'admin.finance.get-failed-payments',
 
   // Marketplace
+  GET_CATEGORIES: 'admin.marketplace.get-categories',
   CREATE_CATEGORY: 'admin.marketplace.create-category',
   UPDATE_CATEGORY: 'admin.marketplace.update-category',
   DELETE_CATEGORY: 'admin.marketplace.delete-category',
@@ -131,26 +139,6 @@ export const ADMIN_PATTERNS = {
   UPDATE_SERVICE_AREA: 'admin.marketplace.update-service-area',
   DELETE_SERVICE_AREA: 'admin.marketplace.delete-service-area',
   SEND_BROADCAST: 'admin.marketplace.send-broadcast',
-  GET_PROMOTIONS: 'admin.marketplace.get-promotions',
-  CREATE_PROMOTION: 'admin.marketplace.create-promotion',
-  UPDATE_PROMOTION: 'admin.marketplace.update-promotion',
-  DELETE_PROMOTION: 'admin.marketplace.delete-promotion',
-
-  // Settings
-  GET_COMMISSION: 'admin.settings.get-commission',
-  UPDATE_COMMISSION: 'admin.settings.update-commission',
-  GET_ROLES: 'admin.settings.get-roles',
-  CREATE_ROLE: 'admin.settings.create-role',
-  UPDATE_ROLE: 'admin.settings.update-role',
-  DELETE_ROLE: 'admin.settings.delete-role',
-  ASSIGN_ROLE: 'admin.settings.assign-role',
-  GET_SECURITY: 'admin.settings.get-security',
-  UPDATE_SECURITY: 'admin.settings.update-security',
-  GET_NOTIFICATION_SETTINGS: 'admin.settings.get-notifications',
-  UPDATE_NOTIFICATION_SETTING: 'admin.settings.update-notification',
-  GET_AUDIT_LOGS: 'admin.settings.get-logs',
-  GET_INTEGRATIONS: 'admin.settings.get-integrations',
-  UPDATE_INTEGRATION: 'admin.settings.update-integration',
 
   // Reports
   GET_REVENUE_REPORT: 'admin.reports.revenue',

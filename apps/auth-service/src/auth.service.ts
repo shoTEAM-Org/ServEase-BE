@@ -1,5 +1,5 @@
 import { Injectable, UnauthorizedException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
-import { SupabaseClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { RegisterProviderDto, LoginUserDto } from '@app/common';
 import 'multer';
 
@@ -7,8 +7,28 @@ import 'multer';
 export class AuthService {
   constructor(private readonly supabase: SupabaseClient) {}
 
+  private createAuthClient() {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SECRET_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      throw new InternalServerErrorException('Supabase environment variables are missing.');
+    }
+
+    // Use a dedicated auth client so user sign-in sessions do not leak into the
+    // shared service-role client used for backend table reads.
+    return createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+        detectSessionInUrl: false,
+      },
+    });
+  }
+
   async register(dto: any) {
     try {
+      const authClient = this.createAuthClient();
       const { data: authData, error: authError } = await this.supabase.auth.signUp({
         email: dto.email,
         password: dto.password,
@@ -31,7 +51,7 @@ export class AuthService {
         throw new Error(`Profile Table Error: ${profileError.message}`);
       }
 
-      const { data: signInData } = await this.supabase.auth.signInWithPassword({ email: dto.email, password: dto.password });
+      const { data: signInData } = await authClient.auth.signInWithPassword({ email: dto.email, password: dto.password });
 
       return {
         session: {
@@ -48,6 +68,7 @@ export class AuthService {
 
   async login(loginDto: LoginUserDto) {
     try {
+      const authClient = this.createAuthClient();
       const identifier = loginDto.email;
       const password = loginDto.password;
       const isEmail = identifier.includes('@');
@@ -59,15 +80,26 @@ export class AuthService {
         loginEmail = userRecord.email;
       }
 
-      const { data, error } = await this.supabase.auth.signInWithPassword({ email: loginEmail, password });
+      const { data, error } = await authClient.auth.signInWithPassword({ email: loginEmail, password });
       if (error) throw new UnauthorizedException('Invalid Credentials');
 
       const userId = data.user?.id;
-      const { data: userData, error: userError } = await this.supabase.schema('identity_and_user').from('users').select('role, status, full_name').eq('id', userId).single();
-      if (userError || !userData) throw new InternalServerErrorException('Error fetching user profile');
+      console.log('[auth] Runtime SUPABASE_URL:', process.env.SUPABASE_URL);
+      console.log('[auth] Supabase Auth userId:', userId);
+      const { data: userData, error: userError } = await this.supabase
+        .schema('identity_and_user')
+        .from('users')
+        .select('id, full_name, email, contact_number, role, status')
+        .eq('id', userId)
+        .single();
+      console.log('[auth] Users table lookup result:', userData);
+      if (userError || !userData) {
+        console.error('Users table error:', userError);
+        throw new InternalServerErrorException('Error fetching user profile');
+      }
 
       if (userData.status === 'pending' || userData.status === 'rejected') {
-        await this.supabase.auth.signOut();
+        await authClient.auth.signOut();
         throw new UnauthorizedException({ message: 'Access Denied: Provider account is not yet active.', current_status: userData.status });
       }
 
@@ -85,6 +117,7 @@ export class AuthService {
 
   async registerProvider(dto: RegisterProviderDto, file: Express.Multer.File) {
     if (!file) throw new BadRequestException('document_file image is required');
+    const authClient = this.createAuthClient();
     const { full_name, email, contact_number, password, role, business_name, document_type, date_of_birth } = dto;
 
     const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$/;
@@ -92,7 +125,7 @@ export class AuthService {
       throw new BadRequestException('Password must be 8-128 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character.');
     }
 
-    const { data: authData, error: authError } = await this.supabase.auth.signUp({ email, password } as any);
+    const { data: authData, error: authError } = await authClient.auth.signUp({ email, password } as any);
     if (authError) throw new BadRequestException(`Auth Registration Error: ${authError.message}`);
 
     const newUserId = authData.user?.id;
@@ -119,7 +152,8 @@ export class AuthService {
   }
 
   async refreshSession(refreshToken: string) {
-    const { data, error } = await this.supabase.auth.refreshSession({ refresh_token: refreshToken });
+    const authClient = this.createAuthClient();
+    const { data, error } = await authClient.auth.refreshSession({ refresh_token: refreshToken });
     if (error) throw new UnauthorizedException('Failed to refresh session: ' + error.message);
     const userId = data.user?.id;
     let userData: any = null;

@@ -1,98 +1,85 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# ServEase Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+Backend services for ServEase admin and provider/customer operations.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Requirements (local setup)
 
-## Description
+- **Node.js**: 20+ recommended
+- **npm**: 10+ (bundled with modern Node.js)
+- **Docker Desktop**: required for local Kafka via `docker compose`
+- **Supabase project**: `SUPABASE_URL` and `SUPABASE_SECRET_KEY`
+- **Git**
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Environment setup
 
-## Project setup
+1. Create your backend env file from the template:
 
 ```bash
-$ npm install
+# from /backend
+copy .env.example .env
 ```
 
-## Compile and run the project
+2. Fill in `.env` values:
+   - `SUPABASE_URL`
+   - `SUPABASE_SECRET_KEY`
+   - `JWT_SECRET`
+   - `PORT` (default `5000`)
+   - `KAFKA_BROKER` (default `localhost:9092`)
+
+## Start dependencies (Docker / Kafka)
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+# from /backend
+docker compose up -d kafka
 ```
 
-## Run tests
+To stop Kafka:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+docker compose down
 ```
 
-## Deployment
-
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+## Install dependencies
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+# from /backend
+npm install
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Run backend services
 
-## Resources
+Start gateway (HTTP API):
 
-Check out a few resources that may come in handy when working with NestJS:
+```bash
+npm run start:gateway:dev
+```
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+If you need all services:
 
-## Support
+```bash
+npm run build
+npm run start:dev:all
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## Admin integration endpoints (recently wired)
 
-## Stay in touch
+The following admin workflows are now supported through gateway -> Kafka -> admin-service:
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+- User Management
+  - Customers: list, detail, status update
+  - Service Providers: list, detail, status update
+  - Approval Queue: list applications, application detail, approve/reject status update
+- Operations
+  - All Bookings: list bookings for admin operations view
+  - Ongoing Services: update booking status and create dispute/escalation records
 
-## License
+## Important runtime note
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+After pulling backend route/pattern updates, restart gateway and admin-service so new handlers/subscriptions are active. Ensure Kafka is running before testing admin pages.
+
+## Tests
+
+```bash
+npm run test
+npm run test:e2e
+```

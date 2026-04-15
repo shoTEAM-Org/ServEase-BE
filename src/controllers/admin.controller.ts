@@ -17,15 +17,22 @@ export class AdminController implements OnModuleInit {
     [
       ADMIN_PATTERNS.GET_CUSTOMERS,
       ADMIN_PATTERNS.GET_CUSTOMER_BY_ID,
+      ADMIN_PATTERNS.GET_PROVIDERS,
+      ADMIN_PATTERNS.GET_PROVIDER_BY_ID,
+      ADMIN_PATTERNS.GET_PROVIDER_APPLICATIONS,
+      ADMIN_PATTERNS.GET_PROVIDER_APPLICATION_BY_ID,
       ADMIN_PATTERNS.GET_REVIEWS,
       ADMIN_PATTERNS.GET_ADMIN_PROFILE,
+      ADMIN_PATTERNS.GET_ALL_BOOKINGS,
       ADMIN_PATTERNS.GET_ONGOING,
       ADMIN_PATTERNS.GET_DISPUTES,
       ADMIN_PATTERNS.GET_SUPPORT_TICKETS,
+      ADMIN_PATTERNS.GET_TRANSACTIONS,
       ADMIN_PATTERNS.GET_EARNINGS,
       ADMIN_PATTERNS.GET_PAYOUTS,
       ADMIN_PATTERNS.GET_REFUNDS,
       ADMIN_PATTERNS.GET_FAILED_PAYMENTS,
+      ADMIN_PATTERNS.GET_CATEGORIES,
       ADMIN_PATTERNS.CREATE_CATEGORY,
       ADMIN_PATTERNS.GET_ALL_SERVICES,
       ADMIN_PATTERNS.GET_SERVICE_AREAS,
@@ -37,20 +44,6 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.GET_USER_REPORT,
       ADMIN_PATTERNS.GET_PERFORMANCE_REPORT,
       ADMIN_PATTERNS.GET_COMPLIANCE_REPORT,
-      // Account settings & activity log (stubs)
-      ADMIN_PATTERNS.GET_ACCOUNT_SETTINGS,
-      ADMIN_PATTERNS.GET_ACTIVITY_LOG,
-      // Promotions (stubs)
-      ADMIN_PATTERNS.GET_PROMOTIONS,
-      ADMIN_PATTERNS.CREATE_PROMOTION,
-      // Settings (stubs)
-      ADMIN_PATTERNS.GET_COMMISSION,
-      ADMIN_PATTERNS.GET_ROLES,
-      ADMIN_PATTERNS.CREATE_ROLE,
-      ADMIN_PATTERNS.GET_SECURITY,
-      ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS,
-      ADMIN_PATTERNS.GET_AUDIT_LOGS,
-      ADMIN_PATTERNS.GET_INTEGRATIONS,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
     await this.kafka.connect();
   }
@@ -79,6 +72,48 @@ export class AdminController implements OnModuleInit {
     return { status: 'accepted' };
   }
 
+  @Get('v1/users/providers')
+  getProviders(@Query('page') page = '1', @Query('limit') limit = '20') {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_PROVIDERS, { page: +page, limit: +limit }));
+  }
+
+  @Get('v1/users/providers/:id')
+  getProviderById(@Param('id') id: string) {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_PROVIDER_BY_ID, { id }));
+  }
+
+  @Patch('v1/users/providers/:id/status') @HttpCode(202)
+  updateProviderStatus(@Param('id') id: string, @Body('status') status: string) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_PROVIDER_STATUS, { id, status });
+    return { status: 'accepted' };
+  }
+
+  @Get('v1/users/provider-applications')
+  getProviderApplications(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('status') status = 'pending',
+  ) {
+    return lastValueFrom(
+      this.kafka.send(ADMIN_PATTERNS.GET_PROVIDER_APPLICATIONS, {
+        page: +page,
+        limit: +limit,
+        status,
+      }),
+    );
+  }
+
+  @Get('v1/users/provider-applications/:id')
+  getProviderApplicationById(@Param('id') id: string) {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_PROVIDER_APPLICATION_BY_ID, { id }));
+  }
+
+  @Patch('v1/users/provider-applications/:id/status') @HttpCode(202)
+  updateProviderApplicationStatus(@Param('id') id: string, @Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_PROVIDER_APPLICATION_STATUS, { id, ...body });
+    return { status: 'accepted' };
+  }
+
   @Get('v1/users/reviews')
   getReviews(@Query('page') page = '1', @Query('limit') limit = '20') {
     return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_REVIEWS, { page: +page, limit: +limit }));
@@ -102,39 +137,38 @@ export class AdminController implements OnModuleInit {
     return { status: 'accepted' };
   }
 
-  @Get('v1/account/settings')
-  getAccountSettings(@Request() req: any) {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_ACCOUNT_SETTINGS, { userId: req['user'].id }));
-  }
-
-  @Patch('v1/account/settings') @HttpCode(202)
-  updateAccountSettings(@Request() req: any, @Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_ACCOUNT_SETTINGS, { userId: req['user'].id, ...body });
-    return { status: 'accepted' };
-  }
-
-  @Get('v1/account/activity-log')
-  getActivityLog(
-    @Request() req: any,
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-  ) {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_ACTIVITY_LOG, {
-      userId: req['user'].id, page: +page, limit: +limit, from, to,
-    }));
-  }
-
   // ── OPERATIONS ────────────────────────────────────────────
+  @Get('v1/operations/bookings')
+  getAllBookings(@Query('page') page = '1', @Query('limit') limit = '20') {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_ALL_BOOKINGS, { page: +page, limit: +limit }));
+  }
+
   @Get('v1/operations/ongoing')
   getOngoing() {
     return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_ONGOING, {}));
   }
 
+  @Patch('v1/operations/bookings/:id/status') @HttpCode(202)
+  updateBookingStatus(@Param('id') id: string, @Body('status') status: string) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_BOOKING_STATUS, { id, status });
+    return { status: 'accepted' };
+  }
+
+  @Post('v1/operations/bookings/:id/disputes') @HttpCode(202)
+  createBookingDispute(@Param('id') id: string, @Request() req: any, @Body('reason') reason: string) {
+    this.kafka.emit(ADMIN_PATTERNS.CREATE_BOOKING_DISPUTE, { bookingId: id, userId: req['user'].id, reason });
+    return { status: 'accepted' };
+  }
+
   @Get('v1/operations/disputes')
-  getDisputes(@Query('page') page = '1', @Query('limit') limit = '20') {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_DISPUTES, { page: +page, limit: +limit }));
+  getDisputes(
+    @Query('page') page = '1',
+    @Query('limit') limit = '20',
+    @Query('status') status?: string,
+  ) {
+    return lastValueFrom(
+      this.kafka.send(ADMIN_PATTERNS.GET_DISPUTES, { page: +page, limit: +limit, status }),
+    );
   }
 
   @Patch('v1/operations/disputes/:id') @HttpCode(202)
@@ -155,6 +189,11 @@ export class AdminController implements OnModuleInit {
   }
 
   // ── FINANCE ───────────────────────────────────────────────
+  @Get('v1/finance/transactions')
+  getTransactions(@Query('page') page = '1', @Query('limit') limit = '20') {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_TRANSACTIONS, { page: +page, limit: +limit }));
+  }
+
   @Get('v1/finance/earnings')
   getEarnings(@Query('page') page = '1', @Query('limit') limit = '20') {
     return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_EARNINGS, { page: +page, limit: +limit }));
@@ -188,6 +227,11 @@ export class AdminController implements OnModuleInit {
   }
 
   // ── MARKETPLACE ───────────────────────────────────────────
+  @Get('v1/marketplace/categories')
+  getCategories(@Query('page') page = '1', @Query('limit') limit = '100') {
+    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_CATEGORIES, { page: +page, limit: +limit }));
+  }
+
   @Post('v1/marketplace/categories')
   createCategory(@Body() body: any) {
     return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.CREATE_CATEGORY, body));
@@ -247,123 +291,6 @@ export class AdminController implements OnModuleInit {
   @Post('v1/marketplace/broadcasts') @HttpCode(202)
   sendBroadcast(@Body() body: any) {
     this.kafka.emit(ADMIN_PATTERNS.SEND_BROADCAST, body);
-    return { status: 'accepted' };
-  }
-
-  @Get('v1/marketplace/promotions')
-  getPromotions(
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
-    @Query('status') status?: string,
-    @Query('type') type?: string,
-    @Query('search') search?: string,
-  ) {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_PROMOTIONS, {
-      page: +page, limit: +limit, status, type, search,
-    }));
-  }
-
-  @Post('v1/marketplace/promotions')
-  createPromotion(@Body() body: any) {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.CREATE_PROMOTION, body));
-  }
-
-  @Patch('v1/marketplace/promotions/:id') @HttpCode(202)
-  updatePromotion(@Param('id') id: string, @Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_PROMOTION, { id, ...body });
-    return { status: 'accepted' };
-  }
-
-  @Delete('v1/marketplace/promotions/:id') @HttpCode(202)
-  deletePromotion(@Param('id') id: string) {
-    this.kafka.emit(ADMIN_PATTERNS.DELETE_PROMOTION, { id });
-    return { status: 'accepted' };
-  }
-
-  // ── SETTINGS ─────────────────────────────────────────────
-  @Get('v1/settings/commission')
-  getCommission() {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_COMMISSION, {}));
-  }
-
-  @Patch('v1/settings/commission') @HttpCode(202)
-  updateCommission(@Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_COMMISSION, body);
-    return { status: 'accepted' };
-  }
-
-  @Get('v1/settings/roles')
-  getRoles(@Query('page') page = '1', @Query('limit') limit = '20') {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_ROLES, { page: +page, limit: +limit }));
-  }
-
-  @Post('v1/settings/roles')
-  createRole(@Body() body: any) {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.CREATE_ROLE, body));
-  }
-
-  @Patch('v1/settings/roles/:id') @HttpCode(202)
-  updateRole(@Param('id') id: string, @Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_ROLE, { id, ...body });
-    return { status: 'accepted' };
-  }
-
-  @Delete('v1/settings/roles/:id') @HttpCode(202)
-  deleteRole(@Param('id') id: string) {
-    this.kafka.emit(ADMIN_PATTERNS.DELETE_ROLE, { id });
-    return { status: 'accepted' };
-  }
-
-  @Post('v1/settings/roles/assign') @HttpCode(202)
-  assignRole(@Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.ASSIGN_ROLE, body);
-    return { status: 'accepted' };
-  }
-
-  @Get('v1/settings/security')
-  getSecuritySettings() {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_SECURITY, {}));
-  }
-
-  @Patch('v1/settings/security') @HttpCode(202)
-  updateSecuritySettings(@Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_SECURITY, body);
-    return { status: 'accepted' };
-  }
-
-  @Get('v1/settings/notifications')
-  getNotificationSettings(@Query('page') page = '1', @Query('limit') limit = '20') {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS, { page: +page, limit: +limit }));
-  }
-
-  @Patch('v1/settings/notifications/:id') @HttpCode(202)
-  updateNotificationSetting(@Param('id') id: string, @Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTING, { id, ...body });
-    return { status: 'accepted' };
-  }
-
-  @Get('v1/settings/logs')
-  getAuditLogs(
-    @Query('page') page = '1',
-    @Query('limit') limit = '20',
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('user_id') userId?: string,
-    @Query('action') action?: string,
-  ) {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_AUDIT_LOGS, {
-      page: +page, limit: +limit, from, to, user_id: userId, action,
-    }));
-  }
-
-  @Get('v1/settings/integrations')
-  getIntegrations() {
-    return lastValueFrom(this.kafka.send(ADMIN_PATTERNS.GET_INTEGRATIONS, {}));
-  }
-
-  @Patch('v1/settings/integrations/:id') @HttpCode(202)
-  updateIntegration(@Param('id') id: string, @Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_INTEGRATION, { id, ...body });
     return { status: 'accepted' };
   }
 

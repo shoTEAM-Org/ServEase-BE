@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Request, UseGuards, UseInterceptors, UploadedFile, Inject, OnModuleInit, HttpCode } from '@nestjs/common';
+import { Controller, Post, Get, Body, Request, UseGuards, UseInterceptors, UploadedFile, Inject, OnModuleInit, HttpCode, UnauthorizedException, InternalServerErrorException } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
 import { lastValueFrom } from 'rxjs';
@@ -23,7 +23,15 @@ export class AuthController implements OnModuleInit {
 
   @Post('v1/login')
   async login(@Body() dto: any) {
-    return lastValueFrom(this.kafka.send(AUTH_PATTERNS.LOGIN, dto));
+    try {
+      return await lastValueFrom(this.kafka.send(AUTH_PATTERNS.LOGIN, dto));
+    } catch (err: any) {
+      const message = typeof err?.message === 'string' ? err.message : null;
+      if (message && message !== 'Internal server error') {
+        throw new UnauthorizedException(message);
+      }
+      throw new InternalServerErrorException('Login failed. Please try again.');
+    }
   }
 
   @Post('v2/register')

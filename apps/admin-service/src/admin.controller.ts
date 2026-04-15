@@ -29,6 +29,36 @@ export class AdminKafkaController {
     return this.adminService.updateCustomerStatus(data.id, data.status);
   }
 
+  @MessagePattern(ADMIN_PATTERNS.GET_PROVIDERS)
+  async getProviders(@Payload() data: any) {
+    return this.adminService.getProviders(data.page, data.limit);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_PROVIDER_BY_ID)
+  async getProviderById(@Payload() data: any) {
+    return this.adminService.getProviderById(data.id);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_PROVIDER_STATUS)
+  async updateProviderStatus(@Payload() data: any) {
+    return this.adminService.updateProviderStatus(data.id, data.status);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_PROVIDER_APPLICATIONS)
+  async getProviderApplications(@Payload() data: any) {
+    return this.adminService.getProviderApplications(data.page, data.limit, data.status);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_PROVIDER_APPLICATION_BY_ID)
+  async getProviderApplicationById(@Payload() data: any) {
+    return this.adminService.getProviderApplicationById(data.id);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.UPDATE_PROVIDER_APPLICATION_STATUS)
+  async updateProviderApplicationStatus(@Payload() data: any) {
+    return this.adminService.updateProviderApplicationStatus(data.id, data.status, data.reject_reason);
+  }
+
   @MessagePattern(ADMIN_PATTERNS.GET_REVIEWS)
   async getReviews(@Payload() data: any) {
     return this.adminService.getReviews(data.page, data.limit);
@@ -50,31 +80,30 @@ export class AdminKafkaController {
     return this.adminService.updateAdminProfile(data.userId, data);
   }
 
-  @MessagePattern(ADMIN_PATTERNS.GET_ACCOUNT_SETTINGS)
-  async getAccountSettings(@Payload() data: any) {
-    return this.adminService.getAccountSettings(data.userId);
-  }
-
-  @EventPattern(ADMIN_PATTERNS.UPDATE_ACCOUNT_SETTINGS)
-  async updateAccountSettings(@Payload() data: any) {
-    const { userId, ...body } = data;
-    return this.adminService.updateAccountSettings(userId, body);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.GET_ACTIVITY_LOG)
-  async getActivityLog(@Payload() data: any) {
-    return this.adminService.getActivityLog(data.userId, data.page, data.limit, data.from, data.to);
-  }
-
   // === OPERATIONS ===
+  @MessagePattern(ADMIN_PATTERNS.GET_ALL_BOOKINGS)
+  async getAllBookings(@Payload() data: any) {
+    return this.adminService.getAllBookings(data.page, data.limit);
+  }
+
   @MessagePattern(ADMIN_PATTERNS.GET_ONGOING)
   async getOngoing(@Payload() data: any) {
     return this.adminService.getOngoingServices();
   }
 
+  @EventPattern(ADMIN_PATTERNS.UPDATE_BOOKING_STATUS)
+  async updateBookingStatus(@Payload() data: any) {
+    return this.adminService.updateBookingStatus(data.id, data.status);
+  }
+
+  @EventPattern(ADMIN_PATTERNS.CREATE_BOOKING_DISPUTE)
+  async createBookingDispute(@Payload() data: any) {
+    return this.adminService.createBookingDispute(data.bookingId, data.userId, data.reason);
+  }
+
   @MessagePattern(ADMIN_PATTERNS.GET_DISPUTES)
   async getDisputes(@Payload() data: any) {
-    return this.adminService.getDisputes(data.page, data.limit);
+    return this.adminService.getDisputes(data.page, data.limit, data.status);
   }
 
   @EventPattern(ADMIN_PATTERNS.UPDATE_DISPUTE)
@@ -93,6 +122,11 @@ export class AdminKafkaController {
   }
 
   // === FINANCE ===
+  @MessagePattern(ADMIN_PATTERNS.GET_TRANSACTIONS)
+  async getTransactions(@Payload() data: any) {
+    return this.adminService.getTransactions(data.page, data.limit);
+  }
+
   @MessagePattern(ADMIN_PATTERNS.GET_EARNINGS)
   async getEarnings(@Payload() data: any) {
     return this.adminService.getProviderEarnings(data.page, data.limit);
@@ -124,6 +158,11 @@ export class AdminKafkaController {
   }
 
   // === MARKETPLACE ===
+  @MessagePattern(ADMIN_PATTERNS.GET_CATEGORIES)
+  async getCategories(@Payload() data: any) {
+    return this.adminService.getCategories(data.page, data.limit);
+  }
+
   @MessagePattern(ADMIN_PATTERNS.CREATE_CATEGORY)
   async createCategory(@Payload() data: any) {
     return this.adminService.createCategory(data);
@@ -180,103 +219,6 @@ export class AdminKafkaController {
   @EventPattern(ADMIN_PATTERNS.SEND_BROADCAST)
   async sendBroadcast(@Payload() data: any) {
     return this.adminService.sendBroadcast(data);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.GET_PROMOTIONS)
-  async getPromotions(@Payload() data: any) {
-    const { page, limit, ...filters } = data;
-    return this.adminService.getPromotions(page, limit, filters);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.CREATE_PROMOTION)
-  async createPromotion(@Payload() data: any) {
-    return this.adminService.createPromotion(data);
-  }
-
-  @EventPattern(ADMIN_PATTERNS.UPDATE_PROMOTION)
-  async updatePromotion(@Payload() data: any) {
-    const { id, ...body } = data;
-    return this.adminService.updatePromotion(id, body);
-  }
-
-  @EventPattern(ADMIN_PATTERNS.DELETE_PROMOTION)
-  async deletePromotion(@Payload() data: any) {
-    return this.adminService.deletePromotion(data.id);
-  }
-
-  // === SETTINGS ===
-  @MessagePattern(ADMIN_PATTERNS.GET_COMMISSION)
-  async getCommission() {
-    return this.adminService.getCommission();
-  }
-
-  @EventPattern(ADMIN_PATTERNS.UPDATE_COMMISSION)
-  async updateCommission(@Payload() data: any) {
-    return this.adminService.updateCommission(data);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.GET_ROLES)
-  async getRoles(@Payload() data: any) {
-    return this.adminService.getRoles(data.page, data.limit);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.CREATE_ROLE)
-  async createRole(@Payload() data: any) {
-    return this.adminService.createRole(data);
-  }
-
-  @EventPattern(ADMIN_PATTERNS.UPDATE_ROLE)
-  async updateRole(@Payload() data: any) {
-    const { id, ...body } = data;
-    return this.adminService.updateRole(id, body);
-  }
-
-  @EventPattern(ADMIN_PATTERNS.DELETE_ROLE)
-  async deleteRole(@Payload() data: any) {
-    return this.adminService.deleteRole(data.id);
-  }
-
-  @EventPattern(ADMIN_PATTERNS.ASSIGN_ROLE)
-  async assignRole(@Payload() data: any) {
-    return this.adminService.assignRole(data);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.GET_SECURITY)
-  async getSecuritySettings() {
-    return this.adminService.getSecuritySettings();
-  }
-
-  @EventPattern(ADMIN_PATTERNS.UPDATE_SECURITY)
-  async updateSecuritySettings(@Payload() data: any) {
-    return this.adminService.updateSecuritySettings(data);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS)
-  async getNotificationSettings(@Payload() data: any) {
-    return this.adminService.getNotificationSettings(data.page, data.limit);
-  }
-
-  @EventPattern(ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTING)
-  async updateNotificationSetting(@Payload() data: any) {
-    const { id, ...body } = data;
-    return this.adminService.updateNotificationSetting(id, body);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.GET_AUDIT_LOGS)
-  async getAuditLogs(@Payload() data: any) {
-    const { page, limit, ...filters } = data;
-    return this.adminService.getAuditLogs(page, limit, filters);
-  }
-
-  @MessagePattern(ADMIN_PATTERNS.GET_INTEGRATIONS)
-  async getIntegrations() {
-    return this.adminService.getIntegrations();
-  }
-
-  @EventPattern(ADMIN_PATTERNS.UPDATE_INTEGRATION)
-  async updateIntegration(@Payload() data: any) {
-    const { id, ...body } = data;
-    return this.adminService.updateIntegration(id, body);
   }
 
   // === REPORTS ===
