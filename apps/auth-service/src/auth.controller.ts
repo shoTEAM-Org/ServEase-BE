@@ -83,16 +83,18 @@ export class AuthKafkaController {
 
   @EventPattern(AUTH_PATTERNS.ADD_ADDRESS)
   async addAddress(@Payload() data: any) {
-    return this.usersService.addAddress(data.userId, data);
+    const { userId, ...payload } = data || {};
+    return this.usersService.addAddress(userId, payload);
   }
 
   @EventPattern(AUTH_PATTERNS.UPDATE_ADDRESS)
   async updateAddress(@Payload() data: any) {
-    return this.usersService.updateAddress(data.addressId, data.userId, data);
+    const { userId, addressId, ...payload } = data || {};
+    return this.usersService.updateAddress(addressId, userId, payload);
   }
 
   @EventPattern(AUTH_PATTERNS.DELETE_ADDRESS)
   async deleteAddress(@Payload() data: any) {
-    return this.usersService.deleteAddress(data.addressId, data.userId);
+    return this.usersService.deleteAddress(data?.addressId, data?.userId);
   }
 }

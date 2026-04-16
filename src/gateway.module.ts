@@ -15,6 +15,7 @@ import { ReferenceController } from './controllers/reference.controller.js';
 import { LocationsController } from './controllers/locations.controller.js';
 import { NotificationsController } from './controllers/notifications.controller.js';
 import { SupportController } from './controllers/support.controller.js';
+import { UploadsController } from './controllers/uploads.controller.js';
 
 @Module({
   imports: [
@@ -54,6 +55,7 @@ import { SupportController } from './controllers/support.controller.js';
     LocationsController,
     NotificationsController,
     SupportController,
+    UploadsController,
   ],
 })
 export class GatewayModule {}

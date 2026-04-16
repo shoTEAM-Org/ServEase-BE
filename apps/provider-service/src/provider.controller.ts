@@ -6,7 +6,9 @@ import { ProviderService } from './provider.service.js';
 
 @Controller()
 export class ProviderKafkaController {
-  constructor(@Inject(ProviderService) private readonly providerService: ProviderService) {}
+  constructor(
+    @Inject(ProviderService) private readonly providerService: ProviderService,
+  ) {}
 
   @MessagePattern(PROVIDER_PATTERNS.GET_BY_SERVICE)
   async getProvidersByService(@Payload() data: any) {
@@ -104,12 +106,14 @@ export class ProviderKafkaController {
 
   @EventPattern(PROVIDER_PATTERNS.CREATE_MY_SERVICE)
   async createMyService(@Payload() data: any) {
-    return this.providerService.createMyService(data.providerId, data);
+    const { providerId, ...body } = data || {};
+    return this.providerService.createMyService(providerId, body);
   }
 
   @EventPattern(PROVIDER_PATTERNS.UPDATE_MY_SERVICE)
   async updateMyService(@Payload() data: any) {
-    return this.providerService.updateMyService(data.serviceId, data.providerId, data);
+    const { serviceId, providerId, ...body } = data || {};
+    return this.providerService.updateMyService(serviceId, providerId, body);
   }
 
   @EventPattern(PROVIDER_PATTERNS.DELETE_MY_SERVICE)

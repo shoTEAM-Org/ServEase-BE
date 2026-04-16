@@ -10,6 +10,129 @@ import { SupabaseClient } from '@supabase/supabase-js';
 export class ProviderService {
   constructor(private readonly supabase: SupabaseClient) {}
 
+  private toTrimmedString(value: unknown) {
+    return String(value ?? '').trim();
+  }
+
+  private toNullableString(value: unknown) {
+    const parsed = this.toTrimmedString(value);
+    return parsed || null;
+  }
+
+  private toPositiveNumber(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return null;
+    return parsed;
+  }
+
+  private toBoolean(value: unknown, fallback = false) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
+      if (['false', '0', 'no', 'n'].includes(normalized)) return false;
+    }
+    return fallback;
+  }
+
+  private normalizePricingMode(value: unknown): 'hourly' | 'flat' | null {
+    const mode = this.toTrimmedString(value).toLowerCase();
+    if (mode === 'hourly' || mode === 'flat') return mode;
+    return null;
+  }
+
+  private normalizeServiceLocationType(value: unknown): 'mobile' | 'in_shop' {
+    return this.toTrimmedString(value).toLowerCase() === 'in_shop' ? 'in_shop' : 'mobile';
+  }
+
+  private isSchemaMismatchError(error: any) {
+    const message = this.toTrimmedString(error?.message).toLowerCase();
+    if (!message) return false;
+    return (
+      (message.includes('column') && message.includes('does not exist')) ||
+      message.includes('schema cache') ||
+      message.includes('pgrst204') ||
+      message.includes('pgrst200')
+    );
+  }
+
+  private normalizeServicePayload(
+    body: any,
+    options: {
+      providerId?: string;
+      requireCoreFields?: boolean;
+      legacyOnly?: boolean;
+    } = {},
+  ) {
+    const source = body || {};
+    const requireCoreFields = Boolean(options.requireCoreFields);
+    const title = this.toTrimmedString(source.title);
+    const categoryId = this.toTrimmedString(source.category_id ?? source.categoryId);
+
+    if (requireCoreFields) {
+      if (!title) throw new BadRequestException('Service title is required');
+      if (!categoryId) throw new BadRequestException('Service category is required');
+    }
+
+    const hourlyRateInput = this.toPositiveNumber(source.hourly_rate ?? source.hourlyRate);
+    const flatRateInput = this.toPositiveNumber(source.flat_rate ?? source.flatRate);
+    const priceInput = this.toPositiveNumber(source.price);
+
+    let supportsHourly = this.toBoolean(
+      source.supports_hourly ?? source.supportsHourly,
+      hourlyRateInput !== null,
+    );
+    let supportsFlat = this.toBoolean(
+      source.supports_flat ?? source.supportsFlat,
+      flatRateInput !== null,
+    );
+
+    if (!supportsHourly && !supportsFlat) {
+      if (flatRateInput !== null) supportsFlat = true;
+      else supportsHourly = true;
+    }
+
+    const resolvedPrice = Math.max(priceInput || 0, hourlyRateInput || 0, flatRateInput || 0);
+    const locationType = this.normalizeServiceLocationType(
+      source.service_location_type ?? source.serviceLocationType,
+    );
+
+    const payload: Record<string, any> = {};
+    if (options.providerId) payload.provider_id = options.providerId;
+    if (title || requireCoreFields) payload.title = title;
+    if (Object.prototype.hasOwnProperty.call(source, 'description') || requireCoreFields) {
+      payload.description = this.toNullableString(source.description);
+    }
+    if (categoryId || requireCoreFields) payload.category_id = categoryId;
+    if (resolvedPrice > 0 || requireCoreFields) payload.price = resolvedPrice;
+
+    if (options.legacyOnly) return payload;
+
+    payload.supports_hourly = supportsHourly;
+    payload.hourly_rate = supportsHourly
+      ? hourlyRateInput ?? (resolvedPrice > 0 ? resolvedPrice : null)
+      : null;
+    payload.supports_flat = supportsFlat;
+    payload.flat_rate = supportsFlat
+      ? flatRateInput ?? (resolvedPrice > 0 ? resolvedPrice : null)
+      : null;
+    payload.default_pricing_mode =
+      supportsHourly && supportsFlat
+        ? this.normalizePricingMode(source.default_pricing_mode ?? source.defaultPricingMode) || 'hourly'
+        : supportsHourly
+          ? 'hourly'
+          : 'flat';
+    payload.service_location_type = locationType;
+    payload.service_location_address =
+      locationType === 'in_shop'
+        ? this.toNullableString(source.service_location_address ?? source.serviceLocationAddress)
+        : null;
+
+    return payload;
+  }
+
   // === Existing: Provider Discovery ===
   async getProvidersByService(serviceId: string) {
     const { data: services, error } = await this.supabase
@@ -370,26 +493,70 @@ export class ProviderService {
   }
 
   async createMyService(providerId: string, body: any) {
-    const { data, error } = await this.supabase
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+
+    const payload = this.normalizeServicePayload(body, {
+      providerId: normalizedProviderId,
+      requireCoreFields: true,
+    });
+
+    let { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .insert([{ ...body, provider_id: providerId }])
+      .insert([payload])
       .select()
       .single();
+
+    if (error && this.isSchemaMismatchError(error)) {
+      const legacyPayload = this.normalizeServicePayload(body, {
+        providerId: normalizedProviderId,
+        requireCoreFields: true,
+        legacyOnly: true,
+      });
+      ({ data, error } = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_services')
+        .insert([legacyPayload])
+        .select()
+        .single());
+    }
+
     if (error) throw new BadRequestException(error.message);
     return { service: data };
   }
 
   async updateMyService(serviceId: string, providerId: string, body: any) {
-    const { provider_id, id, ...updates } = body;
-    const { data, error } = await this.supabase
+    const normalizedServiceId = this.toTrimmedString(serviceId);
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedServiceId) throw new BadRequestException('serviceId is required');
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+
+    const payload = this.normalizeServicePayload(body, { requireCoreFields: true });
+    let { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .update(updates)
-      .eq('id', serviceId)
-      .eq('provider_id', providerId)
+      .update(payload)
+      .eq('id', normalizedServiceId)
+      .eq('provider_id', normalizedProviderId)
       .select()
       .single();
+
+    if (error && this.isSchemaMismatchError(error)) {
+      const legacyPayload = this.normalizeServicePayload(body, {
+        requireCoreFields: true,
+        legacyOnly: true,
+      });
+      ({ data, error } = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_services')
+        .update(legacyPayload)
+        .eq('id', normalizedServiceId)
+        .eq('provider_id', normalizedProviderId)
+        .select()
+        .single());
+    }
+
     if (error) throw new BadRequestException(error.message);
     return { service: data };
   }
