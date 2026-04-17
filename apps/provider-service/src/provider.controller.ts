@@ -52,7 +52,7 @@ export class ProviderKafkaController {
 
   @MessagePattern(PROVIDER_PATTERNS.GET_AVAILABILITY)
   async getProviderAvailability(@Payload() data: any) {
-    return this.providerService.getProviderAvailability(data.userId);
+    return this.providerService.getProviderAvailability(data.userId, data.accessToken);
   }
 
   @MessagePattern(PROVIDER_PATTERNS.GET_RESERVED_SLOTS)
@@ -101,7 +101,8 @@ export class ProviderKafkaController {
 
   @EventPattern(PROVIDER_PATTERNS.SAVE_AVAILABILITY)
   async saveProviderAvailability(@Payload() data: any) {
-    return this.providerService.saveProviderAvailability(data.userId, data);
+    const { userId, accessToken, ...body } = data || {};
+    return this.providerService.saveProviderAvailability(userId, body, accessToken);
   }
 
   @EventPattern(PROVIDER_PATTERNS.CREATE_MY_SERVICE)

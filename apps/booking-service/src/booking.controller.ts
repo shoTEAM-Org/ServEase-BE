@@ -5,7 +5,9 @@ import { BookingService } from './booking.service.js';
 
 @Controller()
 export class BookingKafkaController {
-  constructor(@Inject(BookingService) private readonly bookingService: BookingService) {}
+  constructor(
+    @Inject(BookingService) private readonly bookingService: BookingService,
+  ) {}
 
   @MessagePattern(BOOKING_PATTERNS.CREATE)
   async createBooking(@Payload() data: any) {
@@ -34,7 +36,7 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_ATTACHMENTS)
   async getAttachments(@Payload() data: any) {
-    return this.bookingService.getAttachments(data.bookingId);
+    return this.bookingService.getAttachments(data.bookingId, data.accessToken);
   }
 
   @EventPattern(BOOKING_PATTERNS.UPDATE_STATUS)
@@ -44,16 +46,29 @@ export class BookingKafkaController {
 
   @EventPattern(BOOKING_PATTERNS.CANCEL)
   async cancelBooking(@Payload() data: any) {
-    return this.bookingService.cancelBooking(data.id, data.userId, data.reason, data.explanation);
+    return this.bookingService.cancelBooking(
+      data.id,
+      data.userId,
+      data.reason,
+      data.explanation,
+    );
   }
 
-  @EventPattern(BOOKING_PATTERNS.SAVE_ATTACHMENTS)
+  @MessagePattern(BOOKING_PATTERNS.SAVE_ATTACHMENTS)
   async saveAttachments(@Payload() data: any) {
-    return this.bookingService.saveAttachments(data.bookingId, data.attachments);
+    return this.bookingService.saveAttachments(
+      data.bookingId,
+      data.attachments,
+      data.accessToken,
+    );
   }
 
   @EventPattern(BOOKING_PATTERNS.CREATE_DISPUTE)
   async createDispute(@Payload() data: any) {
-    return this.bookingService.createDispute(data.bookingId, data.userId, data.reason);
+    return this.bookingService.createDispute(
+      data.bookingId,
+      data.userId,
+      data.reason,
+    );
   }
 }

@@ -85,6 +85,77 @@ export class UsersService {
     return null;
   }
 
+  private async getUserProfileSeed(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) return null;
+
+    for (const schemaName of this.addressSchemas) {
+      const { data, error } = await this.supabase
+        .schema(schemaName)
+        .from('users')
+        .select('id, full_name, email, contact_number')
+        .eq('id', normalizedUserId)
+        .maybeSingle();
+      if (!error) return data;
+      if (!this.isMissingRelationError(error)) break;
+    }
+
+    return null;
+  }
+
+  private async insertCustomerProfileWithFallback(
+    schemaName: (typeof this.addressSchemas)[number],
+    userId: string,
+    payload: Record<string, any>,
+  ) {
+    const userSeed = await this.getUserProfileSeed(userId);
+    let currentPayload = { ...payload };
+    const seededFullName = this.toNullableString(userSeed?.full_name);
+    if (seededFullName && currentPayload.full_name === undefined) {
+      currentPayload.full_name = seededFullName;
+    }
+
+    let lastError: any = null;
+    for (let retry = 0; retry < 10; retry += 1) {
+      const { data, error } = await this.supabase
+        .schema(schemaName)
+        .from('customer_profiles')
+        .insert([currentPayload])
+        .select()
+        .single();
+      if (!error) return { data, error: null };
+      lastError = error;
+
+      const missingColumn = this.extractMissingColumnName(error);
+      if (
+        missingColumn &&
+        Object.prototype.hasOwnProperty.call(currentPayload, missingColumn)
+      ) {
+        const nextPayload = { ...currentPayload };
+        delete nextPayload[missingColumn];
+        currentPayload = nextPayload;
+        continue;
+      }
+
+      const message = this.toTrimmedString(error?.message).toLowerCase();
+      if (
+        message.includes('null value in column') &&
+        !this.toTrimmedString(currentPayload.full_name)
+      ) {
+        const retrySeed = await this.getUserProfileSeed(userId);
+        const retrySeedName = this.toNullableString(retrySeed?.full_name);
+        if (retrySeedName) {
+          currentPayload = { ...currentPayload, full_name: retrySeedName };
+          continue;
+        }
+      }
+
+      break;
+    }
+
+    return { data: null, error: lastError };
+  }
+
   private normalizeAddressPayload(
     source: Record<string, any>,
     options: { legacyOnly?: boolean } = {},
@@ -221,15 +292,152 @@ export class UsersService {
   }
 
   async getCustomerProfile(userId: string) {
-    const { data, error } = await this.supabase.schema('identity_and_user').from('customer_profiles').select('*').eq('user_id', userId).single();
-    if (error && error.code !== 'PGRST116') throw new InternalServerErrorException(error.message);
-    return data || { user_id: userId };
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    let lastError: any = null;
+    for (const schemaName of this.addressSchemas) {
+      const { data, error } = await this.supabase
+        .schema(schemaName)
+        .from('customer_profiles')
+        .select('*')
+        .eq('user_id', normalizedUserId)
+        .maybeSingle();
+      if (!error) return data || { user_id: normalizedUserId };
+      lastError = error;
+      if (!this.isMissingRelationError(error)) break;
+    }
+
+    if (lastError && !this.isMissingRelationError(lastError)) {
+      throw new InternalServerErrorException(lastError.message);
+    }
+    return { user_id: normalizedUserId };
   }
 
   async updateCustomerProfile(userId: string, updates: Record<string, any>) {
-    const { data, error } = await this.supabase.schema('identity_and_user').from('customer_profiles').update(updates).eq('user_id', userId).select().single();
-    if (error) throw new InternalServerErrorException('Failed to update customer profile: ' + error.message);
-    return data;
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const allowed = [
+      'full_name',
+      'address',
+      'city',
+      'province',
+      'region',
+      'barangay',
+      'zip_code',
+      'postal_code',
+      'landmark',
+    ];
+    let filtered: Record<string, any> = {};
+    for (const key of allowed) {
+      if (updates?.[key] !== undefined) filtered[key] = updates[key];
+    }
+
+    if (Object.keys(filtered).length === 0) {
+      throw new BadRequestException('No valid customer profile fields provided');
+    }
+
+    let lastError: any = null;
+    for (const schemaName of this.addressSchemas) {
+      const { data: updatedRow, error: updateError } = await this.supabase
+        .schema(schemaName)
+        .from('customer_profiles')
+        .update(filtered)
+        .eq('user_id', normalizedUserId)
+        .select()
+        .maybeSingle();
+
+      if (!updateError && updatedRow) return updatedRow;
+      if (!updateError && !updatedRow) {
+        const { data: insertedRow, error: insertError } =
+          await this.insertCustomerProfileWithFallback(
+            schemaName,
+            normalizedUserId,
+            { user_id: normalizedUserId, ...filtered },
+          );
+        if (!insertError) return insertedRow;
+        lastError = insertError;
+        if (
+          this.isMissingRelationError(insertError) ||
+          this.isSchemaMismatchError(insertError)
+        ) {
+          continue;
+        }
+        throw new InternalServerErrorException('Failed to update customer profile: ' + insertError.message);
+      }
+
+      const missingColumn = this.extractMissingColumnName(updateError);
+      if (
+        missingColumn &&
+        Object.prototype.hasOwnProperty.call(filtered, missingColumn)
+      ) {
+        const nextFiltered = { ...filtered };
+        delete nextFiltered[missingColumn];
+        filtered = nextFiltered;
+
+        if (Object.keys(filtered).length === 0) {
+          return { user_id: normalizedUserId };
+        }
+
+        const { data: retriedUpdatedRow, error: retriedUpdateError } =
+          await this.supabase
+            .schema(schemaName)
+            .from('customer_profiles')
+            .update(filtered)
+            .eq('user_id', normalizedUserId)
+            .select()
+            .maybeSingle();
+
+        if (!retriedUpdateError && retriedUpdatedRow) return retriedUpdatedRow;
+        if (!retriedUpdateError && !retriedUpdatedRow) {
+          const { data: insertedRow, error: insertError } =
+            await this.insertCustomerProfileWithFallback(
+              schemaName,
+              normalizedUserId,
+              { user_id: normalizedUserId, ...filtered },
+            );
+          if (!insertError) return insertedRow;
+          lastError = insertError;
+          if (
+            this.isMissingRelationError(insertError) ||
+            this.isSchemaMismatchError(insertError)
+          ) {
+            continue;
+          }
+          throw new InternalServerErrorException(
+            'Failed to update customer profile: ' + insertError.message,
+          );
+        }
+
+        lastError = retriedUpdateError;
+        if (retriedUpdateError) {
+          if (
+            this.isMissingRelationError(retriedUpdateError) ||
+            this.isSchemaMismatchError(retriedUpdateError)
+          ) {
+            continue;
+          }
+          throw new InternalServerErrorException(
+            'Failed to update customer profile: ' + retriedUpdateError.message,
+          );
+        }
+      }
+
+      const resolvedUpdateError = updateError || { message: 'Unknown error' };
+      lastError = resolvedUpdateError;
+      if (
+        this.isMissingRelationError(resolvedUpdateError) ||
+        this.isSchemaMismatchError(resolvedUpdateError)
+      ) {
+        continue;
+      }
+      throw new InternalServerErrorException('Failed to update customer profile: ' + resolvedUpdateError.message);     
+    }
+
+    throw new InternalServerErrorException(
+      'Failed to update customer profile: ' + (lastError?.message || 'Unknown error'),
+    );
   }
 
   async getAddresses(userId: string) {

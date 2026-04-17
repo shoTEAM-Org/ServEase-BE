@@ -40,16 +40,22 @@ export class UploadsController {
     }
 
     const filePath = `${userId}.jpg`;
-    const { error } = await this.supabase.storage.from('avatars').upload(filePath, file.buffer, {
-      contentType: file.mimetype || 'image/jpeg',
-      upsert: true,
-    });
+    const { error } = await this.supabase.storage
+      .from('avatars')
+      .upload(filePath, file.buffer, {
+        contentType: file.mimetype || 'image/jpeg',
+        upsert: true,
+      });
 
     if (error) {
-      throw new InternalServerErrorException(`Avatar upload failed: ${error.message}`);
+      throw new InternalServerErrorException(
+        `Avatar upload failed: ${error.message}`,
+      );
     }
 
-    const { data } = this.supabase.storage.from('avatars').getPublicUrl(filePath);
+    const { data } = this.supabase.storage
+      .from('avatars')
+      .getPublicUrl(filePath);
     return { avatar_url: data.publicUrl };
   }
 
@@ -62,7 +68,9 @@ export class UploadsController {
     }
 
     const filePath = `${normalizedUserId}.jpg`;
-    const { data } = this.supabase.storage.from('avatars').getPublicUrl(filePath);
+    const { data } = this.supabase.storage
+      .from('avatars')
+      .getPublicUrl(filePath);
     return res.redirect(data.publicUrl);
   }
 
@@ -89,7 +97,9 @@ export class UploadsController {
       throw new BadRequestException('Authenticated user is required');
     }
 
-    const safeName = this.sanitizeFileName(label || file.originalname || 'attachment.jpg');
+    const safeName = this.sanitizeFileName(
+      label || file.originalname || 'attachment.jpg',
+    );
     const storagePath = `${normalizedBookingId}/${userId}/${Date.now()}-${safeName}`;
 
     const { error } = await this.supabase.storage
@@ -100,16 +110,25 @@ export class UploadsController {
       });
 
     if (error) {
-      throw new InternalServerErrorException(`Attachment upload failed: ${error.message}`);
+      throw new InternalServerErrorException(
+        `Attachment upload failed: ${error.message}`,
+      );
     }
 
-    const { data } = this.supabase.storage
-      .from('booking-attachments')
-      .getPublicUrl(storagePath);
+    const { data: signedUrlData, error: signedUrlError } =
+      await this.supabase.storage
+        .from('booking-attachments')
+        .createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+    if (signedUrlError || !signedUrlData?.signedUrl) {
+      throw new InternalServerErrorException(
+        `Attachment signing failed: ${signedUrlError?.message || 'Unable to generate signed URL'}`,
+      );
+    }
 
     return {
       id: storagePath,
-      public_url: data.publicUrl,
+      public_url: signedUrlData.signedUrl,
+      signed_url: signedUrlData.signedUrl,
       label: safeName,
       storage_path: storagePath,
     };
@@ -122,10 +141,12 @@ export class UploadsController {
   }
 
   private sanitizeFileName(value: string) {
-    return String(value || '')
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9._-]+/g, '-')
-      .replace(/^-+|-+$/g, '') || `attachment-${Date.now()}.jpg`;
+    return (
+      String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9._-]+/g, '-')
+        .replace(/^-+|-+$/g, '') || `attachment-${Date.now()}.jpg`
+    );
   }
 }

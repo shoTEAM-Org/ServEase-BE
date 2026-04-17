@@ -19,6 +19,7 @@ export class CustomerKafkaController {
 
   @EventPattern(CUSTOMER_PATTERNS.UPDATE_PROFILE)
   async updateProfile(@Payload() data: any) {
-    return this.customerService.updateProfile(data.userId, data);
+    const { userId, ...updates } = data || {};
+    return this.customerService.updateProfile(userId, updates);
   }
 }

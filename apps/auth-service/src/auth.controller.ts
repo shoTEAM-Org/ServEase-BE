@@ -78,7 +78,8 @@ export class AuthKafkaController {
 
   @EventPattern(AUTH_PATTERNS.UPDATE_CUSTOMER_PROFILE)
   async updateCustomerProfile(@Payload() data: any) {
-    return this.usersService.updateCustomerProfile(data.userId, data);
+    const { userId, ...updates } = data || {};
+    return this.usersService.updateCustomerProfile(userId, updates);
   }
 
   @EventPattern(AUTH_PATTERNS.ADD_ADDRESS)

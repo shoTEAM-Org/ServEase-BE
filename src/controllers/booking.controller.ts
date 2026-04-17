@@ -9,8 +9,16 @@ import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 export class BookingController implements OnModuleInit {
   constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
 
+  private extractAccessToken(req: any): string {
+    const authHeader = String(req?.headers?.authorization || '').trim();
+    if (!authHeader) return '';
+    const [scheme, token] = authHeader.split(/\s+/);
+    if (!scheme || scheme.toLowerCase() !== 'bearer') return '';
+    return String(token || '').trim();
+  }
+
   async onModuleInit() {
-    [BOOKING_PATTERNS.CREATE, BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS, BOOKING_PATTERNS.GET_HISTORY, BOOKING_PATTERNS.GET_REQUESTS, BOOKING_PATTERNS.GET_BY_ID, BOOKING_PATTERNS.GET_ATTACHMENTS]
+    [BOOKING_PATTERNS.CREATE, BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS, BOOKING_PATTERNS.GET_HISTORY, BOOKING_PATTERNS.GET_REQUESTS, BOOKING_PATTERNS.GET_BY_ID, BOOKING_PATTERNS.GET_ATTACHMENTS, BOOKING_PATTERNS.SAVE_ATTACHMENTS]
       .forEach((p) => this.kafka.subscribeToResponseOf(p));
     await this.kafka.connect();
   }
@@ -37,10 +45,10 @@ export class BookingController implements OnModuleInit {
   async cancel(@Param('id') id: string, @Request() req: any, @Body() body: any) { this.kafka.emit(BOOKING_PATTERNS.CANCEL, { id, userId: req['user'].id, reason: body.reason, explanation: body.explanation }); return { status: 'accepted' }; }
 
   @Get('v1/:id/attachments')
-  async getAttachments(@Param('id') id: string) { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.GET_ATTACHMENTS, { bookingId: id })); }
+  async getAttachments(@Param('id') id: string, @Request() req: any) { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.GET_ATTACHMENTS, { bookingId: id, accessToken: this.extractAccessToken(req) })); }
 
-  @Post('v1/:id/attachments') @HttpCode(202)
-  async saveAttachments(@Param('id') id: string, @Body() body: any) { this.kafka.emit(BOOKING_PATTERNS.SAVE_ATTACHMENTS, { bookingId: id, attachments: body.attachments }); return { status: 'accepted' }; }
+  @Post('v1/:id/attachments')
+  async saveAttachments(@Param('id') id: string, @Request() req: any, @Body() body: any) { return lastValueFrom(this.kafka.send(BOOKING_PATTERNS.SAVE_ATTACHMENTS, { bookingId: id, attachments: body.attachments, accessToken: this.extractAccessToken(req) })); }
 
   @Post('v1/:id/disputes') @HttpCode(202)
   async createDispute(@Param('id') id: string, @Request() req: any, @Body() body: any) { this.kafka.emit(BOOKING_PATTERNS.CREATE_DISPUTE, { bookingId: id, userId: req['user'].id, reason: body.reason }); return { status: 'accepted' }; }

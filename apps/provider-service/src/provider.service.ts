@@ -4,11 +4,12 @@ import {
   NotFoundException,
   InternalServerErrorException,
 } from '@nestjs/common';
-import { SupabaseClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
 export class ProviderService {
   constructor(private readonly supabase: SupabaseClient) {}
+  private readonly availabilitySchemas = ['booking', 'booking_svc'] as const;
 
   private toTrimmedString(value: unknown) {
     return String(value ?? '').trim();
@@ -56,6 +57,325 @@ export class ProviderService {
       message.includes('pgrst204') ||
       message.includes('pgrst200')
     );
+  }
+
+  private isMissingRelationError(error: any) {
+    const code = this.toTrimmedString(error?.code).toUpperCase();
+    const message = this.toTrimmedString(error?.message).toLowerCase();
+    return (
+      code === '42P01' ||
+      code === 'PGRST106' ||
+      ((message.includes('relation') || message.includes('schema')) &&
+        message.includes('does not exist'))
+    );
+  }
+
+  private isPermissionDeniedError(error: any) {
+    const code = this.toTrimmedString(error?.code).toUpperCase();
+    const message = this.toTrimmedString(error?.message).toLowerCase();
+    return code === '42501' || message.includes('permission denied');
+  }
+
+  private normalizeTime(value: unknown): string | null {
+    const raw = this.toTrimmedString(value);
+    if (!raw) return null;
+    const hhmmss = raw.match(/^(\d{2}):(\d{2}):(\d{2})$/);
+    if (hhmmss) return raw;
+    const hhmm = raw.match(/^(\d{2}):(\d{2})$/);
+    if (hhmm) return `${hhmm[1]}:${hhmm[2]}:00`;
+    return null;
+  }
+
+  private normalizeWeekdayKey(value: unknown): string {
+    return this.toTrimmedString(value).toLowerCase();
+  }
+
+  private normalizeOffDate(value: unknown): string | null {
+    const raw = this.toTrimmedString(value);
+    if (!raw) return null;
+
+    const yyyyMmDd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (yyyyMmDd) return `${yyyyMmDd[1]}-${yyyyMmDd[2]}-${yyyyMmDd[3]}`;
+
+    const isoPrefix = raw.match(/^(\d{4})-(\d{2})-(\d{2})T/);
+    if (isoPrefix) return `${isoPrefix[1]}-${isoPrefix[2]}-${isoPrefix[3]}`;
+
+    const ddMmYyyy = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (ddMmYyyy) return `${ddMmYyyy[3]}-${ddMmYyyy[2]}-${ddMmYyyy[1]}`;
+
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return null;
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const day = String(parsed.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  private createAccessScopedSupabase(accessToken: string): SupabaseClient | null {
+    const token = this.toTrimmedString(accessToken);
+    const supabaseUrl = this.toTrimmedString(process.env.SUPABASE_URL);
+    const supabaseKey = this.toTrimmedString(process.env.SUPABASE_SECRET_KEY);
+    if (!token || !supabaseUrl || !supabaseKey) return null;
+
+    return createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      },
+    });
+  }
+
+  private normalizeWeeklyScheduleRows(userId: string, source: unknown) {
+    if (!Array.isArray(source)) return [] as Record<string, any>[];
+
+    return source
+      .map((row: any) => ({
+        user_id: userId,
+        day_of_week: this.toTrimmedString(row?.day_of_week),
+        is_active: this.toBoolean(row?.is_active, false),
+        start_time: this.normalizeTime(row?.start_time),
+        end_time: this.normalizeTime(row?.end_time),
+        break_start_time: this.normalizeTime(row?.break_start_time),
+        break_end_time: this.normalizeTime(row?.break_end_time),
+      }))
+      .filter((row) => row.day_of_week);
+  }
+
+  private normalizeDaysOffRows(userId: string, source: unknown) {
+    if (!Array.isArray(source)) return [] as Record<string, any>[];
+
+    return source
+      .map((row: any) => {
+        const normalizedDate = this.normalizeOffDate(row?.off_date);
+        if (!normalizedDate) return null;
+        return {
+          user_id: userId,
+          off_date: normalizedDate,
+          reason: this.toNullableString(row?.reason),
+        };
+      })
+      .filter((row) => Boolean(row)) as Record<string, any>[];
+  }
+
+  private async getProviderAvailabilityWithClient(
+    client: SupabaseClient,
+    userId: string,
+  ) {
+    let lastError: any = null;
+
+    for (const schemaName of this.availabilitySchemas) {
+      const [weeklyResult, daysOffResult] = await Promise.all([
+        client
+          .schema(schemaName)
+          .from('provider_availability')
+          .select('*')
+          .eq('user_id', userId),
+        client
+          .schema(schemaName)
+          .from('provider_days_off')
+          .select('*')
+          .eq('user_id', userId),
+      ]);
+
+      if (!weeklyResult.error && !daysOffResult.error) {
+        const normalizedDaysOff = (daysOffResult.data || []).map((row: any) => ({
+          ...row,
+          off_date: this.normalizeOffDate(row?.off_date) || row?.off_date,
+        }));
+        return { weeklySchedule: weeklyResult.data || [], daysOff: normalizedDaysOff };
+      }
+
+      const combinedErrors = [weeklyResult.error, daysOffResult.error].filter(Boolean);
+      const permissionError = combinedErrors.find((error) =>
+        this.isPermissionDeniedError(error),
+      );
+      if (permissionError) throw permissionError;
+
+      lastError = combinedErrors[0] || lastError;
+      if (combinedErrors.every((error) => this.isMissingRelationError(error))) {
+        continue;
+      }
+      throw lastError;
+    }
+
+    if (lastError) throw lastError;
+    return { weeklySchedule: [], daysOff: [] };
+  }
+
+  private async saveProviderAvailabilityWithClient(
+    client: SupabaseClient,
+    userId: string,
+    body: any,
+  ) {
+    const weeklyRows = this.normalizeWeeklyScheduleRows(userId, body?.weeklySchedule);
+    const daysOffRows = this.normalizeDaysOffRows(userId, body?.daysOff);
+    const includesWeeklySchedule = body?.weeklySchedule !== undefined;
+    const includesDaysOff = body?.daysOff !== undefined;
+
+    let lastError: any = null;
+
+    for (const schemaName of this.availabilitySchemas) {
+      let operationError: any = null;
+
+      if (includesWeeklySchedule) {
+        const { data: existingWeeklyRows, error: selectWeeklyError } = await client
+          .schema(schemaName)
+          .from('provider_availability')
+          .select('day_of_week')
+          .eq('user_id', userId);
+        if (selectWeeklyError) {
+          operationError = selectWeeklyError;
+        } else {
+          const existingDayMap = new Map<string, string>();
+          for (const row of existingWeeklyRows || []) {
+            const dayValue = this.toTrimmedString((row as any)?.day_of_week);
+            const dayKey = this.normalizeWeekdayKey(dayValue);
+            if (!dayKey || existingDayMap.has(dayKey)) continue;
+            existingDayMap.set(dayKey, dayValue);
+          }
+
+          for (const row of weeklyRows) {
+            const dayKey = this.normalizeWeekdayKey(row.day_of_week);
+            if (!dayKey) continue;
+
+            const updatePayload = {
+              is_active: this.toBoolean(row.is_active, false),
+              start_time: this.normalizeTime(row.start_time),
+              end_time: this.normalizeTime(row.end_time),
+              break_start_time: this.normalizeTime(row.break_start_time),
+              break_end_time: this.normalizeTime(row.break_end_time),
+            };
+
+            const existingDayValue = existingDayMap.get(dayKey);
+            if (existingDayValue) {
+              const { error: updateWeeklyError } = await client
+                .schema(schemaName)
+                .from('provider_availability')
+                .update(updatePayload)
+                .eq('user_id', userId)
+                .eq('day_of_week', existingDayValue);
+              if (updateWeeklyError) {
+                operationError = updateWeeklyError;
+                break;
+              }
+              continue;
+            }
+
+            const insertPayload = {
+              user_id: userId,
+              day_of_week: this.toTrimmedString(row.day_of_week),
+              ...updatePayload,
+            };
+            const { error: insertWeeklyError } = await client
+              .schema(schemaName)
+              .from('provider_availability')
+              .insert([insertPayload]);
+            if (insertWeeklyError) {
+              operationError = insertWeeklyError;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!operationError && includesDaysOff) {
+        const { data: existingDaysOffRows, error: selectDaysOffError } = await client
+          .schema(schemaName)
+          .from('provider_days_off')
+          .select('off_date, reason')
+          .eq('user_id', userId);
+        if (selectDaysOffError) {
+          operationError = selectDaysOffError;
+        } else {
+          const existingDaysOffMap = new Map<string, { off_date: string; reason: string | null }>();
+          for (const row of existingDaysOffRows || []) {
+            const normalizedDate = this.normalizeOffDate((row as any)?.off_date);
+            if (!normalizedDate || existingDaysOffMap.has(normalizedDate)) continue;
+            existingDaysOffMap.set(normalizedDate, {
+              off_date: normalizedDate,
+              reason: this.toNullableString((row as any)?.reason),
+            });
+          }
+
+          const desiredDaysOffMap = new Map<string, { off_date: string; reason: string | null }>();
+          for (const row of daysOffRows) {
+            const normalizedDate = this.normalizeOffDate(row.off_date);
+            if (!normalizedDate) continue;
+            desiredDaysOffMap.set(normalizedDate, {
+              off_date: normalizedDate,
+              reason: this.toNullableString(row.reason),
+            });
+          }
+
+          for (const [dateKey, existingRow] of existingDaysOffMap.entries()) {
+            if (desiredDaysOffMap.has(dateKey)) continue;
+            const { error: deleteDaysOffError } = await client
+              .schema(schemaName)
+              .from('provider_days_off')
+              .delete()
+              .eq('user_id', userId)
+              .eq('off_date', existingRow.off_date);
+            if (deleteDaysOffError) {
+              operationError = deleteDaysOffError;
+              break;
+            }
+          }
+
+          if (!operationError) {
+            for (const [dateKey, desiredRow] of desiredDaysOffMap.entries()) {
+              const existingRow = existingDaysOffMap.get(dateKey);
+              if (existingRow) {
+                if (existingRow.reason === desiredRow.reason) continue;
+                const { error: updateDaysOffError } = await client
+                  .schema(schemaName)
+                  .from('provider_days_off')
+                  .update({ reason: desiredRow.reason })
+                  .eq('user_id', userId)
+                  .eq('off_date', existingRow.off_date);
+                if (updateDaysOffError) {
+                  operationError = updateDaysOffError;
+                  break;
+                }
+                continue;
+              }
+
+              const { error: insertDaysOffError } = await client
+                .schema(schemaName)
+                .from('provider_days_off')
+                .insert([
+                  {
+                    user_id: userId,
+                    off_date: desiredRow.off_date,
+                    reason: desiredRow.reason,
+                  },
+                ]);
+              if (insertDaysOffError) {
+                operationError = insertDaysOffError;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      if (!operationError) return { ok: true };
+
+      if (this.isPermissionDeniedError(operationError)) {
+        throw operationError;
+      }
+
+      lastError = operationError;
+      if (this.isMissingRelationError(operationError)) continue;
+      throw operationError;
+    }
+
+    if (lastError) throw lastError;
+    return { ok: true };
   }
 
   private normalizeServicePayload(
@@ -394,53 +714,58 @@ export class ProviderService {
   }
 
   // === Provider Availability ===
-  async getProviderAvailability(userId: string) {
-    const [{ data: weeklyRows }, { data: daysOffRows }] = await Promise.all([
-      this.supabase.schema('booking').from('provider_availability').select('*').eq('user_id', userId),
-      this.supabase.schema('booking').from('provider_days_off').select('*').eq('user_id', userId),
-    ]);
-    return { weeklySchedule: weeklyRows || [], daysOff: daysOffRows || [] };
+  async getProviderAvailability(userId: string, accessToken?: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    try {
+      return await this.getProviderAvailabilityWithClient(this.supabase, normalizedUserId);
+    } catch (error: any) {
+      const scopedClient = this.createAccessScopedSupabase(accessToken || '');
+      if (scopedClient && this.isPermissionDeniedError(error)) {
+        try {
+          return await this.getProviderAvailabilityWithClient(scopedClient, normalizedUserId);
+        } catch (fallbackError: any) {
+          throw new InternalServerErrorException(
+            this.toTrimmedString(fallbackError?.message) || 'Failed to fetch provider availability',
+          );
+        }
+      }
+      throw new InternalServerErrorException(
+        this.toTrimmedString(error?.message) || 'Failed to fetch provider availability',
+      );
+    }
   }
 
-  async saveProviderAvailability(userId: string, body: any) {
-    // Upsert weekly schedule
-    if (body.weeklySchedule?.length) {
-      const rows = body.weeklySchedule.map((r: any) => ({
-        ...r,
-        user_id: userId,
-      }));
-      await this.supabase
-        .schema('booking')
-        .from('provider_availability')
-        .delete()
-        .eq('user_id', userId);
-      const { error } = await this.supabase
-        .schema('booking')
-        .from('provider_availability')
-        .insert(rows);
-      if (error) throw new InternalServerErrorException(error.message);
-    }
-    // Replace days off
-    if (body.daysOff !== undefined) {
-      await this.supabase
-        .schema('booking')
-        .from('provider_days_off')
-        .delete()
-        .eq('user_id', userId);
-      if (body.daysOff?.length) {
-        const offs = body.daysOff.map((d: any) => ({
-          user_id: userId,
-          off_date: d.off_date,
-          reason: d.reason || null,
-        }));
-        const { error } = await this.supabase
-          .schema('booking')
-          .from('provider_days_off')
-          .insert(offs);
-        if (error) throw new InternalServerErrorException(error.message);
+  async saveProviderAvailability(userId: string, body: any, accessToken?: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    try {
+      return await this.saveProviderAvailabilityWithClient(
+        this.supabase,
+        normalizedUserId,
+        body,
+      );
+    } catch (error: any) {
+      const scopedClient = this.createAccessScopedSupabase(accessToken || '');
+      if (scopedClient && this.isPermissionDeniedError(error)) {
+        try {
+          return await this.saveProviderAvailabilityWithClient(
+            scopedClient,
+            normalizedUserId,
+            body,
+          );
+        } catch (fallbackError: any) {
+          throw new InternalServerErrorException(
+            this.toTrimmedString(fallbackError?.message) || 'Failed to save provider availability',
+          );
+        }
       }
+      throw new InternalServerErrorException(
+        this.toTrimmedString(error?.message) || 'Failed to save provider availability',
+      );
     }
-    return { ok: true };
   }
 
   async getReservedSlots(providerId: string, date: string) {
