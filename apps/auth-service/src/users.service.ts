@@ -72,6 +72,19 @@ export class UsersService {
     );
   }
 
+  private extractMissingColumnName(error: any): string | null {
+    const message = this.toTrimmedString(error?.message);
+    if (!message) return null;
+
+    const cacheMatch = message.match(/'([^']+)' column/i);
+    if (cacheMatch?.[1]) return cacheMatch[1].trim();
+
+    const dbMatch = message.match(/column ["']?([a-zA-Z0-9_]+)["']? does not exist/i);
+    if (dbMatch?.[1]) return dbMatch[1].trim();
+
+    return null;
+  }
+
   private normalizeAddressPayload(
     source: Record<string, any>,
     options: { legacyOnly?: boolean } = {},
@@ -128,25 +141,11 @@ export class UsersService {
     const providedAddressId = this.toTrimmedString(source.address_id ?? source.id);
     const generatedAddressId = providedAddressId || randomUUID();
 
-    const applyCreateDefaults = (payload: Record<string, any>, legacyOnly: boolean) => {
-      const withDefaults = { ...payload };
-      if (!this.toTrimmedString(withDefaults.label)) withDefaults.label = 'Home';
-      if (!this.toTrimmedString(withDefaults.city)) withDefaults.city = '';
-      if (!this.toTrimmedString(withDefaults.province)) withDefaults.province = '';
-      if (!this.toTrimmedString(withDefaults.region)) withDefaults.region = '';
-      if (!this.toTrimmedString(withDefaults.barangay)) withDefaults.barangay = '';
+    const modern = { ...modernBase };
+    const legacy = { ...legacyBase };
 
-      if (legacyOnly) {
-        if (!this.toTrimmedString(withDefaults.postal_code)) withDefaults.postal_code = '';
-      } else if (!this.toTrimmedString(withDefaults.zip_code)) {
-        withDefaults.zip_code = '';
-      }
-
-      return withDefaults;
-    };
-
-    const modern = applyCreateDefaults(modernBase, false);
-    const legacy = applyCreateDefaults(legacyBase, true);
+    if (!this.toTrimmedString(modern.label)) modern.label = 'Home';
+    if (!this.toTrimmedString(legacy.label)) legacy.label = 'Home';
 
     const candidates: Record<string, any>[] = [
       { ...modern, address_id: generatedAddressId },
@@ -269,24 +268,46 @@ export class UsersService {
 
     for (const schemaName of this.addressSchemas) {
       for (const payload of payloadCandidates) {
-        const { data, error } = await this.supabase
-          .schema(schemaName)
-          .from('user_addresses')
-          .insert([{ ...payload, user_id: normalizedUserId }])
-          .select()
-          .single();
+        let currentPayload = { ...payload };
+        let shouldMoveToNextPayload = false;
 
-        if (!error) return { address: data };
-        lastError = error;
+        for (let retry = 0; retry < 8; retry += 1) {
+          const { data, error } = await this.supabase
+            .schema(schemaName)
+            .from('user_addresses')
+            .insert([{ ...currentPayload, user_id: normalizedUserId }])
+            .select()
+            .single();
 
-        if (!this.isRetryableAddressInsertError(error)) {
-          console.error('[users.add-address] non-retryable insert error', {
-            userId: normalizedUserId,
-            schemaName,
-            payloadKeys: Object.keys(payload),
-            error,
-          });
-          throw new InternalServerErrorException(error.message);
+          if (!error) return { address: data };
+          lastError = error;
+
+          const missingColumn = this.extractMissingColumnName(error);
+          if (
+            missingColumn &&
+            Object.prototype.hasOwnProperty.call(currentPayload, missingColumn)
+          ) {
+            const { [missingColumn]: _removed, ...nextPayload } = currentPayload;
+            currentPayload = nextPayload;
+            continue;
+          }
+
+          if (!this.isRetryableAddressInsertError(error)) {
+            console.error('[users.add-address] non-retryable insert error', {
+              userId: normalizedUserId,
+              schemaName,
+              payloadKeys: Object.keys(currentPayload),
+              error,
+            });
+            throw new InternalServerErrorException(error.message);
+          }
+
+          shouldMoveToNextPayload = true;
+          break;
+        }
+
+        if (shouldMoveToNextPayload) {
+          continue;
         }
       }
 

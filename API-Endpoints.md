@@ -366,6 +366,16 @@ All report endpoints accept optional `?from=YYYY-MM-DD&to=YYYY-MM-DD` query para
 
 ---
 
+## Uploads — `api/v1/uploads`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/uploads/avatar` | Yes | Upload/replace authenticated user's avatar file (`multipart/form-data`, field: `file`) |
+| GET | `/api/v1/uploads/avatar/:userId` | No | Redirect to avatar public URL for image rendering |
+| POST | `/api/v1/uploads/booking/:bookingId/attachment` | Yes | Upload a booking attachment (`multipart/form-data`, field: `file`, optional `label`) |
+
+---
+
 ## Architecture Notes
 
 - **Framework**: NestJS monorepo — microservice logic lives in `apps/` (e.g. `apps/auth-service/`, `apps/booking-service/`), gateway controllers in `src/controllers/`, shared code in `libs/`
