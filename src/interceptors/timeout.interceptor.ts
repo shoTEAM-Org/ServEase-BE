@@ -13,6 +13,7 @@ import {
   throwError,
   timeout,
 } from 'rxjs';
+import { getCorrelationId } from '@app/common';
 
 const logger = new Logger('GatewayTimeout');
 const parsedRequestTimeoutMs = Number(process.env.GATEWAY_REQUEST_TIMEOUT_MS);
@@ -31,8 +32,9 @@ export class TimeoutInterceptor implements NestInterceptor {
       timeout(REQUEST_TIMEOUT_MS),
       catchError((err) => {
         if (err instanceof TimeoutError) {
+          const correlationId = getCorrelationId();
           logger.error(
-            `HTTP request timed out after ${REQUEST_TIMEOUT_MS}ms`,
+            `[${correlationId}] HTTP request timed out after ${REQUEST_TIMEOUT_MS}ms`,
           );
           return throwError(
             () =>

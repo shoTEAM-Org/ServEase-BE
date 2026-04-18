@@ -1,10 +1,11 @@
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { ProviderServiceModule } from './provider-service.module.js';
-import { ensureKafkaTopics } from '@app/common';
+import { enableMicroserviceTracing, ensureKafkaTopics } from '@app/common';
 
 async function bootstrap() {
   await ensureKafkaTopics();
+  process.env.SERVICE_NAME = process.env.SERVICE_NAME || 'provider-service';
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(ProviderServiceModule, {
     transport: Transport.KAFKA,
     options: {
@@ -12,6 +13,7 @@ async function bootstrap() {
       consumer: { groupId: 'provider-service-consumer' },
     },
   });
+  enableMicroserviceTracing(app, 'provider-service');
   await app.listen();
   console.log('Provider Service is listening on Kafka');
 }

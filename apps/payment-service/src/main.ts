@@ -1,10 +1,11 @@
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { PaymentServiceModule } from './payment-service.module.js';
-import { ensureKafkaTopics } from '@app/common';
+import { enableMicroserviceTracing, ensureKafkaTopics } from '@app/common';
 
 async function bootstrap() {
   await ensureKafkaTopics();
+  process.env.SERVICE_NAME = process.env.SERVICE_NAME || 'payment-service';
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(PaymentServiceModule, {
     transport: Transport.KAFKA,
     options: {
@@ -12,6 +13,7 @@ async function bootstrap() {
       consumer: { groupId: 'payment-service-consumer' },
     },
   });
+  enableMicroserviceTracing(app, 'payment-service');
   await app.listen();
   console.log('Payment Service is listening on Kafka');
 }

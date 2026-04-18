@@ -1,4 +1,9 @@
-import { Module } from '@nestjs/common';
+import {
+  MiddlewareConsumer,
+  Module,
+  NestModule,
+  RequestMethod,
+} from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { SupabaseModule } from '@app/database';
@@ -16,6 +21,8 @@ import { LocationsController } from './controllers/locations.controller.js';
 import { NotificationsController } from './controllers/notifications.controller.js';
 import { SupportController } from './controllers/support.controller.js';
 import { UploadsController } from './controllers/uploads.controller.js';
+import { HealthController } from './controllers/health.controller.js';
+import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
 
 @Module({
   imports: [
@@ -56,6 +63,13 @@ import { UploadsController } from './controllers/uploads.controller.js';
     NotificationsController,
     SupportController,
     UploadsController,
+    HealthController,
   ],
 })
-export class GatewayModule {}
+export class GatewayModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(CorrelationMiddleware)
+      .forRoutes({ path: '*', method: RequestMethod.ALL });
+  }
+}

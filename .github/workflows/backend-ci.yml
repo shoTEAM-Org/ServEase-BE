@@ -1,0 +1,52 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate strict-env requirements (no-op unless strict mode enabled)
+        run: npm run check:strict-service-env
+
+      - name: Validate schema boundaries
+        run: npm run check:schema-boundaries
+
+      - name: Build all gateway and services
+        shell: bash
+        run: |
+          set -euo pipefail
+          projects=(
+            gateway
+            auth-service
+            booking-service
+            catalog-service
+            chat-service
+            customer-service
+            notifications-service
+            payment-service
+            provider-service
+            support-service
+            trust-service
+            admin-service
+          )
+          for project in "${projects[@]}"; do
+            echo "Building ${project}..."
+            npm run build -- "${project}"
+          done

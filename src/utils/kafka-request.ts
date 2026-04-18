@@ -1,6 +1,7 @@
 import { HttpException, HttpStatus, Logger } from '@nestjs/common';
 import { Observable, lastValueFrom, throwError, TimeoutError } from 'rxjs';
 import { timeout, catchError } from 'rxjs/operators';
+import { getCorrelationId } from '@app/common';
 
 const logger = new Logger('KafkaRequest');
 
@@ -19,8 +20,9 @@ export function sendWithTimeout<T>(
       timeout({ each: timeoutMs }),
       catchError((err) => {
         if (err instanceof TimeoutError) {
+          const correlationId = getCorrelationId();
           logger.error(
-            `Upstream microservice did not reply within ${timeoutMs}ms`,
+            `[${correlationId}] Upstream microservice did not reply within ${timeoutMs}ms`,
           );
           return throwError(
             () =>

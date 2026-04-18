@@ -1,10 +1,11 @@
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { TrustServiceModule } from './trust-service.module.js';
-import { ensureKafkaTopics } from '@app/common';
+import { enableMicroserviceTracing, ensureKafkaTopics } from '@app/common';
 
 async function bootstrap() {
   await ensureKafkaTopics();
+  process.env.SERVICE_NAME = process.env.SERVICE_NAME || 'trust-service';
   const app = await NestFactory.createMicroservice<MicroserviceOptions>(
     TrustServiceModule,
     {
@@ -18,6 +19,7 @@ async function bootstrap() {
       },
     },
   );
+  enableMicroserviceTracing(app, 'trust-service');
   await app.listen();
   console.log('Trust Service is listening on Kafka');
 }

@@ -1,6 +1,7 @@
 import { Logger, ServiceUnavailableException } from '@nestjs/common';
 import { Observable, TimeoutError, lastValueFrom } from 'rxjs';
 import { timeout } from 'rxjs/operators';
+import { getCorrelationId } from '../tracing/correlation.js';
 
 const parsedInterserviceTimeoutMs = Number(
   process.env.KAFKA_INTERSERVICE_TIMEOUT_MS,
@@ -81,16 +82,17 @@ export async function sendKafkaRpcRequest<T>(
       );
     } catch (error) {
       if (isTimeoutError(error)) {
+        const correlationId = getCorrelationId();
         if (attempt < maxAttempts) {
           logger.warn(
-            `Timeout on [${context}] attempt ${attempt}/${maxAttempts}; retrying in ${retryDelayMs}ms`,
+            `[${correlationId}] Timeout on [${context}] attempt ${attempt}/${maxAttempts}; retrying in ${retryDelayMs}ms`,
           );
           await sleep(retryDelayMs);
           continue;
         }
 
         logger.error(
-          `Timeout on [${context}] after ${maxAttempts} attempt(s) (${timeoutMs}ms each)`,
+          `[${correlationId}] Timeout on [${context}] after ${maxAttempts} attempt(s) (${timeoutMs}ms each)`,
         );
         throw new ServiceUnavailableException(
           `Upstream service timed out: ${context}`,

@@ -83,3 +83,19 @@ After pulling backend route/pattern updates, restart gateway and admin-service s
 npm run test
 npm run test:e2e
 ```
+
+## Microservice Isolation Guards
+
+Validate schema ownership boundaries:
+
+```bash
+npm run check:schema-boundaries
+```
+
+Validate strict service-scoped Supabase env (only enforced when `SUPABASE_STRICT_SERVICE_SCOPE=true`):
+
+```bash
+npm run check:strict-service-env
+```
+
+When strict mode is enabled, `npm run start:all` and `npm run start:dev:all` automatically run the strict-env validator before booting services.
