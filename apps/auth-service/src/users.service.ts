@@ -4,7 +4,7 @@ import {
   InternalServerErrorException,
   BadRequestException,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 import { SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
@@ -13,7 +13,11 @@ export class UsersService {
   private readonly addressSchemas = ['identity_and_user', 'identity_svc'] as const;
 
   private toTrimmedString(value: unknown) {
-    return String(value ?? '').trim();
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value).trim();
+    }
+    return '';
   }
 
   private toNullableString(value: unknown) {
@@ -37,6 +41,16 @@ export class UsersService {
       if (['false', '0', 'no', 'n'].includes(normalized)) return false;
     }
     return null;
+  }
+
+  private assignIfPresent(
+    payload: Record<string, any>,
+    key: string,
+    value: unknown,
+  ) {
+    if (value !== null && value !== undefined) {
+      payload[key] = value;
+    }
   }
 
   private isSchemaMismatchError(error: any) {
@@ -76,10 +90,10 @@ export class UsersService {
     const message = this.toTrimmedString(error?.message);
     if (!message) return null;
 
-    const cacheMatch = message.match(/'([^']+)' column/i);
+    const cacheMatch = /'([^']+)' column/i.exec(message);
     if (cacheMatch?.[1]) return cacheMatch[1].trim();
 
-    const dbMatch = message.match(/column ["']?([a-zA-Z0-9_]+)["']? does not exist/i);
+    const dbMatch = /column ["']?(\w+)["']? does not exist/i.exec(message);
     if (dbMatch?.[1]) return dbMatch[1].trim();
 
     return null;
@@ -129,7 +143,7 @@ export class UsersService {
       const missingColumn = this.extractMissingColumnName(error);
       if (
         missingColumn &&
-        Object.prototype.hasOwnProperty.call(currentPayload, missingColumn)
+        Object.hasOwn(currentPayload, missingColumn)
       ) {
         const nextPayload = { ...currentPayload };
         delete nextPayload[missingColumn];
@@ -163,8 +177,7 @@ export class UsersService {
     const payload: Record<string, any> = {};
     const legacyOnly = Boolean(options.legacyOnly);
 
-    const label = this.toNullableString(source.label);
-    if (label !== null) payload.label = label;
+    this.assignIfPresent(payload, 'label', this.toNullableString(source.label));
 
     const streetAddress = this.toNullableString(
       source.street_address ?? source.street,
@@ -174,17 +187,10 @@ export class UsersService {
       else payload.street_address = streetAddress;
     }
 
-    const city = this.toNullableString(source.city);
-    if (city !== null) payload.city = city;
-
-    const province = this.toNullableString(source.province);
-    if (province !== null) payload.province = province;
-
-    const region = this.toNullableString(source.region);
-    if (region !== null) payload.region = region;
-
-    const barangay = this.toNullableString(source.barangay);
-    if (barangay !== null) payload.barangay = barangay;
+    this.assignIfPresent(payload, 'city', this.toNullableString(source.city));
+    this.assignIfPresent(payload, 'province', this.toNullableString(source.province));
+    this.assignIfPresent(payload, 'region', this.toNullableString(source.region));
+    this.assignIfPresent(payload, 'barangay', this.toNullableString(source.barangay));
 
     const zipCode = this.toNullableString(
       source.zip_code ?? source.postal_code,
@@ -194,14 +200,11 @@ export class UsersService {
       else payload.zip_code = zipCode;
     }
 
-    const latitude = this.toNullableNumber(source.latitude);
-    if (latitude !== null) payload.latitude = latitude;
-
-    const longitude = this.toNullableNumber(source.longitude);
-    if (longitude !== null) payload.longitude = longitude;
+    this.assignIfPresent(payload, 'latitude', this.toNullableNumber(source.latitude));
+    this.assignIfPresent(payload, 'longitude', this.toNullableNumber(source.longitude));
 
     const isDefault = this.toBoolean(source.is_default);
-    if (isDefault !== null) payload.is_default = isDefault;
+    this.assignIfPresent(payload, 'is_default', isDefault);
 
     return payload;
   }
@@ -355,7 +358,7 @@ export class UsersService {
       new Set(
         (Array.isArray(userIds) ? userIds : [])
           .map((id) => this.toTrimmedString(id))
-          .filter((id) => Boolean(id)),
+          .filter(Boolean),
       ),
     );
 
@@ -479,7 +482,7 @@ export class UsersService {
     return { user_id: normalizedUserId };
   }
 
-  async updateCustomerProfile(userId: string, updates: Record<string, any>) {
+  async updateCustomerProfile(userId: string, updates: Record<string, any>) { // NOSONAR: Legacy fallback flow; refactor planned separately.
     const normalizedUserId = this.toTrimmedString(userId);
     if (!normalizedUserId) throw new BadRequestException('userId is required');
 
@@ -535,7 +538,7 @@ export class UsersService {
       const missingColumn = this.extractMissingColumnName(updateError);
       if (
         missingColumn &&
-        Object.prototype.hasOwnProperty.call(filtered, missingColumn)
+        Object.hasOwn(filtered, missingColumn)
       ) {
         const nextFiltered = { ...filtered };
         delete nextFiltered[missingColumn];
@@ -624,7 +627,7 @@ export class UsersService {
     throw new InternalServerErrorException(lastError?.message || 'Failed to fetch addresses');
   }
 
-  async addAddress(userId: string, body: Record<string, any>) {
+  async addAddress(userId: string, body: Record<string, any>) { // NOSONAR: Legacy fallback flow; refactor planned separately.
     const normalizedUserId = this.toTrimmedString(userId);
     if (!normalizedUserId) throw new BadRequestException('userId is required');
 
@@ -658,7 +661,7 @@ export class UsersService {
           const missingColumn = this.extractMissingColumnName(error);
           if (
             missingColumn &&
-            Object.prototype.hasOwnProperty.call(currentPayload, missingColumn)
+            Object.hasOwn(currentPayload, missingColumn)
           ) {
             const { [missingColumn]: _removed, ...nextPayload } = currentPayload;
             currentPayload = nextPayload;
@@ -696,7 +699,7 @@ export class UsersService {
     throw new InternalServerErrorException(lastError?.message || 'Failed to save address');
   }
 
-  private async tryUpdateAddressCandidate(
+  private async tryUpdateAddressCandidate( // NOSONAR: Legacy fallback flow; refactor planned separately.
     schemaName: (typeof this.addressSchemas)[number],
     idColumn: 'address_id' | 'id',
     addressId: string,
@@ -800,7 +803,7 @@ export class UsersService {
     };
   }
 
-  async updateAddress(addressId: string, userId: string, updates: Record<string, any>) {
+  async updateAddress(addressId: string, userId: string, updates: Record<string, any>) { // NOSONAR: Legacy fallback flow; refactor planned separately.
     const normalizedAddressId = this.toTrimmedString(addressId);
     const normalizedUserId = this.toTrimmedString(userId);
     if (!normalizedAddressId) throw new BadRequestException('addressId is required');

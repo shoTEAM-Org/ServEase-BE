@@ -25,7 +25,7 @@ export class BookingController implements OnModuleInit {
     const authHeader = String(req?.headers?.authorization || '').trim();
     if (!authHeader) return '';
     const [scheme, token] = authHeader.split(/\s+/);
-    if (!scheme || scheme.toLowerCase() !== 'bearer') return '';
+    if (scheme?.toLowerCase() !== 'bearer') return '';
     return String(token || '').trim();
   }
 

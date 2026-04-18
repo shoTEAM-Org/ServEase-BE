@@ -113,7 +113,7 @@ export class ProviderService implements OnModuleInit {
       new Set(
         (Array.isArray(userIds) ? userIds : [])
           .map((userId) => this.toTrimmedString(userId))
-          .filter((userId) => Boolean(userId)),
+          .filter(Boolean),
       ),
     );
     if (!normalizedIds.length) return [] as any[];
@@ -123,13 +123,17 @@ export class ProviderService implements OnModuleInit {
     });
     const users =
       response && typeof response === 'object' && 'users' in response
-        ? (response as any).users
+        ? response.users
         : [];
     return Array.isArray(users) ? users : [];
   }
 
   private toTrimmedString(value: unknown) {
-    return String(value ?? '').trim();
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value).trim();
+    }
+    return '';
   }
 
   private toNullableString(value: unknown) {
@@ -165,6 +169,73 @@ export class ProviderService implements OnModuleInit {
     return this.toTrimmedString(value).toLowerCase() === 'in_shop' ? 'in_shop' : 'mobile';
   }
 
+  private ensurePricingModes(
+    supportsHourly: boolean,
+    supportsFlat: boolean,
+    flatRateInput: number | null,
+  ) {
+    if (supportsHourly || supportsFlat) {
+      return { supportsHourly, supportsFlat };
+    }
+
+    if (flatRateInput !== null) {
+      return { supportsHourly: false, supportsFlat: true };
+    }
+
+    return { supportsHourly: true, supportsFlat: false };
+  }
+
+  private resolveFallbackRate(resolvedPrice: number): number | null {
+    return resolvedPrice > 0 ? resolvedPrice : null;
+  }
+
+  private resolveDefaultPricingMode(
+    source: Record<string, unknown>,
+    supportsHourly: boolean,
+    supportsFlat: boolean,
+  ): 'hourly' | 'flat' {
+    if (supportsHourly && supportsFlat) {
+      return (
+        this.normalizePricingMode(
+          source.default_pricing_mode ?? source.defaultPricingMode,
+        ) || 'hourly'
+      );
+    }
+
+    if (supportsHourly) return 'hourly';
+    return 'flat';
+  }
+
+  private deriveApplicationStatus(
+    profileStatus: unknown,
+    hasRejectedDoc: boolean,
+    hasPendingDoc: boolean,
+    hasApprovedDoc: boolean,
+  ) {
+    const normalizedProfileStatus = this.toTrimmedString(profileStatus);
+    if (normalizedProfileStatus) return normalizedProfileStatus;
+    if (hasRejectedDoc) return 'rejected';
+    if (hasPendingDoc) return 'pending';
+    if (hasApprovedDoc) return 'approved';
+    return 'pending';
+  }
+
+  private mapVerificationStatusToUserStatus(status: string) {
+    if (status === 'approved') return 'active';
+    if (status === 'rejected') return 'rejected';
+    return 'pending';
+  }
+
+  private validateRequiredServiceFields(
+    requireCoreFields: boolean,
+    title: string,
+    categoryId: string,
+  ) {
+    if (!requireCoreFields) return;
+    if (!title) throw new BadRequestException('Service title is required');
+    if (!categoryId) throw new BadRequestException('Service category is required');
+  }
+
   private isSchemaMismatchError(error: any) {
     const message = this.toTrimmedString(error?.message).toLowerCase();
     if (!message) return false;
@@ -184,15 +255,12 @@ export class ProviderService implements OnModuleInit {
       legacyOnly?: boolean;
     } = {},
   ) {
-    const source = body || {};
+    const source: Record<string, unknown> =
+      body && typeof body === 'object' ? body : {};
     const requireCoreFields = Boolean(options.requireCoreFields);
     const title = this.toTrimmedString(source.title);
     const categoryId = this.toTrimmedString(source.category_id ?? source.categoryId);
-
-    if (requireCoreFields) {
-      if (!title) throw new BadRequestException('Service title is required');
-      if (!categoryId) throw new BadRequestException('Service category is required');
-    }
+    this.validateRequiredServiceFields(requireCoreFields, title, categoryId);
 
     const hourlyRateInput = this.toPositiveNumber(source.hourly_rate ?? source.hourlyRate);
     const flatRateInput = this.toPositiveNumber(source.flat_rate ?? source.flatRate);
@@ -207,12 +275,16 @@ export class ProviderService implements OnModuleInit {
       flatRateInput !== null,
     );
 
-    if (!supportsHourly && !supportsFlat) {
-      if (flatRateInput !== null) supportsFlat = true;
-      else supportsHourly = true;
-    }
+    const normalizedPricingModes = this.ensurePricingModes(
+      supportsHourly,
+      supportsFlat,
+      flatRateInput,
+    );
+    supportsHourly = normalizedPricingModes.supportsHourly;
+    supportsFlat = normalizedPricingModes.supportsFlat;
 
     const resolvedPrice = Math.max(priceInput || 0, hourlyRateInput || 0, flatRateInput || 0);
+    const fallbackRate = this.resolveFallbackRate(resolvedPrice);
     const locationType = this.normalizeServiceLocationType(
       source.service_location_type ?? source.serviceLocationType,
     );
@@ -220,7 +292,7 @@ export class ProviderService implements OnModuleInit {
     const payload: Record<string, any> = {};
     if (options.providerId) payload.provider_id = options.providerId;
     if (title || requireCoreFields) payload.title = title;
-    if (Object.prototype.hasOwnProperty.call(source, 'description') || requireCoreFields) {
+    if (Object.hasOwn(source, 'description') || requireCoreFields) {
       payload.description = this.toNullableString(source.description);
     }
     if (categoryId || requireCoreFields) payload.category_id = categoryId;
@@ -229,19 +301,14 @@ export class ProviderService implements OnModuleInit {
     if (options.legacyOnly) return payload;
 
     payload.supports_hourly = supportsHourly;
-    payload.hourly_rate = supportsHourly
-      ? hourlyRateInput ?? (resolvedPrice > 0 ? resolvedPrice : null)
-      : null;
+    payload.hourly_rate = supportsHourly ? hourlyRateInput ?? fallbackRate : null;
     payload.supports_flat = supportsFlat;
-    payload.flat_rate = supportsFlat
-      ? flatRateInput ?? (resolvedPrice > 0 ? resolvedPrice : null)
-      : null;
-    payload.default_pricing_mode =
-      supportsHourly && supportsFlat
-        ? this.normalizePricingMode(source.default_pricing_mode ?? source.defaultPricingMode) || 'hourly'
-        : supportsHourly
-          ? 'hourly'
-          : 'flat';
+    payload.flat_rate = supportsFlat ? flatRateInput ?? fallbackRate : null;
+    payload.default_pricing_mode = this.resolveDefaultPricingMode(
+      source,
+      supportsHourly,
+      supportsFlat,
+    );
     payload.service_location_type = locationType;
     payload.service_location_address =
       locationType === 'in_shop'
@@ -398,7 +465,7 @@ export class ProviderService implements OnModuleInit {
       new Set(
         (Array.isArray(userIds) ? userIds : [])
           .map((userId) => this.toTrimmedString(userId))
-          .filter((userId) => Boolean(userId)),
+          .filter(Boolean),
       ),
     );
     if (!normalizedIds.length) return { profiles: [] };
@@ -480,15 +547,12 @@ export class ProviderService implements OnModuleInit {
         (doc: any) => this.toTrimmedString(doc.status) === 'approved',
       );
 
-      const derivedStatus =
-        profile.verification_status ||
-        (hasRejectedDoc
-          ? 'rejected'
-          : hasPendingDoc
-            ? 'pending'
-            : hasApprovedDoc
-              ? 'approved'
-              : 'pending');
+      const derivedStatus = this.deriveApplicationStatus(
+        profile.verification_status,
+        hasRejectedDoc,
+        hasPendingDoc,
+        hasApprovedDoc,
+      );
 
       return {
         applicationId: profile.user_id,
@@ -617,12 +681,9 @@ export class ProviderService implements OnModuleInit {
       throw new BadRequestException(profileUpdate.error.message);
     }
 
-    const mappedUserStatus =
-      normalizedStatus === 'approved'
-        ? 'active'
-        : normalizedStatus === 'rejected'
-          ? 'rejected'
-          : 'pending';
+    const mappedUserStatus = this.mapVerificationStatusToUserStatus(
+      normalizedStatus,
+    );
     await this.request(AUTH_PATTERNS.UPDATE_USER_STATUS, {
       userId: normalizedId,
       status: mappedUserStatus,
@@ -717,12 +778,9 @@ export class ProviderService implements OnModuleInit {
       throw new InternalServerErrorException(profileUpdate.error.message);
     }
 
-    const mappedUserStatus =
-      normalizedStatus === 'approved'
-        ? 'active'
-        : normalizedStatus === 'rejected'
-          ? 'rejected'
-          : 'pending';
+    const mappedUserStatus = this.mapVerificationStatusToUserStatus(
+      normalizedStatus,
+    );
     await this.request(AUTH_PATTERNS.UPDATE_USER_STATUS, {
       userId: providerId,
       status: mappedUserStatus,
@@ -776,7 +834,7 @@ export class ProviderService implements OnModuleInit {
       new Set(
         (Array.isArray(serviceIds) ? serviceIds : [])
           .map((serviceId) => this.toTrimmedString(serviceId))
-          .filter((serviceId) => Boolean(serviceId)),
+          .filter(Boolean),
       ),
     );
     if (!normalizedIds.length) return { services: [] };

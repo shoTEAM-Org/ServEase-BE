@@ -31,7 +31,11 @@ export class SupportService implements OnModuleInit {
   }
 
   private toTrimmedString(value: unknown) {
-    return String(value ?? '').trim();
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value).trim();
+    }
+    return '';
   }
 
   private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
@@ -52,7 +56,7 @@ export class SupportService implements OnModuleInit {
       new Set(
         (Array.isArray(userIds) ? userIds : [])
           .map((userId) => this.toTrimmedString(userId))
-          .filter((userId) => Boolean(userId)),
+          .filter(Boolean),
       ),
     );
     if (!normalizedIds.length) return [] as any[];
@@ -62,7 +66,7 @@ export class SupportService implements OnModuleInit {
     });
     const users =
       response && typeof response === 'object' && 'users' in response
-        ? (response as any).users
+        ? response.users
         : [];
     return Array.isArray(users) ? users : [];
   }
@@ -171,7 +175,7 @@ export class SupportService implements OnModuleInit {
       new Set(
         rawDisputes
           .map((dispute: any) => this.toTrimmedString(dispute?.booking_id))
-          .filter((bookingId) => Boolean(bookingId)),
+          .filter(Boolean),
       ),
     );
     const bookingEntries = await Promise.all(
@@ -188,7 +192,7 @@ export class SupportService implements OnModuleInit {
           .flatMap((dispute: any) => {
             const booking = bookingsById.get(
               this.toTrimmedString(dispute?.booking_id),
-            ) as any;
+            );
             return [
               dispute?.raised_by,
               booking?.customer_id,
@@ -196,7 +200,7 @@ export class SupportService implements OnModuleInit {
             ];
           })
           .map((userId: unknown) => this.toTrimmedString(userId))
-          .filter((userId: string) => Boolean(userId)),
+          .filter(Boolean),
       ),
     );
     const users = await this.getUsersByIds(userIds);
@@ -207,16 +211,16 @@ export class SupportService implements OnModuleInit {
     const disputes = rawDisputes.map((dispute: any) => {
       const booking = bookingsById.get(
         this.toTrimmedString(dispute?.booking_id),
-      ) as any;
+      );
       const customer = usersById.get(
         this.toTrimmedString(booking?.customer_id),
-      ) as any;
+      );
       const provider = usersById.get(
         this.toTrimmedString(booking?.provider_id),
-      ) as any;
+      );
       const raisedBy = usersById.get(
         this.toTrimmedString(dispute?.raised_by),
-      ) as any;
+      );
 
       return {
         ...dispute,

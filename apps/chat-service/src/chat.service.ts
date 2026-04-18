@@ -16,7 +16,7 @@ import {
   sendKafkaRpcRequest,
 } from '@app/common';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { randomUUID } from 'crypto';
+import { randomUUID } from 'node:crypto';
 
 const CHAT_SCHEMA_CANDIDATES = ['messages'] as const;
 const MEMORY_CONVERSATION_PREFIX = 'memory:';
@@ -86,7 +86,7 @@ export class ChatService implements OnModuleInit {
     });
     const bookings =
       response && typeof response === 'object' && 'bookings' in response
-        ? (response as any).bookings
+        ? response.bookings
         : [];
     return Array.isArray(bookings) ? bookings : [];
   }
@@ -106,7 +106,7 @@ export class ChatService implements OnModuleInit {
       return null;
     }
 
-    return (response as any).booking || null;
+    return response.booking || null;
   }
 
   private resolveBookingContextId(booking: any, bookingId: string) {
@@ -164,7 +164,7 @@ export class ChatService implements OnModuleInit {
       new Set(
         (Array.isArray(userIds) ? userIds : [])
           .map((userId) => this.toTrimmedString(userId))
-          .filter((userId) => Boolean(userId)),
+          .filter(Boolean),
       ),
     );
     if (!normalizedIds.length) return [] as any[];
@@ -174,7 +174,7 @@ export class ChatService implements OnModuleInit {
     });
     const users =
       response && typeof response === 'object' && 'users' in response
-        ? (response as any).users
+        ? response.users
         : [];
     return Array.isArray(users) ? users : [];
   }
@@ -184,7 +184,7 @@ export class ChatService implements OnModuleInit {
       new Set(
         (Array.isArray(serviceIds) ? serviceIds : [])
           .map((serviceId) => this.toTrimmedString(serviceId))
-          .filter((serviceId) => Boolean(serviceId)),
+          .filter(Boolean),
       ),
     );
     if (!normalizedIds.length) return [] as any[];
@@ -206,7 +206,7 @@ export class ChatService implements OnModuleInit {
 
     const services =
       response && typeof response === 'object' && 'services' in response
-        ? (response as any).services
+        ? response.services
         : [];
     return Array.isArray(services) ? services : [];
   }
@@ -280,7 +280,7 @@ export class ChatService implements OnModuleInit {
     const normalizedBookingId = String(bookingId || '').trim();
     const conversationId = this.getMemoryConversationId(normalizedBookingId, true) as string;
     const next: MemoryChatMessageRow = {
-      id: `memory-${typeof randomUUID === 'function' ? randomUUID() : `${Date.now()}`}`,
+      id: `memory-${randomUUID()}`,
       conversation_id: conversationId,
       sender_id: String(senderId || '').trim(),
       body: String(text || '').trim(),
@@ -314,7 +314,7 @@ export class ChatService implements OnModuleInit {
   private getMemoryConversationSnapshot(bookingId: string, userId: string) {
     const messages = this.getMemoryMessages(bookingId);
     const conversationId = this.getMemoryConversationId(bookingId, false);
-    const lastMessage = messages.length ? messages[messages.length - 1] : null;
+    const lastMessage = messages.at(-1) || null;
     const unreadCount = messages.reduce((count, message) => {
       if (message.sender_id === String(userId || '').trim()) return count;
       if (String(message.delivery_status || '').toLowerCase() === 'read') return count;
@@ -391,7 +391,7 @@ export class ChatService implements OnModuleInit {
       new Set(
         (bookings || [])
           .map((booking: any) => this.toTrimmedString(booking?.[otherColumn]))
-          .filter((value: string) => Boolean(value)),
+          .filter(Boolean),
       ),
     );
     const bookingsWithoutServiceName = (bookings || []).filter(
@@ -401,7 +401,7 @@ export class ChatService implements OnModuleInit {
       new Set(
         bookingsWithoutServiceName
           .map((booking: any) => this.toTrimmedString(booking?.service_id))
-          .filter((value: string) => Boolean(value)),
+          .filter(Boolean),
       ),
     );
 
@@ -421,9 +421,9 @@ export class ChatService implements OnModuleInit {
 
     const conversations = await Promise.all(
       (bookings || []).map(async (booking: any) => {
-        const otherPartyId = this.toTrimmedString((booking as any)[otherColumn]);
+        const otherPartyId = this.toTrimmedString(booking?.[otherColumn]);
         const serviceId = this.toTrimmedString(booking?.service_id);
-        const otherUser = usersById.get(otherPartyId) as any;
+        const otherUser = usersById.get(otherPartyId);
 
         const bookingId = String(booking.id || '').trim();
         let conversation: { id: string } | null = null;
@@ -449,7 +449,7 @@ export class ChatService implements OnModuleInit {
           if (conversation) {
             const conversationId = conversation.id;
             const [lastMsgResult, unreadResult] = await Promise.all([
-              this.runWithChatSchemaFallback<any | null>(
+              this.runWithChatSchemaFallback<Record<string, unknown> | null>(
                 (schema) =>
                   this.supabase
                     .schema(schema)

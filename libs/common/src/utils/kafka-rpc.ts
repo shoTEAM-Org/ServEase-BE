@@ -51,10 +51,18 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function sendKafkaRpcRequest<T>(
-  sourceFactory: () => Observable<T>,
-  options: KafkaRpcRequestOptions = {},
-): Promise<T> {
+interface ResolvedKafkaRpcOptions {
+  timeoutMs: number;
+  retries: number;
+  retryDelayMs: number;
+  context: string;
+  logger: Logger;
+  maxAttempts: number;
+}
+
+function resolveKafkaRpcOptions(
+  options: KafkaRpcRequestOptions,
+): ResolvedKafkaRpcOptions {
   const timeoutMs =
     Number.isFinite(options.timeoutMs) && Number(options.timeoutMs) > 0
       ? Number(options.timeoutMs)
@@ -69,7 +77,28 @@ export async function sendKafkaRpcRequest<T>(
       : DEFAULT_INTERSERVICE_RETRY_DELAY_MS;
   const context = String(options.context || 'kafka.request');
   const logger = options.logger || new Logger('KafkaRpc');
-  const maxAttempts = retries + 1;
+
+  return {
+    timeoutMs,
+    retries,
+    retryDelayMs,
+    context,
+    logger,
+    maxAttempts: retries + 1,
+  };
+}
+
+export async function sendKafkaRpcRequest<T>(
+  sourceFactory: () => Observable<T>,
+  options: KafkaRpcRequestOptions = {},
+): Promise<T> {
+  const {
+    timeoutMs,
+    retryDelayMs,
+    context,
+    logger,
+    maxAttempts,
+  } = resolveKafkaRpcOptions(options);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {

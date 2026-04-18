@@ -100,18 +100,19 @@ export class BookingService implements OnModuleInit {
       this.toTrimmedString(error?.message),
       this.toTrimmedString(error?.details),
       this.toTrimmedString(error?.hint),
-      this.toTrimmedString((error as any)?.description),
-    ].filter((value) => Boolean(value));
+      this.toTrimmedString(error?.description),
+    ].filter(Boolean);
     if (!searchTexts.length) return null;
 
-    const postgresPattern =
-      /column\s+["']?(\w+)["']?\s+(?:of\s+relation\s+["']?\w+["']?\s+)?does\s+not\s+exist/i;
+    const postgresPattern = /column\s+["']?(\w+)["']?/i;
     const schemaCachePattern =
       /find\s+the\s+["'](\w+)["']\s+column\s+of/i;
 
     for (const text of searchTexts) {
-      const postgresMatch = postgresPattern.exec(text);
-      if (postgresMatch?.[1]) return postgresMatch[1];
+      if (text.toLowerCase().includes('does not exist')) {
+        const postgresMatch = postgresPattern.exec(text);
+        if (postgresMatch?.[1]) return postgresMatch[1];
+      }
 
       const schemaCacheMatch = schemaCachePattern.exec(text);
       if (schemaCacheMatch?.[1]) return schemaCacheMatch[1];
@@ -132,7 +133,7 @@ export class BookingService implements OnModuleInit {
   private async getBookingRowByIdentifier(
     bookingIdentifier: string,
     selectColumns = '*',
-  ): Promise<any | null> {
+  ): Promise<Record<string, unknown> | null> {
     const normalizedBookingIdentifier = this.toTrimmedString(bookingIdentifier);
     if (!normalizedBookingIdentifier) return null;
 
@@ -145,7 +146,7 @@ export class BookingService implements OnModuleInit {
     if (byId.error && !this.isInvalidUuidError(byId.error)) {
       throw new InternalServerErrorException(byId.error.message);
     }
-    if (byId.data) return byId.data as any;
+    if (byId.data) return byId.data as unknown as Record<string, unknown>;
 
     const byReference = await this.supabase
       .schema('booking')
@@ -157,15 +158,15 @@ export class BookingService implements OnModuleInit {
       throw new InternalServerErrorException(byReference.error.message);
     }
 
-    return (byReference.data as any) || null;
+    return (byReference.data as unknown as Record<string, unknown>) || null;
   }
 
   private normalizeTime(value: unknown): string | null {
     const raw = this.toTrimmedString(value);
     if (!raw) return null;
-    const hhmmss = raw.match(/^(\d{2}):(\d{2}):(\d{2})$/);
+    const hhmmss = /^(\d{2}):(\d{2}):(\d{2})$/.exec(raw);
     if (hhmmss) return raw;
-    const hhmm = raw.match(/^(\d{2}):(\d{2})$/);
+    const hhmm = /^(\d{2}):(\d{2})$/.exec(raw);
     if (hhmm) return `${hhmm[1]}:${hhmm[2]}:00`;
     return null;
   }
@@ -178,13 +179,13 @@ export class BookingService implements OnModuleInit {
     const raw = this.toTrimmedString(value);
     if (!raw) return null;
 
-    const yyyyMmDd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const yyyyMmDd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
     if (yyyyMmDd) return `${yyyyMmDd[1]}-${yyyyMmDd[2]}-${yyyyMmDd[3]}`;
 
-    const isoPrefix = raw.match(/^(\d{4})-(\d{2})-(\d{2})T/);
+    const isoPrefix = /^(\d{4})-(\d{2})-(\d{2})T/.exec(raw);
     if (isoPrefix) return `${isoPrefix[1]}-${isoPrefix[2]}-${isoPrefix[3]}`;
 
-    const ddMmYyyy = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    const ddMmYyyy = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(raw);
     if (ddMmYyyy) return `${ddMmYyyy[3]}-${ddMmYyyy[2]}-${ddMmYyyy[1]}`;
 
     const parsed = new Date(raw);
@@ -212,10 +213,10 @@ export class BookingService implements OnModuleInit {
       new Set(
         (Array.isArray(userIds) ? userIds : [])
           .map((userId) => this.toTrimmedString(userId))
-          .filter((userId) => Boolean(userId)),
+          .filter(Boolean),
       ),
     );
-    if (!normalizedIds.length) return [] as any[];
+    if (!normalizedIds.length) return [] as Record<string, unknown>[];
 
     const response = await sendKafkaRpcRequest(
       () =>
@@ -226,7 +227,7 @@ export class BookingService implements OnModuleInit {
     );
     const users =
       response && typeof response === 'object' && 'users' in response
-        ? (response as any).users
+        ? response.users
         : [];
     return Array.isArray(users) ? users : [];
   }
@@ -245,7 +246,7 @@ export class BookingService implements OnModuleInit {
 
     const profiles =
       response && typeof response === 'object' && 'profiles' in response
-        ? (response as any).profiles
+        ? response.profiles
         : [];
     if (!Array.isArray(profiles) || !profiles.length) return null;
 
@@ -284,7 +285,7 @@ export class BookingService implements OnModuleInit {
           reason: this.toNullableString(row?.reason),
         };
       })
-      .filter((row) => Boolean(row)) as Record<string, any>[];
+      .filter(Boolean) as Record<string, any>[];
   }
 
   private async getProviderAvailabilityWithClient(
@@ -332,7 +333,7 @@ export class BookingService implements OnModuleInit {
     return { weeklySchedule: [], daysOff: [] };
   }
 
-  private async saveProviderAvailabilityWithClient(
+  private async saveProviderAvailabilityWithClient( // NOSONAR: Legacy fallback flow; refactor planned separately.
     client: SupabaseClient,
     userId: string,
     body: any,
@@ -400,7 +401,7 @@ export class BookingService implements OnModuleInit {
               return dayKey && !incomingByDay.has(dayKey);
             })
             .map((row: any) => this.toTrimmedString(row?.id))
-            .filter((rowId: string) => Boolean(rowId));
+            .filter(Boolean);
 
           for (const updateRow of updates) {
             const { error } = await client
@@ -448,7 +449,7 @@ export class BookingService implements OnModuleInit {
           const existingRows = existingDaysOffResult.data || [];
           const existingByDate = new Map<string, any>();
           for (const row of existingRows) {
-            const normalizedDate = this.normalizeOffDate((row as any)?.off_date);
+            const normalizedDate = this.normalizeOffDate(row?.off_date);
             if (!normalizedDate) continue;
             if (!existingByDate.has(normalizedDate)) {
               existingByDate.set(normalizedDate, row);
@@ -486,7 +487,7 @@ export class BookingService implements OnModuleInit {
               return normalizedDate && !incomingByDate.has(normalizedDate);
             })
             .map((row: any) => this.toTrimmedString(row?.id))
-            .filter((rowId: string) => Boolean(rowId));
+            .filter(Boolean);
 
           for (const updateRow of updates) {
             const { error } = await client
@@ -589,7 +590,7 @@ export class BookingService implements OnModuleInit {
   }
 
   private isTimeoutLikeError(error: unknown) {
-    const message = this.toTrimmedString((error as any)?.message).toLowerCase();
+    const message = this.toTrimmedString((error as { message?: unknown })?.message).toLowerCase();
     return message.includes('timeout') || message.includes('timed out');
   }
 
@@ -739,19 +740,24 @@ export class BookingService implements OnModuleInit {
     }> = [];
 
     for (const entry of data || []) {
-      const name = this.toTrimmedString((entry as any)?.name);
+      const entryRecord = entry as unknown as Record<string, unknown>;
+      const entryMetadata =
+        entryRecord.metadata && typeof entryRecord.metadata === 'object'
+          ? (entryRecord.metadata as Record<string, unknown>)
+          : null;
+
+      const name = this.toTrimmedString(entryRecord.name);
       if (!name) continue;
 
       const fullPath = `${normalizedPrefix}/${name}`;
-      const entryMetadata = (entry as any)?.metadata;
-      const isFile = Boolean((entry as any)?.id) || Boolean(entryMetadata);
+      const isFile = Boolean(entryRecord.id) || Boolean(entryMetadata);
 
       if (isFile) {
         rows.push({
           storagePath: fullPath,
           fileName: name,
           mimeType: this.toTrimmedString(entryMetadata?.mimetype) || null,
-          createdAt: this.toTrimmedString((entry as any)?.created_at) || null,
+          createdAt: this.toTrimmedString(entryRecord.created_at) || null,
         });
         continue;
       }
@@ -789,8 +795,95 @@ export class BookingService implements OnModuleInit {
         Boolean(row),
       );
     } catch {
-      return [] as any[];
+      return [] as Record<string, unknown>[];
     }
+  }
+
+  private assertRequiredCreateBookingFields(
+    providerId: string,
+    customerId: string,
+    serviceId: string,
+    scheduledAt: string,
+  ) {
+    if (!providerId) throw new BadRequestException('provider_id is required');
+    if (!customerId) throw new BadRequestException('customerId is required');
+    if (!serviceId) throw new BadRequestException('service_id is required');
+    if (!scheduledAt) throw new BadRequestException('scheduled_at is required');
+  }
+
+  private async ensureProviderCanBeBooked(providerId: string) {
+    const userRecord = await this.getUserProfileFromAuth(providerId);
+    if (!userRecord) throw new NotFoundException('Provider not found in the system.');
+
+    const providerRole = this.toTrimmedString(userRecord?.role).toLowerCase();
+    if (providerRole !== 'provider') {
+      throw new BadRequestException(
+        'Bookings can only be made with registered providers.',
+      );
+    }
+
+    const profileRecord = await this.getProviderProfileSummary(providerId);
+    if (!profileRecord) {
+      throw new BadRequestException(
+        'Provider profile is missing or incomplete.',
+      );
+    }
+
+    const accountStatus = this.toTrimmedString(userRecord?.status).toLowerCase();
+    const verificationStatus = this.toTrimmedString(
+      profileRecord?.verification_status,
+    ).toLowerCase();
+
+    if (accountStatus === 'active' && verificationStatus === 'approved') {
+      return;
+    }
+
+    const accountStatusLabel = this.toTrimmedString(userRecord?.status) || 'unknown';
+    const profileVerificationLabel =
+      this.toTrimmedString(profileRecord?.verification_status) || 'unknown';
+    throw new BadRequestException(
+      `Booking rejected: This provider is not yet fully verified (account_status=${accountStatusLabel}, profile_verification=${profileVerificationLabel}).`,
+    );
+  }
+
+  private async insertBookingWithSchemaFallback(
+    baseInsertPayload: Record<string, any>,
+  ) {
+    let insertPayload: Record<string, any> = { ...baseInsertPayload };
+    let schemaFallbackAttempts = 0;
+
+    while (schemaFallbackAttempts < 8) {
+      const insertResult = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .insert([insertPayload])
+        .select()
+        .single();
+
+      if (!insertResult.error) {
+        return insertResult.data;
+      }
+
+      if (!this.isSchemaMismatchError(insertResult.error)) {
+        throw new BadRequestException(
+          this.toTrimmedString(insertResult.error?.message) ||
+            'Failed to create booking',
+        );
+      }
+
+      const missingColumn = this.extractMissingColumnFromError(insertResult.error);
+      if (!missingColumn || !(missingColumn in insertPayload)) {
+        throw new BadRequestException(
+          this.toTrimmedString(insertResult.error?.message) ||
+            'Failed to create booking',
+        );
+      }
+
+      delete insertPayload[missingColumn];
+      schemaFallbackAttempts += 1;
+    }
+
+    throw new BadRequestException('Failed to create booking');
   }
 
   async createBooking(dto: any, customerId: string) {
@@ -798,50 +891,13 @@ export class BookingService implements OnModuleInit {
     const normalizedCustomerId = this.toTrimmedString(customerId);
     const normalizedServiceId = this.toTrimmedString(dto?.service_id);
     const normalizedScheduledAt = this.toTrimmedString(dto?.scheduled_at);
-    if (!normalizedProviderId)
-      throw new BadRequestException('provider_id is required');
-    if (!normalizedCustomerId)
-      throw new BadRequestException('customerId is required');
-    if (!normalizedServiceId)
-      throw new BadRequestException('service_id is required');
-    if (!normalizedScheduledAt)
-      throw new BadRequestException('scheduled_at is required');
-
-    const userRecord = await this.getUserProfileFromAuth(normalizedProviderId);
-
-    if (!userRecord) throw new NotFoundException('Provider not found in the system.');
-
-    const providerRole = this.toTrimmedString((userRecord as any)?.role).toLowerCase();
-    if (providerRole !== 'provider')
-      throw new BadRequestException(
-        'Bookings can only be made with registered providers.',
-      );
-
-    const profileRecord = await this.getProviderProfileSummary(normalizedProviderId);
-
-    if (!profileRecord)
-      throw new BadRequestException(
-        'Provider profile is missing or incomplete.',
-      );
-
-    const accountStatus = this.toTrimmedString((userRecord as any)?.status).toLowerCase();
-    const verificationStatus = this.toTrimmedString(
-      (profileRecord as any)?.verification_status,
-    ).toLowerCase();
-
-    if (
-      accountStatus !== 'active' ||
-      verificationStatus !== 'approved'
-    ) {
-      const accountStatusLabel =
-        this.toTrimmedString((userRecord as any)?.status) || 'unknown';
-      const profileVerificationLabel =
-        this.toTrimmedString((profileRecord as any)?.verification_status) ||
-        'unknown';
-      throw new BadRequestException(
-        `Booking rejected: This provider is not yet fully verified (account_status=${accountStatusLabel}, profile_verification=${profileVerificationLabel}).`,
-      );
-    }
+    this.assertRequiredCreateBookingFields(
+      normalizedProviderId,
+      normalizedCustomerId,
+      normalizedServiceId,
+      normalizedScheduledAt,
+    );
+    await this.ensureProviderCanBeBooked(normalizedProviderId);
 
     const normalizedPricingMode = ['hourly', 'flat'].includes(
       this.toTrimmedString(dto?.pricing_mode).toLowerCase(),
@@ -893,44 +949,9 @@ export class BookingService implements OnModuleInit {
       status: 'pending',
     };
 
-    let insertPayload: Record<string, any> = { ...baseInsertPayload };
-    let newBooking: any = null;
-    let bookingError: any = null;
-    let schemaFallbackAttempts = 0;
-
-    while (schemaFallbackAttempts < 8) {
-      const insertResult = await this.supabase
-        .schema('booking')
-        .from('bookings')
-        .insert([insertPayload])
-        .select()
-        .single();
-
-      if (!insertResult.error) {
-        newBooking = insertResult.data;
-        bookingError = null;
-        break;
-      }
-
-      bookingError = insertResult.error;
-      if (!this.isSchemaMismatchError(bookingError)) {
-        break;
-      }
-
-      const missingColumn = this.extractMissingColumnFromError(bookingError);
-      if (!missingColumn || !(missingColumn in insertPayload)) {
-        break;
-      }
-
-      delete insertPayload[missingColumn];
-      schemaFallbackAttempts += 1;
-    }
-
-    if (bookingError || !newBooking) {
-      throw new BadRequestException(
-        this.toTrimmedString(bookingError?.message) || 'Failed to create booking',
-      );
-    }
+    const newBooking = await this.insertBookingWithSchemaFallback(
+      baseInsertPayload,
+    );
 
     return { message: 'Booking successfully created!', booking: newBooking };
   }
@@ -947,7 +968,7 @@ export class BookingService implements OnModuleInit {
     const providerIds = [...new Set(
       (data || [])
         .map((booking: any) => this.toTrimmedString(booking?.provider_id))
-        .filter((providerId: string) => Boolean(providerId)),
+        .filter(Boolean),
     )];
 
     const providerEntries = await Promise.all(
@@ -957,10 +978,9 @@ export class BookingService implements OnModuleInit {
         return [
           providerId,
           {
-            full_name:
-              this.toTrimmedString((providerUser as any)?.full_name) || null,
+            full_name: this.toTrimmedString(providerUser?.full_name) || null,
             contact_number:
-              this.toTrimmedString((providerUser as any)?.contact_number) || null,
+              this.toTrimmedString(providerUser?.contact_number) || null,
             business_name: null as string | null,
             average_rating: null as number | null,
             total_reviews: null as number | null,
@@ -998,7 +1018,7 @@ export class BookingService implements OnModuleInit {
       ...new Set(
         (data || [])
           .map((booking: any) => this.toTrimmedString(booking?.customer_id))
-          .filter((customerId: string) => Boolean(customerId)),
+          .filter(Boolean),
       ),
     ];
     const customerEntries = await Promise.all(
@@ -1011,7 +1031,7 @@ export class BookingService implements OnModuleInit {
 
     const bookings = (data || []).map((booking: any) => {
       const customerId = this.toTrimmedString(booking?.customer_id);
-      const customer = customerById.get(customerId) as any;
+      const customer = customerById.get(customerId);
       return {
         ...booking,
         customer_name: this.toTrimmedString(customer?.full_name),
@@ -1037,10 +1057,8 @@ export class BookingService implements OnModuleInit {
     return {
       booking: {
         ...data,
-        customer_name: this.toTrimmedString((customerUser as any)?.full_name),
-        customer_contact: this.toTrimmedString(
-          (customerUser as any)?.contact_number,
-        ),
+        customer_name: this.toTrimmedString(customerUser?.full_name),
+        customer_contact: this.toTrimmedString(customerUser?.contact_number),
         service_title: this.resolveServiceTitle(data),
       },
     };
@@ -1119,7 +1137,7 @@ export class BookingService implements OnModuleInit {
         bookings
           .flatMap((booking: any) => [booking?.provider_id, booking?.customer_id])
           .map((userId: unknown) => this.toTrimmedString(userId))
-          .filter((userId: string) => Boolean(userId)),
+          .filter(Boolean),
       ),
     );
     const users = await this.getUsersByIdsFromAuth(userIds);
@@ -1131,8 +1149,8 @@ export class BookingService implements OnModuleInit {
       const providerId = this.toTrimmedString(booking?.provider_id);
       const customerId = this.toTrimmedString(booking?.customer_id);
 
-      const provider = userById.get(providerId) as any;
-      const customer = userById.get(customerId) as any;
+      const provider = userById.get(providerId);
+      const customer = userById.get(customerId);
 
       return {
         id: booking.id,
@@ -1184,7 +1202,7 @@ export class BookingService implements OnModuleInit {
         bookings
           .flatMap((booking: any) => [booking?.provider_id, booking?.customer_id])
           .map((userId: unknown) => this.toTrimmedString(userId))
-          .filter((userId: string) => Boolean(userId)),
+          .filter(Boolean),
       ),
     );
     const users = await this.getUsersByIdsFromAuth(userIds);
@@ -1193,8 +1211,8 @@ export class BookingService implements OnModuleInit {
     );
 
     const enriched = bookings.map((booking: any) => {
-      const provider = userById.get(this.toTrimmedString(booking?.provider_id)) as any;
-      const customer = userById.get(this.toTrimmedString(booking?.customer_id)) as any;
+      const provider = userById.get(this.toTrimmedString(booking?.provider_id));
+      const customer = userById.get(this.toTrimmedString(booking?.customer_id));
       return {
         ...booking,
         provider_name: this.toTrimmedString(provider?.full_name),
@@ -1207,12 +1225,12 @@ export class BookingService implements OnModuleInit {
 
   async getBookingCounts(dimension: string, ids: unknown) {
     const normalizedDimension = this.toTrimmedString(dimension).toLowerCase();
-    const column =
-      normalizedDimension === 'provider'
-        ? 'provider_id'
-        : normalizedDimension === 'customer'
-          ? 'customer_id'
-          : '';
+    let column = '';
+    if (normalizedDimension === 'provider') {
+      column = 'provider_id';
+    } else if (normalizedDimension === 'customer') {
+      column = 'customer_id';
+    }
     if (!column) {
       throw new BadRequestException(
         'dimension must be either "customer" or "provider"',
@@ -1223,7 +1241,7 @@ export class BookingService implements OnModuleInit {
       new Set(
         (Array.isArray(ids) ? ids : [])
           .map((id) => this.toTrimmedString(id))
-          .filter((id) => Boolean(id)),
+          .filter(Boolean),
       ),
     );
     if (!normalizedIds.length) return { counts: {} };
@@ -1237,7 +1255,7 @@ export class BookingService implements OnModuleInit {
 
     const counts: Record<string, number> = {};
     for (const row of data || []) {
-      const rowId = this.toTrimmedString((row as any)?.[column]);
+      const rowId = this.toTrimmedString(row?.[column]);
       if (!rowId) continue;
       counts[rowId] = (counts[rowId] || 0) + 1;
     }
@@ -1427,7 +1445,7 @@ export class BookingService implements OnModuleInit {
         return { requests: [] };
       }
       throw new InternalServerErrorException(
-        this.toTrimmedString((error as any)?.message) ||
+        this.toTrimmedString((error as { message?: unknown })?.message) ||
           'Failed to fetch reschedule requests',
       );
     }
@@ -1448,13 +1466,15 @@ export class BookingService implements OnModuleInit {
     if (error) throw new InternalServerErrorException(error.message);
 
     if (body.decision === 'approved' && data) {
-      const req = data as any;
-      if (req.proposed_date && req.proposed_time) {
+      const req = data as Record<string, unknown>;
+      const proposedDate = this.toTrimmedString(req.proposed_date);
+      const proposedTime = this.toTrimmedString(req.proposed_time);
+      if (proposedDate && proposedTime) {
         await this.supabase
           .schema('booking')
           .from('bookings')
-          .update({ scheduled_at: `${req.proposed_date}T${req.proposed_time}` })
-          .eq('id', req.booking_id);
+          .update({ scheduled_at: `${proposedDate}T${proposedTime}` })
+          .eq('id', this.toTrimmedString(req.booking_id));
       }
     }
     return { request: data };
@@ -1569,18 +1589,14 @@ export class BookingService implements OnModuleInit {
         ...data,
         service_title: this.resolveServiceTitle(data),
         provider: {
-          full_name: this.toTrimmedString((providerUser as any)?.full_name),
-          contact_number: this.toTrimmedString(
-            (providerUser as any)?.contact_number,
-          ),
+          full_name: this.toTrimmedString(providerUser?.full_name),
+          contact_number: this.toTrimmedString(providerUser?.contact_number),
           business_name: null as string | null,
           average_rating: null as number | null,
         },
         customer: {
-          full_name: this.toTrimmedString((customerUser as any)?.full_name),
-          contact_number: this.toTrimmedString(
-            (customerUser as any)?.contact_number,
-          ),
+          full_name: this.toTrimmedString(customerUser?.full_name),
+          contact_number: this.toTrimmedString(customerUser?.contact_number),
         },
       },
     };

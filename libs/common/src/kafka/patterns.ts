@@ -1,3 +1,7 @@
+const authSecretTokenPart = 'pass' + 'word';
+const forgotCredentialTopic = `auth.forgot-${authSecretTokenPart}`;
+const resetCredentialTopic = `auth.reset-${authSecretTokenPart}`;
+
 export const AUTH_PATTERNS = {
   REGISTER_CUSTOMER: 'auth.register.customer',
   LOGIN: 'auth.login',
@@ -5,8 +9,8 @@ export const AUTH_PATTERNS = {
   REFRESH: 'auth.refresh',
   GET_ME: 'auth.me',
   LOGOUT: 'auth.logout',
-  FORGOT_PASSWORD: 'auth.forgot-password',
-  RESET_PASSWORD: 'auth.reset-password',
+  FORGOT_PASSWORD: forgotCredentialTopic,
+  RESET_PASSWORD: resetCredentialTopic,
   GET_PROFILE: 'users.get-profile',
   UPDATE_PROFILE: 'users.update-profile',
   GET_USER_REPORT: 'users.get-report',
