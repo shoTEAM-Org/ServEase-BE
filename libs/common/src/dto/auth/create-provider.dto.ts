@@ -1,9 +1,15 @@
-import { IsEmail, IsString, IsEnum, MinLength, IsNotEmpty } from 'class-validator';
+import {
+  IsEmail,
+  IsString,
+  IsEnum,
+  MinLength,
+  IsNotEmpty,
+} from 'class-validator';
 
 export enum DocumentType {
   PERMIT = 'business_permit',
   GOVERNMENT_ID = 'government_id',
-  CERTIFICATION = 'certification'
+  CERTIFICATION = 'certification',
 }
 
 export class RegisterProviderDto {

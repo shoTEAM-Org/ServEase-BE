@@ -46,6 +46,25 @@ export class AuthKafkaController {
     return this.usersService.getProfile(data.userId);
   }
 
+  @MessagePattern(AUTH_PATTERNS.GET_USERS_BY_ROLE)
+  async getUsersByRole(@Payload() data: any) {
+    return this.usersService.getUsersByRole(
+      data?.role,
+      data?.page,
+      data?.limit,
+    );
+  }
+
+  @MessagePattern(AUTH_PATTERNS.GET_USERS_BY_IDS)
+  async getUsersByIds(@Payload() data: any) {
+    return this.usersService.getUsersByIds(data?.userIds);
+  }
+
+  @MessagePattern(AUTH_PATTERNS.GET_USER_REPORT)
+  async getUserReport(@Payload() data: any) {
+    return this.usersService.getUserReport(data?.from, data?.to);
+  }
+
   @MessagePattern(AUTH_PATTERNS.GET_CUSTOMER_PROFILE)
   async getCustomerProfile(@Payload() data: any) {
     return this.usersService.getCustomerProfile(data.userId);
@@ -91,11 +110,28 @@ export class AuthKafkaController {
   @EventPattern(AUTH_PATTERNS.UPDATE_ADDRESS)
   async updateAddress(@Payload() data: any) {
     const { userId, addressId, ...payload } = data || {};
-    return this.usersService.updateAddress(addressId, userId, payload);
+    try {
+      return await this.usersService.updateAddress(addressId, userId, payload);
+    } catch (err: any) {
+      console.error('[auth-service] updateAddress failed:', {
+        addressId,
+        userId,
+        payload,
+        message: err?.message,
+        code: err?.code,
+        details: err?.response || err,
+      });
+      throw err;
+    }
   }
 
   @EventPattern(AUTH_PATTERNS.DELETE_ADDRESS)
   async deleteAddress(@Payload() data: any) {
     return this.usersService.deleteAddress(data?.addressId, data?.userId);
+  }
+
+  @MessagePattern(AUTH_PATTERNS.UPDATE_USER_STATUS)
+  async updateUserStatus(@Payload() data: any) {
+    return this.usersService.updateUserStatus(data?.userId, data?.status);
   }
 }

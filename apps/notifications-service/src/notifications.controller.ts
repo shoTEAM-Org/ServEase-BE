@@ -17,6 +17,16 @@ export class NotificationsKafkaController {
     return this.notificationsService.getUnreadCount(data.userId);
   }
 
+  @MessagePattern(NOTIFICATION_PATTERNS.SEND_BROADCAST)
+  async sendBroadcast(@Payload() data: any) {
+    return this.notificationsService.sendBroadcast(
+      data?.userIds,
+      data?.title,
+      data?.message,
+      data?.type,
+    );
+  }
+
   @EventPattern(NOTIFICATION_PATTERNS.MARK_READ)
   async markRead(@Payload() data: any) {
     return this.notificationsService.markRead(data.notificationId, data.userId);

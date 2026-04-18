@@ -1,10 +1,24 @@
 import { Module } from '@nestjs/common';
-import { SupabaseModule } from '@app/database';
+import { ClientsModule, Transport } from '@nestjs/microservices';
 import { AdminService } from './admin.service.js';
 import { AdminKafkaController } from './admin.controller.js';
 
 @Module({
-  imports: [SupabaseModule],
+  imports: [
+    ClientsModule.register([
+      {
+        name: 'KAFKA_CLIENT',
+        transport: Transport.KAFKA,
+        options: {
+          client: {
+            clientId: 'admin-service-client',
+            brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
+          },
+          consumer: { groupId: 'admin-service-client-consumer' },
+        },
+      },
+    ]),
+  ],
   controllers: [AdminKafkaController],
   providers: [AdminService],
   exports: [AdminService],

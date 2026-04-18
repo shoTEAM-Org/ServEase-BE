@@ -242,6 +242,29 @@ export class UsersService {
     return uniqueCandidates;
   }
 
+  private buildAddressUpdatePayloadCandidates(source: Record<string, any>) {
+    const candidates = [
+      this.normalizeAddressPayload(source),
+      this.normalizeAddressPayload(source, { legacyOnly: true }),
+    ];
+
+    const uniqueCandidates: Record<string, any>[] = [];
+    const seen = new Set<string>();
+    for (const candidate of candidates) {
+      const cleanCandidate = Object.fromEntries(
+        Object.entries(candidate).filter(([, value]) => value !== undefined),
+      );
+      if (Object.keys(cleanCandidate).length === 0) continue;
+
+      const key = JSON.stringify(cleanCandidate);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      uniqueCandidates.push(cleanCandidate);
+    }
+
+    return uniqueCandidates;
+  }
+
   private async updateAddressByColumn(
     schemaName: (typeof this.addressSchemas)[number],
     idColumn: 'address_id' | 'id',
@@ -249,14 +272,20 @@ export class UsersService {
     userId: string,
     payload: Record<string, any>,
   ) {
-    return this.supabase
+    const { data, error } = await this.supabase
       .schema(schemaName)
       .from('user_addresses')
       .update(payload)
       .eq(idColumn, addressId)
       .eq('user_id', userId)
-      .select()
-      .single();
+      .select();
+
+    const rows = Array.isArray(data) ? data : [];
+    return {
+      data: rows[0] || null,
+      error,
+      rowCount: rows.length,
+    };
   }
 
   private async deleteAddressByColumn(
@@ -276,18 +305,154 @@ export class UsersService {
   async getProfile(userId: string) {
     const { data, error } = await this.supabase.schema('identity_and_user').from('users')
       .select('id, full_name, email, contact_number, role, status, date_of_birth, created_at')
-      .eq('id', userId).single();
+      .eq('id', userId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
     if (error) throw new InternalServerErrorException('Failed to fetch profile: ' + error.message);
     if (!data) throw new NotFoundException('User not found');
     return data;
+  }
+
+  async getUsersByRole(role: string, page = 1, limit = 20) {
+    const normalizedRole = this.toTrimmedString(role).toLowerCase();
+    if (!normalizedRole) throw new BadRequestException('role is required');
+
+    const normalizedPage = Number.isFinite(Number(page))
+      ? Math.max(1, Number(page))
+      : 1;
+    const normalizedLimit = Number.isFinite(Number(limit))
+      ? Math.max(1, Number(limit))
+      : 20;
+    const offset = (normalizedPage - 1) * normalizedLimit;
+
+    const { data, error, count } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .select(
+        'id, full_name, email, contact_number, role, status, created_at',
+        { count: 'exact' },
+      )
+      .eq('role', normalizedRole)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + normalizedLimit - 1);
+    if (error) {
+      throw new InternalServerErrorException(
+        'Failed to fetch users by role: ' + error.message,
+      );
+    }
+
+    return {
+      users: data || [],
+      total: count || 0,
+      page: normalizedPage,
+      limit: normalizedLimit,
+    };
+  }
+
+  async getUsersByIds(userIds: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(userIds) ? userIds : [])
+          .map((id) => this.toTrimmedString(id))
+          .filter((id) => Boolean(id)),
+      ),
+    );
+
+    if (!normalizedIds.length) return { users: [] };
+
+    const { data, error } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .select('id, full_name, email, contact_number, role, status, created_at')
+      .in('id', normalizedIds);
+    if (error) {
+      throw new InternalServerErrorException(
+        'Failed to fetch users by ids: ' + error.message,
+      );
+    }
+
+    return { users: data || [] };
+  }
+
+  async getUserReport(from?: string, to?: string) {
+    let query = this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .select('role, status, created_at');
+    if (from) query = query.gte('created_at', from);
+    if (to) query = query.lte('created_at', to);
+
+    const { data, error } = await query;
+    if (error) {
+      throw new InternalServerErrorException(
+        'Failed to generate user report: ' + error.message,
+      );
+    }
+
+    const users = data || [];
+    const byRole = users.reduce((acc: Record<string, number>, user: any) => {
+      const role = this.toTrimmedString(user?.role) || 'unknown';
+      acc[role] = (acc[role] || 0) + 1;
+      return acc;
+    }, {});
+    const byStatus = users.reduce((acc: Record<string, number>, user: any) => {
+      const status = this.toTrimmedString(user?.status) || 'unknown';
+      acc[status] = (acc[status] || 0) + 1;
+      return acc;
+    }, {});
+
+    return { total: users.length, by_role: byRole, by_status: byStatus };
   }
 
   async updateProfile(userId: string, updates: Record<string, any>) {
     const allowed = ['full_name', 'contact_number', 'date_of_birth'];
     const filtered: Record<string, any> = {};
     for (const key of allowed) { if (updates[key] !== undefined) filtered[key] = updates[key]; }
-    const { data, error } = await this.supabase.schema('identity_and_user').from('users').update(filtered).eq('id', userId).select().single();
+    const { data, error } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .update(filtered)
+      .eq('id', userId)
+      .select()
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
     if (error) throw new InternalServerErrorException('Failed to update profile: ' + error.message);
+    return data;
+  }
+
+  async updateUserStatus(userId: string, status: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+    if (!normalizedStatus) throw new BadRequestException('status is required');
+
+    const allowedStatuses = new Set([
+      'pending',
+      'active',
+      'rejected',
+      'suspended',
+      'inactive',
+    ]);
+    if (!allowedStatuses.has(normalizedStatus)) {
+      throw new BadRequestException('Invalid status value');
+    }
+
+    const { data, error } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .update({ status: normalizedStatus })
+      .eq('id', normalizedUserId)
+      .select('id, status')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) {
+      throw new InternalServerErrorException(
+        'Failed to update user status: ' + error.message,
+      );
+    }
     return data;
   }
 
@@ -531,6 +696,110 @@ export class UsersService {
     throw new InternalServerErrorException(lastError?.message || 'Failed to save address');
   }
 
+  private async tryUpdateAddressCandidate(
+    schemaName: (typeof this.addressSchemas)[number],
+    idColumn: 'address_id' | 'id',
+    addressId: string,
+    userId: string,
+    payloadCandidate: Record<string, any>,
+  ) {
+    let currentPayload = { ...payloadCandidate };
+    let lastError: any = null;
+    let hadQueryableSchema = false;
+
+    for (let retry = 0; retry < 8; retry += 1) {
+      const result = await this.updateAddressByColumn(
+        schemaName,
+        idColumn,
+        addressId,
+        userId,
+        currentPayload,
+      );
+
+      if (!result.error) {
+        hadQueryableSchema = true;
+
+        if (result.data) {
+          if (result.rowCount > 1) {
+            console.warn('[users.update-address] multiple rows updated', {
+              userId,
+              addressId,
+              schemaName,
+              idColumn,
+              rowCount: result.rowCount,
+            });
+          }
+
+          return {
+            address: result.data,
+            schemaMissingRelation: false,
+            hadQueryableSchema,
+            lastError,
+          };
+        }
+
+        return {
+          address: null,
+          schemaMissingRelation: false,
+          hadQueryableSchema,
+          lastError,
+        };
+      }
+
+      lastError = result.error;
+
+      const missingColumn = this.extractMissingColumnName(result.error);
+      if (missingColumn && Object.hasOwn(currentPayload, missingColumn)) {
+        const { [missingColumn]: _removed, ...nextPayload } = currentPayload;
+        if (Object.keys(nextPayload).length === 0) {
+          return {
+            address: null,
+            schemaMissingRelation: false,
+            hadQueryableSchema,
+            lastError,
+          };
+        }
+        currentPayload = nextPayload;
+        continue;
+      }
+
+      if (this.isMissingRelationError(result.error)) {
+        return {
+          address: null,
+          schemaMissingRelation: true,
+          hadQueryableSchema,
+          lastError,
+        };
+      }
+
+      if (this.isSchemaMismatchError(result.error)) {
+        return {
+          address: null,
+          schemaMissingRelation: false,
+          hadQueryableSchema,
+          lastError,
+        };
+      }
+
+      console.error('[users.update-address] non-retryable update error', {
+        userId,
+        addressId,
+        schemaName,
+        idColumn,
+        payloadKeys: Object.keys(currentPayload),
+        error: result.error,
+      });
+      throw new InternalServerErrorException(result.error.message);
+    }
+
+    return {
+      address: null,
+      schemaMissingRelation: false,
+      hadQueryableSchema,
+      lastError,
+    };
+  }
+
   async updateAddress(addressId: string, userId: string, updates: Record<string, any>) {
     const normalizedAddressId = this.toTrimmedString(addressId);
     const normalizedUserId = this.toTrimmedString(userId);
@@ -538,67 +807,61 @@ export class UsersService {
     if (!normalizedUserId) throw new BadRequestException('userId is required');
 
     const source = updates || {};
-    let payload = this.normalizeAddressPayload(source);
-    if (Object.keys(payload).length === 0) {
+    const payloadCandidates = this.buildAddressUpdatePayloadCandidates(source);
+    if (!payloadCandidates.length) {
       throw new BadRequestException('No valid address fields provided for update');
     }
 
-    let data: any = null;
-    let error: any = null;
+    const idColumns: Array<'address_id' | 'id'> = ['address_id', 'id'];
+    let lastError: any = null;
+    let hadQueryableSchema = false;
 
     for (const schemaName of this.addressSchemas) {
-      ({ data, error } = await this.updateAddressByColumn(
-        schemaName,
-        'address_id',
-        normalizedAddressId,
-        normalizedUserId,
-        payload,
-      ));
-      if (!error) return { address: data };
+      let schemaMissingRelation = false;
 
-      if (error && this.isSchemaMismatchError(error)) {
-        payload = this.normalizeAddressPayload(source, { legacyOnly: true });
-        ({ data, error } = await this.updateAddressByColumn(
-          schemaName,
-          'address_id',
-          normalizedAddressId,
-          normalizedUserId,
-          payload,
-        ));
-        if (!error) return { address: data };
+      for (const idColumn of idColumns) {
+        for (const payloadCandidate of payloadCandidates) {
+          const result = await this.tryUpdateAddressCandidate(
+            schemaName,
+            idColumn,
+            normalizedAddressId,
+            normalizedUserId,
+            payloadCandidate,
+          );
+
+          if (result.address) {
+            return { address: result.address };
+          }
+
+          if (result.hadQueryableSchema) {
+            hadQueryableSchema = true;
+          }
+
+          if (result.lastError) {
+            lastError = result.lastError;
+          }
+
+          if (result.schemaMissingRelation) {
+            schemaMissingRelation = true;
+            break;
+          }
+        }
+
+        if (schemaMissingRelation) break;
       }
 
-      if (error && this.isSchemaMismatchError(error)) {
-        payload = this.normalizeAddressPayload(source);
-        ({ data, error } = await this.updateAddressByColumn(
-          schemaName,
-          'id',
-          normalizedAddressId,
-          normalizedUserId,
-          payload,
-        ));
-        if (!error) return { address: data };
-      }
-
-      if (error && this.isSchemaMismatchError(error)) {
-        payload = this.normalizeAddressPayload(source, { legacyOnly: true });
-        ({ data, error } = await this.updateAddressByColumn(
-          schemaName,
-          'id',
-          normalizedAddressId,
-          normalizedUserId,
-          payload,
-        ));
-        if (!error) return { address: data };
-      }
-
-      if (!error || !this.isMissingRelationError(error)) {
-        break;
+      if (schemaMissingRelation) {
+        continue;
       }
     }
 
-    if (error) throw new InternalServerErrorException(error.message);
-    return { address: data };
+    if (hadQueryableSchema) {
+      throw new NotFoundException('Address not found');
+    }
+
+    throw new InternalServerErrorException(
+      lastError?.message || 'Failed to update address',
+    );
   }
 
   async deleteAddress(addressId: string, userId: string) {

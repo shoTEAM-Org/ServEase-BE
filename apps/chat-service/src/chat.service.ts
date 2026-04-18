@@ -1,11 +1,24 @@
-import { Injectable, InternalServerErrorException, BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  InternalServerErrorException,
+  Logger,
+  OnModuleInit,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
+import {
+  AUTH_PATTERNS,
+  BOOKING_PATTERNS,
+  KafkaRpcRequestOptions,
+  PROVIDER_PATTERNS,
+  sendKafkaRpcRequest,
+} from '@app/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { randomUUID } from 'crypto';
 
-const BOOKING_SCHEMA_CANDIDATES = ['booking', 'booking_svc'] as const;
-const CHAT_SCHEMA_CANDIDATES = ['booking', 'booking_svc', 'messages'] as const;
-const IDENTITY_SCHEMA_CANDIDATES = ['identity_and_user', 'identity_svc'] as const;
-const PROVIDER_CATALOG_SCHEMA_CANDIDATES = ['provider_catalog', 'provider_catalog_svc'] as const;
+const CHAT_SCHEMA_CANDIDATES = ['messages'] as const;
 const MEMORY_CONVERSATION_PREFIX = 'memory:';
 
 type MemoryChatMessageRow = {
@@ -26,11 +39,177 @@ class ChatStorageUnavailableError extends Error {
 }
 
 @Injectable()
-export class ChatService {
-  constructor(private readonly supabase: SupabaseClient) {}
+export class ChatService implements OnModuleInit {
+  constructor(
+    private readonly supabase: SupabaseClient,
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+  ) {}
+  private readonly logger = new Logger(ChatService.name);
   private readonly memoryConversationIds = new Map<string, string>();
   private readonly memoryMessages = new Map<string, MemoryChatMessageRow[]>();
   private hasLoggedChatStorageFallback = false;
+
+  async onModuleInit() {
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_CHAT_BOOKINGS);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_CHAT_BOOKING_CONTEXT);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_SERVICES_BY_IDS);
+    await this.kafka.connect();
+  }
+
+  private toTrimmedString(value: unknown) {
+    if (typeof value === 'string') return value.trim();
+    if (typeof value === 'number' || typeof value === 'boolean') {
+      return String(value).trim();
+    }
+    return '';
+  }
+
+  private async request<T = any>(
+    pattern: string,
+    payload: unknown,
+    options: Pick<KafkaRpcRequestOptions, 'timeoutMs' | 'retries' | 'retryDelayMs'> = {},
+  ): Promise<T> {
+    return await sendKafkaRpcRequest(
+      () => this.kafka.send<T, unknown>(pattern, payload),
+      { context: pattern, ...options },
+    );
+  }
+
+  private async getChatBookings(userId: string, role?: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) return [] as any[];
+
+    const response = await this.request<any>(BOOKING_PATTERNS.GET_CHAT_BOOKINGS, {
+      userId: normalizedUserId,
+      role,
+    });
+    const bookings =
+      response && typeof response === 'object' && 'bookings' in response
+        ? (response as any).bookings
+        : [];
+    return Array.isArray(bookings) ? bookings : [];
+  }
+
+  private async getChatBookingContext(bookingId: string) {
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    if (!normalizedBookingId) return null;
+
+    const response = await this.request<any>(
+      BOOKING_PATTERNS.GET_CHAT_BOOKING_CONTEXT,
+      {
+        bookingId: normalizedBookingId,
+      },
+    );
+
+    if (!response || typeof response !== 'object' || !('booking' in response)) {
+      return null;
+    }
+
+    return (response as any).booking || null;
+  }
+
+  private resolveBookingContextId(booking: any, bookingId: string) {
+    return (
+      this.toTrimmedString(booking?.id) ||
+      this.toTrimmedString(booking?.booking_reference) ||
+      this.toTrimmedString(bookingId)
+    );
+  }
+
+  private resolveServiceNameFromBooking(booking: any) {
+    return (
+      this.toTrimmedString(booking?.service_description) ||
+      this.toTrimmedString(booking?.service_title) ||
+      this.toTrimmedString(booking?.service_name) ||
+      'Service'
+    );
+  }
+
+  private hasServiceNameFromBooking(booking: any) {
+    return Boolean(
+      this.toTrimmedString(booking?.service_description) ||
+      this.toTrimmedString(booking?.service_title) ||
+      this.toTrimmedString(booking?.service_name),
+    );
+  }
+
+  private isTimeoutLikeError(error: unknown) {
+    const message = this.toTrimmedString((error as any)?.message).toLowerCase();
+    return message.includes('timeout') || message.includes('timed out');
+  }
+
+  private assertConversationParticipant(booking: any, userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const providerId = this.toTrimmedString(booking?.provider_id);
+    const customerId = this.toTrimmedString(booking?.customer_id);
+
+    if (!normalizedUserId) {
+      throw new UnauthorizedException('Missing conversation participant.');
+    }
+    if (
+      normalizedUserId !== providerId &&
+      normalizedUserId !== customerId
+    ) {
+      throw new UnauthorizedException(
+        'You are not part of this booking conversation.',
+      );
+    }
+
+    return { normalizedUserId, providerId, customerId };
+  }
+
+  private async getUsersByIds(userIds: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(userIds) ? userIds : [])
+          .map((userId) => this.toTrimmedString(userId))
+          .filter((userId) => Boolean(userId)),
+      ),
+    );
+    if (!normalizedIds.length) return [] as any[];
+
+    const response = await this.request<any>(AUTH_PATTERNS.GET_USERS_BY_IDS, {
+      userIds: normalizedIds,
+    });
+    const users =
+      response && typeof response === 'object' && 'users' in response
+        ? (response as any).users
+        : [];
+    return Array.isArray(users) ? users : [];
+  }
+
+  private async getServicesByIds(serviceIds: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(serviceIds) ? serviceIds : [])
+          .map((serviceId) => this.toTrimmedString(serviceId))
+          .filter((serviceId) => Boolean(serviceId)),
+      ),
+    );
+    if (!normalizedIds.length) return [] as any[];
+
+    let response: any = null;
+    try {
+      response = await this.request<any>(
+        PROVIDER_PATTERNS.GET_SERVICES_BY_IDS,
+        { serviceIds: normalizedIds },
+        { timeoutMs: 10_000, retries: 1, retryDelayMs: 300 },
+      );
+    } catch (error) {
+      const reason = this.isTimeoutLikeError(error) ? 'timeout' : 'error';
+      this.logger.warn(
+        `chat service lookup degraded (${reason}): provider.get-services-by-ids for ${normalizedIds.length} id(s)`,
+      );
+      return [] as any[];
+    }
+
+    const services =
+      response && typeof response === 'object' && 'services' in response
+        ? (response as any).services
+        : [];
+    return Array.isArray(services) ? services : [];
+  }
 
   private isSchemaResolutionError(error: any): boolean {
     const code = String(error?.code || '').toUpperCase();
@@ -57,28 +236,6 @@ export class ChatService {
       message.includes('schema cache') ||
       message.includes('does not exist')
     );
-  }
-
-  private async runWithSchemaFallback<T>(
-    schemas: readonly string[],
-    operation: (schema: string) => PromiseLike<any>,
-    context: string
-  ): Promise<{ data: T; schema: string; count?: number | null }> {
-    let lastError: any = null;
-
-    for (const schema of schemas) {
-      const result = (await operation(schema)) as { data: T; error: any; count?: number | null };
-      if (!result.error) {
-        return { data: result.data, schema, count: result.count };
-      }
-
-      lastError = result.error;
-      if (!this.isSchemaResolutionError(result.error)) {
-        throw new InternalServerErrorException(result.error?.message || context);
-      }
-    }
-
-    throw new InternalServerErrorException(lastError?.message || context);
   }
 
   private async runWithChatSchemaFallback<T>(
@@ -227,143 +384,146 @@ export class ChatService {
   }
 
   async getConversations(userId: string, role?: string) {
-    const column = role === 'provider' ? 'provider_id' : 'customer_id';
     const otherColumn = role === 'provider' ? 'customer_id' : 'provider_id';
+    const bookings = await this.getChatBookings(userId, role);
 
-    const { data: bookings } = await this.runWithSchemaFallback<any[]>(
-      BOOKING_SCHEMA_CANDIDATES,
-      (schema) =>
-        this.supabase
-          .schema(schema)
-          .from('bookings')
-          .select(`id, ${otherColumn}, service_id, status`)
-          .eq(column, userId)
-          .in('status', ['pending', 'confirmed', 'in_progress', 'completed']),
-      'Unable to load booking conversations.'
+    const otherPartyIds = Array.from(
+      new Set(
+        (bookings || [])
+          .map((booking: any) => this.toTrimmedString(booking?.[otherColumn]))
+          .filter((value: string) => Boolean(value)),
+      ),
+    );
+    const bookingsWithoutServiceName = (bookings || []).filter(
+      (booking: any) => !this.hasServiceNameFromBooking(booking),
+    );
+    const serviceIds = Array.from(
+      new Set(
+        bookingsWithoutServiceName
+          .map((booking: any) => this.toTrimmedString(booking?.service_id))
+          .filter((value: string) => Boolean(value)),
+      ),
     );
 
-    const conversations: any[] = [];
-    for (const booking of bookings || []) {
-      const otherPartyId = (booking as any)[otherColumn];
+    const [users, services] = await Promise.all([
+      this.getUsersByIds(otherPartyIds),
+      serviceIds.length ? this.getServicesByIds(serviceIds) : Promise.resolve([]),
+    ]);
+    const usersById = new Map(
+      users.map((row: any) => [this.toTrimmedString(row?.id), row]),
+    );
+    const servicesById = new Map(
+      services.map((row: any) => [
+        this.toTrimmedString(row?.id),
+        this.toTrimmedString(row?.title),
+      ]),
+    );
 
-      // Fetch other party user info
-      const { data: otherUser } = await this.runWithSchemaFallback<any | null>(
-        IDENTITY_SCHEMA_CANDIDATES,
-        (schema) =>
-          this.supabase
-            .schema(schema)
-            .from('users')
-            .select('full_name, contact_number')
-            .eq('id', otherPartyId)
-            .maybeSingle(),
-        'Unable to load conversation participant.'
-      );
+    const conversations = await Promise.all(
+      (bookings || []).map(async (booking: any) => {
+        const otherPartyId = this.toTrimmedString((booking as any)[otherColumn]);
+        const serviceId = this.toTrimmedString(booking?.service_id);
+        const otherUser = usersById.get(otherPartyId) as any;
 
-      // Fetch service title
-      const { data: service } = await this.runWithSchemaFallback<any | null>(
-        PROVIDER_CATALOG_SCHEMA_CANDIDATES,
-        (schema) =>
-          this.supabase
-            .schema(schema)
-            .from('provider_services')
-            .select('title')
-            .eq('id', booking.service_id)
-            .maybeSingle(),
-        'Unable to load service title for conversation.'
-      );
+        const bookingId = String(booking.id || '').trim();
+        let conversation: { id: string } | null = null;
+        let lastMsg: any = null;
+        let unreadCount = 0;
 
-      const bookingId = String(booking.id || '').trim();
-      let conversation: { id: string } | null = null;
-      let lastMsg: any = null;
-      let unreadCount = 0;
-
-      try {
-        const conversationResult = await this.runWithChatSchemaFallback<{ id: string } | null>(
-          (schema) =>
-            this.supabase
-              .schema(schema)
-              .from('conversations')
-              .select('id')
-              .eq('context_type', 'booking')
-              .eq('context_id', booking.id)
-              .maybeSingle(),
-          'Unable to load chat conversation.'
-        );
-        conversation = conversationResult.data;
-
-        if (conversation) {
-          const conversationId = conversation.id;
-          const { data: lastMsgData } = await this.runWithChatSchemaFallback<any | null>(
+        try {
+          const conversationResult = await this.runWithChatSchemaFallback<
+            { id: string } | null
+          >(
             (schema) =>
               this.supabase
                 .schema(schema)
-                .from('messages')
-                .select('id, body, created_at, sender_id')
-                .eq('conversation_id', conversationId)
-                .order('created_at', { ascending: false })
-                .limit(1)
+                .from('conversations')
+                .select('id')
+                .eq('context_type', 'booking')
+                .eq('context_id', booking.id)
                 .maybeSingle(),
-            'Unable to load latest chat message.'
+            'Unable to load chat conversation.',
           );
-          lastMsg = lastMsgData;
+          conversation = conversationResult.data;
 
-          const unreadResult = await this.runWithChatSchemaFallback<any>(
-            (schema) =>
-              this.supabase
-                .schema(schema)
-                .from('messages')
-                .select('*', { count: 'exact', head: true })
-                .eq('conversation_id', conversationId)
-                .neq('sender_id', userId)
-                .neq('delivery_status', 'read'),
-            'Unable to load unread chat counts.'
-          );
-          unreadCount = Number(unreadResult.count || 0);
+          if (conversation) {
+            const conversationId = conversation.id;
+            const [lastMsgResult, unreadResult] = await Promise.all([
+              this.runWithChatSchemaFallback<any | null>(
+                (schema) =>
+                  this.supabase
+                    .schema(schema)
+                    .from('messages')
+                    .select('id, body, created_at, sender_id')
+                    .eq('conversation_id', conversationId)
+                    .order('created_at', { ascending: false })
+                    .limit(1)
+                    .maybeSingle(),
+                'Unable to load latest chat message.',
+              ),
+              this.runWithChatSchemaFallback<any>(
+                (schema) =>
+                  this.supabase
+                    .schema(schema)
+                    .from('messages')
+                    .select('*', { count: 'exact', head: true })
+                    .eq('conversation_id', conversationId)
+                    .neq('sender_id', userId)
+                    .neq('delivery_status', 'read'),
+                'Unable to load unread chat counts.',
+              ),
+            ]);
+            lastMsg = lastMsgResult.data;
+            unreadCount = Number(unreadResult.count || 0);
+          }
+        } catch (error) {
+          if (!(error instanceof ChatStorageUnavailableError)) {
+            throw error;
+          }
+
+          this.logChatStorageFallback(error);
+          const memorySnapshot = this.getMemoryConversationSnapshot(bookingId, userId);
+          conversation = memorySnapshot.conversation;
+          lastMsg = memorySnapshot.lastMessage;
+          unreadCount = memorySnapshot.unreadCount;
         }
-      } catch (error) {
-        if (!(error instanceof ChatStorageUnavailableError)) {
-          throw error;
-        }
 
-        this.logChatStorageFallback(error);
-        const memorySnapshot = this.getMemoryConversationSnapshot(bookingId, userId);
-        conversation = memorySnapshot.conversation;
-        lastMsg = memorySnapshot.lastMessage;
-        unreadCount = memorySnapshot.unreadCount;
-      }
+        return {
+          id: `booking:${bookingId}`,
+          bookingId,
+          conversationId: conversation?.id || null,
+          otherPartyId,
+          otherPartyName: otherUser?.full_name || 'User',
+          otherPartyPhone: otherUser?.contact_number || '',
+          serviceName:
+            this.toTrimmedString(booking?.service_description) ||
+            this.toTrimmedString(booking?.service_title) ||
+            this.toTrimmedString(booking?.service_name) ||
+            this.toTrimmedString(servicesById.get(serviceId)) ||
+            'Service',
+          lastMessage: lastMsg?.body || '',
+          lastMessageTime: lastMsg?.created_at || null,
+          unreadCount,
+        };
+      }),
+    );
 
-      conversations.push({
-        id: `booking:${bookingId}`,
-        bookingId,
-        conversationId: conversation?.id || null,
-        otherPartyId,
-        otherPartyName: otherUser?.full_name || 'User',
-        otherPartyPhone: otherUser?.contact_number || '',
-        serviceName: service?.title || 'Service',
-        lastMessage: lastMsg?.body || '',
-        lastMessageTime: lastMsg?.created_at || null,
-        unreadCount,
-      });
-    }
     return conversations;
   }
 
   async getMessages(bookingId: string, userId: string) {
-    const { data: booking } = await this.runWithSchemaFallback<any | null>(
-      BOOKING_SCHEMA_CANDIDATES,
-      (schema) =>
-        this.supabase
-          .schema(schema)
-          .from('bookings')
-          .select('customer_id, provider_id')
-          .eq('id', bookingId)
-          .maybeSingle(),
-      'Unable to load booking context for chat.'
-    );
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    const booking = await this.getChatBookingContext(normalizedBookingId);
 
     if (!booking) {
       throw new BadRequestException('Booking not found.');
     }
+    const { normalizedUserId, providerId, customerId } =
+      this.assertConversationParticipant(booking, userId);
+    const contextBookingId = this.resolveBookingContextId(
+      booking,
+      normalizedBookingId,
+    );
 
     let conversation: { id: string } | null = null;
     let messageList: any[] = [];
@@ -371,13 +531,13 @@ export class ChatService {
     try {
       const conversationResult = await this.runWithChatSchemaFallback<{ id: string } | null>(
         (schema) =>
-          this.supabase
-            .schema(schema)
-            .from('conversations')
-            .select('id')
-            .eq('context_type', 'booking')
-            .eq('context_id', bookingId)
-            .maybeSingle(),
+            this.supabase
+              .schema(schema)
+              .from('conversations')
+              .select('id')
+              .eq('context_type', 'booking')
+              .eq('context_id', contextBookingId)
+              .maybeSingle(),
         'Unable to load chat conversation.'
       );
       conversation = conversationResult.data;
@@ -402,38 +562,32 @@ export class ChatService {
       }
 
       this.logChatStorageFallback(error);
-      const memorySnapshot = this.getMemoryConversationSnapshot(bookingId, userId);
+      const memorySnapshot = this.getMemoryConversationSnapshot(
+        contextBookingId,
+        normalizedUserId,
+      );
       conversation = memorySnapshot.conversation;
       messageList = memorySnapshot.messages;
     }
 
-    const senderRole = booking?.provider_id === userId ? 'provider' : 'customer';
-    const otherPartyId = senderRole === 'provider' ? booking?.customer_id : booking?.provider_id;
-    const { data: otherUser } = await this.runWithSchemaFallback<any | null>(
-      IDENTITY_SCHEMA_CANDIDATES,
-      (schema) =>
-        this.supabase
-          .schema(schema)
-          .from('users')
-          .select('full_name, contact_number')
-          .eq('id', otherPartyId)
-          .maybeSingle(),
-      'Unable to load chat participant.'
-    );
+    const senderRole = providerId === normalizedUserId ? 'provider' : 'customer';
+    const otherPartyId = senderRole === 'provider' ? customerId : providerId;
+    const users = await this.getUsersByIds([otherPartyId]);
+    const otherUser = Array.isArray(users) && users.length ? users[0] : null;
 
     return {
-      id: `booking:${bookingId}`,
-      bookingId,
+      id: `booking:${contextBookingId}`,
+      bookingId: contextBookingId,
       conversationId: conversation?.id || null,
       otherPartyId,
       otherPartyName: otherUser?.full_name || 'User',
       otherPartyPhone: otherUser?.contact_number || '',
-      serviceName: '',
+      serviceName: this.resolveServiceNameFromBooking(booking),
       messages: messageList.map((m: any) => ({
         id: m.id,
         text: m.body,
         createdAt: m.created_at,
-        sender: m.sender_id === booking?.provider_id ? 'provider' : 'customer',
+        sender: m.sender_id === providerId ? 'provider' : 'customer',
         deliveryStatus: m.delivery_status || 'sent',
       })),
     };
@@ -442,10 +596,26 @@ export class ChatService {
   async sendMessage(bookingId: string, senderId: string, text: string) {
     if (!text?.trim()) throw new BadRequestException('Message text cannot be empty.');
 
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    const booking = await this.getChatBookingContext(normalizedBookingId);
+    if (!booking) throw new BadRequestException('Booking not found.');
+
+    const { normalizedUserId } = this.assertConversationParticipant(
+      booking,
+      senderId,
+    );
+    const contextBookingId = this.resolveBookingContextId(
+      booking,
+      normalizedBookingId,
+    );
     const normalizedText = String(text || '').trim();
-    const conversationId = await this.getOrCreateConversation(bookingId);
+    const conversationId = await this.getOrCreateConversation(contextBookingId);
     if (conversationId.startsWith(MEMORY_CONVERSATION_PREFIX)) {
-      const memoryMessage = this.appendMemoryMessage(bookingId, senderId, normalizedText);
+      const memoryMessage = this.appendMemoryMessage(
+        contextBookingId,
+        normalizedUserId,
+        normalizedText,
+      );
       return { id: memoryMessage.id, created_at: memoryMessage.created_at };
     }
 
@@ -458,7 +628,7 @@ export class ChatService {
             .insert([
               {
                 conversation_id: conversationId,
-                sender_id: senderId,
+                sender_id: normalizedUserId,
                 message_type: 'text',
                 body: normalizedText,
                 delivery_status: 'sent',
@@ -487,12 +657,33 @@ export class ChatService {
       }
 
       this.logChatStorageFallback(error);
-      const memoryMessage = this.appendMemoryMessage(bookingId, senderId, normalizedText);
+      const memoryMessage = this.appendMemoryMessage(
+        contextBookingId,
+        normalizedUserId,
+        normalizedText,
+      );
       return { id: memoryMessage.id, created_at: memoryMessage.created_at };
     }
   }
 
   async markRead(bookingId: string, userId: string) {
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    const normalizedUserId = this.toTrimmedString(userId);
+
+    let contextBookingId = normalizedBookingId;
+    try {
+      const booking = await this.getChatBookingContext(normalizedBookingId);
+      if (booking) {
+        this.assertConversationParticipant(booking, normalizedUserId);
+        contextBookingId = this.resolveBookingContextId(
+          booking,
+          normalizedBookingId,
+        );
+      }
+    } catch {
+      // Read status updates are best-effort; continue with the provided booking id.
+    }
+
     try {
       const { data: conversation } = await this.runWithChatSchemaFallback<{ id: string } | null>(
         (schema) =>
@@ -501,13 +692,13 @@ export class ChatService {
             .from('conversations')
             .select('id')
             .eq('context_type', 'booking')
-            .eq('context_id', bookingId)
+            .eq('context_id', contextBookingId)
             .maybeSingle(),
         'Unable to resolve conversation read status.'
       );
 
       if (!conversation) {
-        this.markMemoryRead(bookingId, userId);
+        this.markMemoryRead(contextBookingId, normalizedUserId);
         return { ok: true };
       }
 
@@ -518,7 +709,7 @@ export class ChatService {
             .from('messages')
             .update({ delivery_status: 'read' })
             .eq('conversation_id', conversation.id)
-            .neq('sender_id', userId),
+            .neq('sender_id', normalizedUserId),
         'Unable to mark chat messages as read.'
       );
       return { ok: true };
@@ -528,7 +719,7 @@ export class ChatService {
       }
 
       this.logChatStorageFallback(error);
-      this.markMemoryRead(bookingId, userId);
+      this.markMemoryRead(contextBookingId, normalizedUserId);
       return { ok: true };
     }
   }

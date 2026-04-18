@@ -1,6 +1,6 @@
 import { Controller, Get, Inject, OnModuleInit } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
-import { lastValueFrom } from 'rxjs';
+import { sendWithTimeout } from '../utils/kafka-request.js';
 import { CATALOG_PATTERNS } from '@app/common';
 
 @Controller('api/reference')
@@ -13,5 +13,9 @@ export class ReferenceController implements OnModuleInit {
   }
 
   @Get('v1/categories')
-  async getCategories() { return lastValueFrom(this.kafka.send(CATALOG_PATTERNS.GET_REFERENCE_CATEGORIES, {})); }
+  async getCategories() {
+    return sendWithTimeout(
+      this.kafka.send(CATALOG_PATTERNS.GET_REFERENCE_CATEGORIES, {}),
+    );
+  }
 }

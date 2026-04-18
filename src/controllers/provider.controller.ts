@@ -19,7 +19,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
-import { lastValueFrom } from 'rxjs';
+import { sendWithTimeout } from '../utils/kafka-request.js';
 import { PROVIDER_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 import 'multer';
@@ -65,11 +65,11 @@ export class ProviderController implements OnModuleInit {
     @Query('search') search?: string,
   ) {
     if (serviceId)
-      return lastValueFrom(
+      return sendWithTimeout(
         this.kafka.send(PROVIDER_PATTERNS.GET_BY_SERVICE, { serviceId }),
       );
     if (search)
-      return lastValueFrom(
+      return sendWithTimeout(
         this.kafka.send(PROVIDER_PATTERNS.SEARCH, { searchTerm: search }),
       );
     return { success: true, data: [] };
@@ -78,7 +78,7 @@ export class ProviderController implements OnModuleInit {
   @Get('v1/bookings')
   @UseGuards(SupabaseAuthGuard)
   async getBookings(@Request() req: any) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_BOOKINGS, {
         providerId: req['user'].id,
       }),
@@ -88,7 +88,7 @@ export class ProviderController implements OnModuleInit {
   @Get('v1/booking/:id')
   @UseGuards(SupabaseAuthGuard)
   async getBookingById(@Param('id') id: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_BOOKING_BY_ID, { bookingId: id }),
     );
   }
@@ -122,7 +122,7 @@ export class ProviderController implements OnModuleInit {
   @Get('v1/my-services')
   @UseGuards(SupabaseAuthGuard)
   async getMyServices(@Request() req: any) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_MY_SERVICES, {
         providerId: req['user'].id,
       }),
@@ -181,7 +181,7 @@ export class ProviderController implements OnModuleInit {
   @Get('v1/reschedule-requests/:bookingId')
   @UseGuards(SupabaseAuthGuard)
   async getReschedules(@Param('bookingId') bookingId: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_RESCHEDULES, { bookingId }),
     );
   }
@@ -211,7 +211,7 @@ export class ProviderController implements OnModuleInit {
   @Get('v1/additional-charges/:bookingId')
   @UseGuards(SupabaseAuthGuard)
   async getAdditionalCharges(@Param('bookingId') bookingId: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES, { bookingId }),
     );
   }
@@ -266,7 +266,7 @@ export class ProviderController implements OnModuleInit {
 
   @Get('v1/:id/availability')
   async getAvailability(@Param('id') id: string, @Request() req: any) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_AVAILABILITY, {
         userId: id,
         accessToken: this.extractAccessToken(req),
@@ -276,7 +276,7 @@ export class ProviderController implements OnModuleInit {
 
   @Get('v1/:id/reserved-slots')
   async getReservedSlots(@Param('id') id: string, @Query('date') date: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_RESERVED_SLOTS, {
         providerId: id,
         date,
@@ -290,7 +290,7 @@ export class ProviderController implements OnModuleInit {
     @Query('scheduled_at') scheduledAt: string,
     @Query('hours_required') hoursRequired: string,
   ) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.CHECK_AVAILABILITY, {
         providerId: id,
         scheduledAt,
@@ -301,7 +301,7 @@ export class ProviderController implements OnModuleInit {
 
   @Get('v1/:id/profile-draft')
   async getProfileDraft(@Param('id') id: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_PROFILE_DRAFT, { userId: id }),
     );
   }
@@ -318,7 +318,7 @@ export class ProviderController implements OnModuleInit {
 
   @Get('v1/:user_id')
   async getProfile(@Param('user_id') userId: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_PROFILE, { userId }),
     );
   }
@@ -326,21 +326,21 @@ export class ProviderController implements OnModuleInit {
   @Get('v1/dashboard/:id')
   @UseGuards(SupabaseAuthGuard)
   async getDashboard(@Param('id') id: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_DASHBOARD, { providerId: id }),
     );
   }
 
   @Get('v1/trust-score/:provider_id')
   async getTrustScore(@Param('provider_id') providerId: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_TRUST_SCORE, { providerId }),
     );
   }
 
   @Get('v1/reviews/:id')
   async getReviews(@Param('id') id: string) {
-    return lastValueFrom(
+    return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_REVIEWS, { providerId: id }),
     );
   }

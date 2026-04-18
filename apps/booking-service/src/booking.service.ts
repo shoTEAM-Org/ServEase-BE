@@ -1,14 +1,38 @@
 import {
+  Inject,
   Injectable,
   BadRequestException,
   NotFoundException,
   InternalServerErrorException,
+  Logger,
+  OnModuleInit,
 } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import {
+  AUTH_PATTERNS,
+  PROVIDER_PATTERNS,
+  SUPPORT_PATTERNS,
+  sendKafkaRpcRequest,
+} from '@app/common';
 
 @Injectable()
-export class BookingService {
-  constructor(private readonly supabase: SupabaseClient) {}
+export class BookingService implements OnModuleInit {
+  private readonly availabilitySchemas = ['booking', 'booking_svc'] as const;
+  private readonly logger = new Logger(BookingService.name);
+
+  constructor(
+    private readonly supabase: SupabaseClient,
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+  ) {}
+
+  async onModuleInit() {
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
+    this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
+    await this.kafka.connect();
+  }
 
   private toTrimmedString(value: unknown) {
     if (typeof value === 'string') return value.trim();
@@ -16,6 +40,499 @@ export class BookingService {
       return String(value).trim();
     }
     return '';
+  }
+
+  private toNullableNumber(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private toNullableString(value: unknown): string | null {
+    const parsed = this.toTrimmedString(value);
+    return parsed || null;
+  }
+
+  private toBoolean(value: unknown, fallback = false) {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value !== 0;
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
+      if (['false', '0', 'no', 'n'].includes(normalized)) return false;
+    }
+    return fallback;
+  }
+
+  private isMissingRelationError(error: any) {
+    const code = this.toTrimmedString(error?.code).toUpperCase();
+    const message = this.toTrimmedString(error?.message).toLowerCase();
+    return (
+      code === '42P01' ||
+      code === 'PGRST106' ||
+      ((message.includes('relation') || message.includes('schema')) &&
+        message.includes('does not exist'))
+    );
+  }
+
+  private isSchemaMismatchError(error: any) {
+    const code = this.toTrimmedString(error?.code).toUpperCase();
+    const message = this.toTrimmedString(error?.message).toLowerCase();
+    return (
+      code === '42703' ||
+      code === 'PGRST204' ||
+      code === 'PGRST200' ||
+      (message.includes('column') && message.includes('does not exist')) ||
+      message.includes('schema cache')
+    );
+  }
+
+  private isInvalidUuidError(error: any) {
+    const code = this.toTrimmedString(error?.code).toUpperCase();
+    const message = this.toTrimmedString(error?.message).toLowerCase();
+    return (
+      code === '22P02' || message.includes('invalid input syntax for type uuid')
+    );
+  }
+
+  private extractMissingColumnFromError(error: any): string | null {
+    const searchTexts = [
+      this.toTrimmedString(error?.message),
+      this.toTrimmedString(error?.details),
+      this.toTrimmedString(error?.hint),
+      this.toTrimmedString((error as any)?.description),
+    ].filter((value) => Boolean(value));
+    if (!searchTexts.length) return null;
+
+    const postgresPattern =
+      /column\s+["']?(\w+)["']?\s+(?:of\s+relation\s+["']?\w+["']?\s+)?does\s+not\s+exist/i;
+    const schemaCachePattern =
+      /find\s+the\s+["'](\w+)["']\s+column\s+of/i;
+
+    for (const text of searchTexts) {
+      const postgresMatch = postgresPattern.exec(text);
+      if (postgresMatch?.[1]) return postgresMatch[1];
+
+      const schemaCacheMatch = schemaCachePattern.exec(text);
+      if (schemaCacheMatch?.[1]) return schemaCacheMatch[1];
+    }
+
+    return null;
+  }
+
+  private resolveServiceTitle(booking: any) {
+    return (
+      this.toTrimmedString(booking?.service_description) ||
+      this.toTrimmedString(booking?.service_title) ||
+      this.toTrimmedString(booking?.service_name) ||
+      ''
+    );
+  }
+
+  private async getBookingRowByIdentifier(
+    bookingIdentifier: string,
+    selectColumns = '*',
+  ): Promise<any | null> {
+    const normalizedBookingIdentifier = this.toTrimmedString(bookingIdentifier);
+    if (!normalizedBookingIdentifier) return null;
+
+    const byId = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select(selectColumns)
+      .eq('id', normalizedBookingIdentifier)
+      .maybeSingle();
+    if (byId.error && !this.isInvalidUuidError(byId.error)) {
+      throw new InternalServerErrorException(byId.error.message);
+    }
+    if (byId.data) return byId.data as any;
+
+    const byReference = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select(selectColumns)
+      .eq('booking_reference', normalizedBookingIdentifier)
+      .maybeSingle();
+    if (byReference.error) {
+      throw new InternalServerErrorException(byReference.error.message);
+    }
+
+    return (byReference.data as any) || null;
+  }
+
+  private normalizeTime(value: unknown): string | null {
+    const raw = this.toTrimmedString(value);
+    if (!raw) return null;
+    const hhmmss = raw.match(/^(\d{2}):(\d{2}):(\d{2})$/);
+    if (hhmmss) return raw;
+    const hhmm = raw.match(/^(\d{2}):(\d{2})$/);
+    if (hhmm) return `${hhmm[1]}:${hhmm[2]}:00`;
+    return null;
+  }
+
+  private normalizeWeekdayKey(value: unknown): string {
+    return this.toTrimmedString(value).toLowerCase();
+  }
+
+  private normalizeOffDate(value: unknown): string | null {
+    const raw = this.toTrimmedString(value);
+    if (!raw) return null;
+
+    const yyyyMmDd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (yyyyMmDd) return `${yyyyMmDd[1]}-${yyyyMmDd[2]}-${yyyyMmDd[3]}`;
+
+    const isoPrefix = raw.match(/^(\d{4})-(\d{2})-(\d{2})T/);
+    if (isoPrefix) return `${isoPrefix[1]}-${isoPrefix[2]}-${isoPrefix[3]}`;
+
+    const ddMmYyyy = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (ddMmYyyy) return `${ddMmYyyy[3]}-${ddMmYyyy[2]}-${ddMmYyyy[1]}`;
+
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return null;
+    const year = parsed.getFullYear();
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const day = String(parsed.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  }
+
+  private async getUserProfileFromAuth(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) return null;
+    return await sendKafkaRpcRequest(
+      () =>
+        this.kafka.send(AUTH_PATTERNS.GET_PROFILE, {
+          userId: normalizedUserId,
+        }),
+      { context: AUTH_PATTERNS.GET_PROFILE },
+    );
+  }
+
+  private async getUsersByIdsFromAuth(userIds: string[]) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(userIds) ? userIds : [])
+          .map((userId) => this.toTrimmedString(userId))
+          .filter((userId) => Boolean(userId)),
+      ),
+    );
+    if (!normalizedIds.length) return [] as any[];
+
+    const response = await sendKafkaRpcRequest(
+      () =>
+        this.kafka.send(AUTH_PATTERNS.GET_USERS_BY_IDS, {
+          userIds: normalizedIds,
+        }),
+      { context: AUTH_PATTERNS.GET_USERS_BY_IDS },
+    );
+    const users =
+      response && typeof response === 'object' && 'users' in response
+        ? (response as any).users
+        : [];
+    return Array.isArray(users) ? users : [];
+  }
+
+  private async getProviderProfileSummary(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) return null;
+
+    const response = await sendKafkaRpcRequest(
+      () =>
+        this.kafka.send(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS, {
+          userIds: [normalizedUserId],
+        }),
+      { context: PROVIDER_PATTERNS.GET_PROFILES_BY_IDS },
+    );
+
+    const profiles =
+      response && typeof response === 'object' && 'profiles' in response
+        ? (response as any).profiles
+        : [];
+    if (!Array.isArray(profiles) || !profiles.length) return null;
+
+    const profile = profiles.find(
+      (row: any) => this.toTrimmedString(row?.user_id) === normalizedUserId,
+    );
+    return profile || profiles[0] || null;
+  }
+
+  private normalizeWeeklyScheduleRows(userId: string, source: unknown) {
+    if (!Array.isArray(source)) return [] as Record<string, any>[];
+
+    return source
+      .map((row: any) => ({
+        user_id: userId,
+        day_of_week: this.toTrimmedString(row?.day_of_week),
+        is_active: this.toBoolean(row?.is_active, false),
+        start_time: this.normalizeTime(row?.start_time),
+        end_time: this.normalizeTime(row?.end_time),
+        break_start_time: this.normalizeTime(row?.break_start_time),
+        break_end_time: this.normalizeTime(row?.break_end_time),
+      }))
+      .filter((row) => row.day_of_week);
+  }
+
+  private normalizeDaysOffRows(userId: string, source: unknown) {
+    if (!Array.isArray(source)) return [] as Record<string, any>[];
+
+    return source
+      .map((row: any) => {
+        const normalizedDate = this.normalizeOffDate(row?.off_date);
+        if (!normalizedDate) return null;
+        return {
+          user_id: userId,
+          off_date: normalizedDate,
+          reason: this.toNullableString(row?.reason),
+        };
+      })
+      .filter((row) => Boolean(row)) as Record<string, any>[];
+  }
+
+  private async getProviderAvailabilityWithClient(
+    client: SupabaseClient,
+    userId: string,
+  ) {
+    let lastError: any = null;
+
+    for (const schemaName of this.availabilitySchemas) {
+      const [weeklyResult, daysOffResult] = await Promise.all([
+        client
+          .schema(schemaName)
+          .from('provider_availability')
+          .select('*')
+          .eq('user_id', userId),
+        client
+          .schema(schemaName)
+          .from('provider_days_off')
+          .select('*')
+          .eq('user_id', userId),
+      ]);
+
+      if (!weeklyResult.error && !daysOffResult.error) {
+        const normalizedDaysOff = (daysOffResult.data || []).map((row: any) => ({
+          ...row,
+          off_date: this.normalizeOffDate(row?.off_date) || row?.off_date,
+        }));
+        return { weeklySchedule: weeklyResult.data || [], daysOff: normalizedDaysOff };
+      }
+
+      const combinedErrors = [weeklyResult.error, daysOffResult.error].filter(Boolean);
+      const permissionError = combinedErrors.find((error) =>
+        this.isPermissionDeniedError(error),
+      );
+      if (permissionError) throw permissionError;
+
+      lastError = combinedErrors[0] || lastError;
+      if (combinedErrors.every((error) => this.isMissingRelationError(error))) {
+        continue;
+      }
+      throw lastError;
+    }
+
+    if (lastError) throw lastError;
+    return { weeklySchedule: [], daysOff: [] };
+  }
+
+  private async saveProviderAvailabilityWithClient(
+    client: SupabaseClient,
+    userId: string,
+    body: any,
+  ) {
+    const weeklyRows = this.normalizeWeeklyScheduleRows(userId, body?.weeklySchedule);
+    const daysOffRows = this.normalizeDaysOffRows(userId, body?.daysOff);
+    const includesWeeklySchedule = body?.weeklySchedule !== undefined;
+    const includesDaysOff = body?.daysOff !== undefined;
+
+    let lastError: any = null;
+
+    for (const schemaName of this.availabilitySchemas) {
+      let operationError: any = null;
+
+      if (includesWeeklySchedule) {
+        const existingAvailabilityResult = await client
+          .schema(schemaName)
+          .from('provider_availability')
+          .select('id, day_of_week')
+          .eq('user_id', userId);
+
+        if (existingAvailabilityResult.error) {
+          operationError = existingAvailabilityResult.error;
+        } else {
+          const existingRows = existingAvailabilityResult.data || [];
+          const existingByDay = new Map<string, any>();
+          for (const row of existingRows) {
+            const dayValue = row?.day_of_week;
+            const dayKey = this.normalizeWeekdayKey(dayValue);
+            if (!dayKey) continue;
+            if (!existingByDay.has(dayKey)) existingByDay.set(dayKey, row);
+          }
+
+          const incomingByDay = new Map<string, Record<string, any>>();
+          for (const row of weeklyRows) {
+            const dayKey = this.normalizeWeekdayKey(row.day_of_week);
+            if (!dayKey) continue;
+            incomingByDay.set(dayKey, {
+              is_active: row.is_active,
+              start_time: this.normalizeTime(row.start_time),
+              end_time: this.normalizeTime(row.end_time),
+              break_start_time: this.normalizeTime(row.break_start_time),
+              break_end_time: this.normalizeTime(row.break_end_time),
+            });
+          }
+
+          const updates: Array<{ id: string; payload: Record<string, any> }> = [];
+          const inserts: Record<string, any>[] = [];
+
+          for (const [dayKey, payload] of incomingByDay.entries()) {
+            const existing = existingByDay.get(dayKey);
+            if (existing?.id) updates.push({ id: existing.id, payload });
+            else {
+              inserts.push({
+                user_id: userId,
+                day_of_week: dayKey,
+                ...payload,
+              });
+            }
+          }
+
+          const staleIds = existingRows
+            .filter((row: any) => {
+              const dayKey = this.normalizeWeekdayKey(row?.day_of_week);
+              return dayKey && !incomingByDay.has(dayKey);
+            })
+            .map((row: any) => this.toTrimmedString(row?.id))
+            .filter((rowId: string) => Boolean(rowId));
+
+          for (const updateRow of updates) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_availability')
+              .update(updateRow.payload)
+              .eq('id', updateRow.id)
+              .eq('user_id', userId);
+            if (error) {
+              operationError = error;
+              break;
+            }
+          }
+
+          if (!operationError && inserts.length) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_availability')
+              .insert(inserts);
+            if (error) operationError = error;
+          }
+
+          if (!operationError && staleIds.length) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_availability')
+              .delete()
+              .in('id', staleIds)
+              .eq('user_id', userId);
+            if (error) operationError = error;
+          }
+        }
+      }
+
+      if (!operationError && includesDaysOff) {
+        const existingDaysOffResult = await client
+          .schema(schemaName)
+          .from('provider_days_off')
+          .select('id, off_date')
+          .eq('user_id', userId);
+
+        if (existingDaysOffResult.error) {
+          operationError = existingDaysOffResult.error;
+        } else {
+          const existingRows = existingDaysOffResult.data || [];
+          const existingByDate = new Map<string, any>();
+          for (const row of existingRows) {
+            const normalizedDate = this.normalizeOffDate((row as any)?.off_date);
+            if (!normalizedDate) continue;
+            if (!existingByDate.has(normalizedDate)) {
+              existingByDate.set(normalizedDate, row);
+            }
+          }
+
+          const incomingByDate = new Map<string, Record<string, any>>();
+          for (const row of daysOffRows) {
+            const normalizedDate = this.normalizeOffDate(row.off_date);
+            if (!normalizedDate) continue;
+            incomingByDate.set(normalizedDate, {
+              user_id: userId,
+              off_date: normalizedDate,
+              reason: this.toNullableString(row.reason),
+            });
+          }
+
+          const updates: Array<{ id: string; reason: string | null }> = [];
+          const inserts: Record<string, any>[] = [];
+          for (const [dateKey, payload] of incomingByDate.entries()) {
+            const existing = existingByDate.get(dateKey);
+            if (existing?.id) {
+              updates.push({
+                id: existing.id,
+                reason: this.toNullableString(payload.reason),
+              });
+            } else {
+              inserts.push(payload);
+            }
+          }
+
+          const staleIds = existingRows
+            .filter((row: any) => {
+              const normalizedDate = this.normalizeOffDate(row?.off_date);
+              return normalizedDate && !incomingByDate.has(normalizedDate);
+            })
+            .map((row: any) => this.toTrimmedString(row?.id))
+            .filter((rowId: string) => Boolean(rowId));
+
+          for (const updateRow of updates) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_days_off')
+              .update({ reason: updateRow.reason })
+              .eq('id', updateRow.id)
+              .eq('user_id', userId);
+            if (error) {
+              operationError = error;
+              break;
+            }
+          }
+
+          if (!operationError && inserts.length) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_days_off')
+              .insert(inserts);
+            if (error) operationError = error;
+          }
+
+          if (!operationError && staleIds.length) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_days_off')
+              .delete()
+              .in('id', staleIds)
+              .eq('user_id', userId);
+            if (error) operationError = error;
+          }
+        }
+      }
+
+      if (!operationError) return { success: true };
+      if (this.isPermissionDeniedError(operationError)) {
+        throw operationError;
+      }
+
+      lastError = operationError;
+      if (this.isMissingRelationError(operationError)) continue;
+      throw operationError;
+    }
+
+    if (lastError) throw lastError;
+    return { success: true };
   }
 
   private extractStoragePathFromAttachmentUrl(fileUrl: unknown): string | null {
@@ -69,6 +586,32 @@ export class BookingService {
       message.includes('permission denied') ||
       message.includes('row-level security')
     );
+  }
+
+  private isTimeoutLikeError(error: unknown) {
+    const message = this.toTrimmedString((error as any)?.message).toLowerCase();
+    return message.includes('timeout') || message.includes('timed out');
+  }
+
+  private async withQueryTimeout<T>(
+    operation: PromiseLike<T>,
+    timeoutMs: number,
+    context: string,
+  ): Promise<T> {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<T>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error(`${context} timed out after ${timeoutMs}ms`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
   }
 
   private createAccessScopedSupabase(
@@ -251,65 +794,144 @@ export class BookingService {
   }
 
   async createBooking(dto: any, customerId: string) {
-    const { data: userRecord, error: userError } = await this.supabase
-      .schema('identity_and_user')
-      .from('users')
-      .select('role, status')
-      .eq('id', dto.provider_id)
-      .single();
-    if (userError || !userRecord)
-      throw new NotFoundException('Provider not found in the system.');
-    if (userRecord.role !== 'provider')
+    const normalizedProviderId = this.toTrimmedString(dto?.provider_id);
+    const normalizedCustomerId = this.toTrimmedString(customerId);
+    const normalizedServiceId = this.toTrimmedString(dto?.service_id);
+    const normalizedScheduledAt = this.toTrimmedString(dto?.scheduled_at);
+    if (!normalizedProviderId)
+      throw new BadRequestException('provider_id is required');
+    if (!normalizedCustomerId)
+      throw new BadRequestException('customerId is required');
+    if (!normalizedServiceId)
+      throw new BadRequestException('service_id is required');
+    if (!normalizedScheduledAt)
+      throw new BadRequestException('scheduled_at is required');
+
+    const userRecord = await this.getUserProfileFromAuth(normalizedProviderId);
+
+    if (!userRecord) throw new NotFoundException('Provider not found in the system.');
+
+    const providerRole = this.toTrimmedString((userRecord as any)?.role).toLowerCase();
+    if (providerRole !== 'provider')
       throw new BadRequestException(
         'Bookings can only be made with registered providers.',
       );
 
-    const { data: profileRecord, error: profileError } = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_profiles')
-      .select('verification_status')
-      .eq('user_id', dto.provider_id)
-      .single();
-    if (profileError || !profileRecord)
+    const profileRecord = await this.getProviderProfileSummary(normalizedProviderId);
+
+    if (!profileRecord)
       throw new BadRequestException(
         'Provider profile is missing or incomplete.',
       );
 
+    const accountStatus = this.toTrimmedString((userRecord as any)?.status).toLowerCase();
+    const verificationStatus = this.toTrimmedString(
+      (profileRecord as any)?.verification_status,
+    ).toLowerCase();
+
     if (
-      userRecord.status !== 'active' ||
-      profileRecord.verification_status !== 'approved'
+      accountStatus !== 'active' ||
+      verificationStatus !== 'approved'
     ) {
-      throw new BadRequestException({
-        message: 'Booking rejected: This provider is not yet fully verified.',
-        account_status: userRecord.status,
-        profile_verification: profileRecord.verification_status,
-      });
+      const accountStatusLabel =
+        this.toTrimmedString((userRecord as any)?.status) || 'unknown';
+      const profileVerificationLabel =
+        this.toTrimmedString((profileRecord as any)?.verification_status) ||
+        'unknown';
+      throw new BadRequestException(
+        `Booking rejected: This provider is not yet fully verified (account_status=${accountStatusLabel}, profile_verification=${profileVerificationLabel}).`,
+      );
     }
 
-    const totalAmount =
-      dto.total_amount ?? (dto.hourly_rate || 0) * (dto.hours_required || 1);
+    const normalizedPricingMode = ['hourly', 'flat'].includes(
+      this.toTrimmedString(dto?.pricing_mode).toLowerCase(),
+    )
+      ? this.toTrimmedString(dto?.pricing_mode).toLowerCase()
+      : 'flat';
+    const normalizedHoursRequired = Math.max(
+      1,
+      Number(this.toNullableNumber(dto?.hours_required) || 1),
+    );
+    const hourlyRate = this.toNullableNumber(dto?.hourly_rate);
+    const flatRate = this.toNullableNumber(dto?.flat_rate);
+    const totalAmountCandidate = this.toNullableNumber(dto?.total_amount);
+    const computedAmount =
+      normalizedPricingMode === 'hourly'
+        ? (hourlyRate || 0) * normalizedHoursRequired
+        : flatRate || hourlyRate || 0;
+    const totalAmount = totalAmountCandidate ?? computedAmount;
+    const normalizedServiceLocationType =
+      this.toTrimmedString(dto?.service_location_type).toLowerCase() ===
+      'in_shop'
+        ? 'in_shop'
+        : 'mobile';
+    const normalizedPaymentMethod =
+      this.toTrimmedString(dto?.payment_method).toLowerCase() ||
+      'cash_on_service';
+    const serviceDescription =
+      this.toTrimmedString(
+        dto?.service_description || dto?.service_name || dto?.service_title,
+      ) || null;
     const bookingRef = `BKG-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    const { data: newBooking, error: bookingError } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .insert([
-        {
-          booking_reference: bookingRef,
-          customer_id: customerId,
-          provider_id: dto.provider_id,
-          service_id: dto.service_id,
-          service_address: dto.service_address,
-          scheduled_at: dto.scheduled_at,
-          hourly_rate: dto.hourly_rate,
-          hours_required: dto.hours_required,
-          total_amount: totalAmount,
-          status: 'pending',
-        },
-      ])
-      .select()
-      .single();
-    if (bookingError) throw new BadRequestException(bookingError.message);
+    const baseInsertPayload: Record<string, any> = {
+      booking_reference: bookingRef,
+      customer_id: normalizedCustomerId,
+      provider_id: normalizedProviderId,
+      service_id: normalizedServiceId,
+      service_description: serviceDescription,
+      service_address: this.toTrimmedString(dto?.service_address),
+      service_location_type: normalizedServiceLocationType,
+      scheduled_at: normalizedScheduledAt,
+      pricing_mode: normalizedPricingMode,
+      hourly_rate: hourlyRate,
+      flat_rate: flatRate,
+      hours_required: normalizedHoursRequired,
+      total_amount: totalAmount,
+      payment_method: normalizedPaymentMethod,
+      customer_notes: this.toNullableString(dto?.customer_notes),
+      status: 'pending',
+    };
+
+    let insertPayload: Record<string, any> = { ...baseInsertPayload };
+    let newBooking: any = null;
+    let bookingError: any = null;
+    let schemaFallbackAttempts = 0;
+
+    while (schemaFallbackAttempts < 8) {
+      const insertResult = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .insert([insertPayload])
+        .select()
+        .single();
+
+      if (!insertResult.error) {
+        newBooking = insertResult.data;
+        bookingError = null;
+        break;
+      }
+
+      bookingError = insertResult.error;
+      if (!this.isSchemaMismatchError(bookingError)) {
+        break;
+      }
+
+      const missingColumn = this.extractMissingColumnFromError(bookingError);
+      if (!missingColumn || !(missingColumn in insertPayload)) {
+        break;
+      }
+
+      delete insertPayload[missingColumn];
+      schemaFallbackAttempts += 1;
+    }
+
+    if (bookingError || !newBooking) {
+      throw new BadRequestException(
+        this.toTrimmedString(bookingError?.message) || 'Failed to create booking',
+      );
+    }
+
     return { message: 'Booking successfully created!', booking: newBooking };
   }
 
@@ -322,29 +944,593 @@ export class BookingService {
       .order('created_at', { ascending: false });
     if (error) throw new InternalServerErrorException(error.message);
 
-    // Fetch provider info separately (cross-schema join not supported)
-    const bookings = await Promise.all(
-      (data || []).map(async (booking: any) => {
-        const { data: providerUser } = await this.supabase
-          .schema('identity_and_user')
-          .from('users')
-          .select('full_name, contact_number')
-          .eq('id', booking.provider_id)
-          .single();
-        const { data: providerProfile } = await this.supabase
-          .schema('provider_catalog')
-          .from('provider_profiles')
-          .select('business_name, average_rating')
-          .eq('user_id', booking.provider_id)
-          .single();
-        return {
-          ...booking,
-          provider: { ...(providerUser || {}), ...(providerProfile || {}) },
-        };
+    const providerIds = [...new Set(
+      (data || [])
+        .map((booking: any) => this.toTrimmedString(booking?.provider_id))
+        .filter((providerId: string) => Boolean(providerId)),
+    )];
+
+    const providerEntries = await Promise.all(
+      providerIds.map(async (providerId) => {
+        const providerUser = await this.getUserProfileFromAuth(providerId);
+
+        return [
+          providerId,
+          {
+            full_name:
+              this.toTrimmedString((providerUser as any)?.full_name) || null,
+            contact_number:
+              this.toTrimmedString((providerUser as any)?.contact_number) || null,
+            business_name: null as string | null,
+            average_rating: null as number | null,
+            total_reviews: null as number | null,
+          },
+        ] as const;
       }),
     );
+    const providerById = new Map(providerEntries);
+
+    const bookings = (data || []).map((booking: any) => {
+      const providerId = this.toTrimmedString(booking?.provider_id);
+      return {
+        ...booking,
+        provider: providerById.get(providerId) || {},
+      };
+    });
 
     return { bookings };
+  }
+
+  async getProviderBookings(providerId: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId)
+      throw new BadRequestException('providerId is required');
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('*')
+      .eq('provider_id', normalizedProviderId)
+      .order('created_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const customerIds = [
+      ...new Set(
+        (data || [])
+          .map((booking: any) => this.toTrimmedString(booking?.customer_id))
+          .filter((customerId: string) => Boolean(customerId)),
+      ),
+    ];
+    const customerEntries = await Promise.all(
+      customerIds.map(async (customerId) => [
+        customerId,
+        await this.getUserProfileFromAuth(customerId),
+      ] as const),
+    );
+    const customerById = new Map(customerEntries);
+
+    const bookings = (data || []).map((booking: any) => {
+      const customerId = this.toTrimmedString(booking?.customer_id);
+      const customer = customerById.get(customerId) as any;
+      return {
+        ...booking,
+        customer_name: this.toTrimmedString(customer?.full_name),
+        customer_contact: this.toTrimmedString(customer?.contact_number),
+        service_title: this.resolveServiceTitle(booking),
+      };
+    });
+
+    return { bookings };
+  }
+
+  async getProviderBookingById(bookingId: string) {
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    if (!normalizedBookingId)
+      throw new BadRequestException('bookingId is required');
+
+    const data = await this.getBookingRowByIdentifier(normalizedBookingId);
+    if (!data) throw new NotFoundException('Booking not found');
+
+    const customerId = this.toTrimmedString(data.customer_id);
+    const customerUser = await this.getUserProfileFromAuth(customerId);
+
+    return {
+      booking: {
+        ...data,
+        customer_name: this.toTrimmedString((customerUser as any)?.full_name),
+        customer_contact: this.toTrimmedString(
+          (customerUser as any)?.contact_number,
+        ),
+        service_title: this.resolveServiceTitle(data),
+      },
+    };
+  }
+
+  async getChatBookings(userId: string, role?: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) {
+      throw new BadRequestException('userId is required');
+    }
+
+    const normalizedRole = this.toTrimmedString(role).toLowerCase();
+    const actorColumn = normalizedRole === 'provider' ? 'provider_id' : 'customer_id';
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('*')
+      .eq(actorColumn, normalizedUserId)
+      .in('status', ['pending', 'confirmed', 'in_progress', 'completed'])
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw new InternalServerErrorException(error.message);
+    }
+
+    return { bookings: data || [] };
+  }
+
+  async getChatBookingContext(bookingId: string) {
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    if (!normalizedBookingId) {
+      throw new BadRequestException('bookingId is required');
+    }
+
+    const data = await this.getBookingRowByIdentifier(
+      normalizedBookingId,
+      '*',
+    );
+    if (!data) {
+      throw new NotFoundException('Booking not found');
+    }
+
+    return { booking: data };
+  }
+
+  async getAllBookings(page = 1, limit = 20) {
+    const normalizedPage = Number.isFinite(Number(page))
+      ? Math.max(1, Number(page))
+      : 1;
+    const normalizedLimit = Number.isFinite(Number(limit))
+      ? Math.max(1, Number(limit))
+      : 20;
+    const offset = (normalizedPage - 1) * normalizedLimit;
+
+    const { data, error, count } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + normalizedLimit - 1);
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const bookings = data || [];
+    if (!bookings.length) {
+      return {
+        bookings: [],
+        total: count || 0,
+        page: normalizedPage,
+        limit: normalizedLimit,
+      };
+    }
+
+    const userIds = Array.from(
+      new Set(
+        bookings
+          .flatMap((booking: any) => [booking?.provider_id, booking?.customer_id])
+          .map((userId: unknown) => this.toTrimmedString(userId))
+          .filter((userId: string) => Boolean(userId)),
+      ),
+    );
+    const users = await this.getUsersByIdsFromAuth(userIds);
+    const userById = new Map(
+      users.map((user: any) => [this.toTrimmedString(user?.id), user]),
+    );
+
+    const enriched = bookings.map((booking: any) => {
+      const providerId = this.toTrimmedString(booking?.provider_id);
+      const customerId = this.toTrimmedString(booking?.customer_id);
+
+      const provider = userById.get(providerId) as any;
+      const customer = userById.get(customerId) as any;
+
+      return {
+        id: booking.id,
+        booking_id:
+          this.toTrimmedString(booking.booking_reference) ||
+          this.toTrimmedString(booking.id),
+        status: this.toTrimmedString(booking.status) || 'pending',
+        payment_status: this.toTrimmedString(booking.payment_status) || 'pending',
+        amount: Number(booking.amount || booking.total_amount || 0),
+        scheduled_at: booking.scheduled_at || null,
+        created_at: booking.created_at || null,
+        customer_id: customerId || null,
+        provider_id: providerId || null,
+        service_id: this.toTrimmedString(booking?.service_id) || null,
+        service_description:
+          this.toTrimmedString(booking.service_description) || null,
+        customer_name: this.toTrimmedString(customer?.full_name),
+        customer_email: this.toTrimmedString(customer?.email),
+        provider_name: this.toTrimmedString(provider?.full_name),
+        provider_email: this.toTrimmedString(provider?.email),
+      };
+    });
+
+    return {
+      bookings: enriched,
+      total: count || 0,
+      page: normalizedPage,
+      limit: normalizedLimit,
+    };
+  }
+
+  async getOngoingBookings(limit = 100) {
+    const normalizedLimit = Number.isFinite(Number(limit))
+      ? Math.max(1, Number(limit))
+      : 100;
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('*')
+      .in('status', ['confirmed', 'in_progress'])
+      .order('scheduled_at', { ascending: true })
+      .range(0, normalizedLimit - 1);
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const bookings = data || [];
+    const userIds = Array.from(
+      new Set(
+        bookings
+          .flatMap((booking: any) => [booking?.provider_id, booking?.customer_id])
+          .map((userId: unknown) => this.toTrimmedString(userId))
+          .filter((userId: string) => Boolean(userId)),
+      ),
+    );
+    const users = await this.getUsersByIdsFromAuth(userIds);
+    const userById = new Map(
+      users.map((user: any) => [this.toTrimmedString(user?.id), user]),
+    );
+
+    const enriched = bookings.map((booking: any) => {
+      const provider = userById.get(this.toTrimmedString(booking?.provider_id)) as any;
+      const customer = userById.get(this.toTrimmedString(booking?.customer_id)) as any;
+      return {
+        ...booking,
+        provider_name: this.toTrimmedString(provider?.full_name),
+        customer_name: this.toTrimmedString(customer?.full_name),
+      };
+    });
+
+    return { bookings: enriched };
+  }
+
+  async getBookingCounts(dimension: string, ids: unknown) {
+    const normalizedDimension = this.toTrimmedString(dimension).toLowerCase();
+    const column =
+      normalizedDimension === 'provider'
+        ? 'provider_id'
+        : normalizedDimension === 'customer'
+          ? 'customer_id'
+          : '';
+    if (!column) {
+      throw new BadRequestException(
+        'dimension must be either "customer" or "provider"',
+      );
+    }
+
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(ids) ? ids : [])
+          .map((id) => this.toTrimmedString(id))
+          .filter((id) => Boolean(id)),
+      ),
+    );
+    if (!normalizedIds.length) return { counts: {} };
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select(column)
+      .in(column, normalizedIds);
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const counts: Record<string, number> = {};
+    for (const row of data || []) {
+      const rowId = this.toTrimmedString((row as any)?.[column]);
+      if (!rowId) continue;
+      counts[rowId] = (counts[rowId] || 0) + 1;
+    }
+
+    return { counts };
+  }
+
+  async getBookingAnalytics(from?: string, to?: string) {
+    let query = this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('status, created_at');
+    if (from) query = query.gte('created_at', from);
+    if (to) query = query.lte('created_at', to);
+
+    const { data, error } = await query;
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const bookings = data || [];
+    const byStatus = bookings.reduce((acc: Record<string, number>, booking: any) => {
+      const status = this.toTrimmedString(booking?.status) || 'unknown';
+      acc[status] = (acc[status] || 0) + 1;
+      return acc;
+    }, {});
+    return { total: bookings.length, by_status: byStatus };
+  }
+
+  async getProviderAvailability(userId: string, accessToken?: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    try {
+      return await this.getProviderAvailabilityWithClient(
+        this.supabase,
+        normalizedUserId,
+      );
+    } catch (error: any) {
+      const scopedClient = this.createAccessScopedSupabase(accessToken || '');
+      if (scopedClient && this.isPermissionDeniedError(error)) {
+        try {
+          return await this.getProviderAvailabilityWithClient(
+            scopedClient,
+            normalizedUserId,
+          );
+        } catch (fallbackError: any) {
+          throw new InternalServerErrorException(
+            this.toTrimmedString(fallbackError?.message) ||
+              'Failed to fetch provider availability',
+          );
+        }
+      }
+      throw new InternalServerErrorException(
+        this.toTrimmedString(error?.message) ||
+          'Failed to fetch provider availability',
+      );
+    }
+  }
+
+  async saveProviderAvailability(userId: string, body: any, accessToken?: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    try {
+      return await this.saveProviderAvailabilityWithClient(
+        this.supabase,
+        normalizedUserId,
+        body,
+      );
+    } catch (error: any) {
+      const scopedClient = this.createAccessScopedSupabase(accessToken || '');
+      if (scopedClient && this.isPermissionDeniedError(error)) {
+        try {
+          return await this.saveProviderAvailabilityWithClient(
+            scopedClient,
+            normalizedUserId,
+            body,
+          );
+        } catch (fallbackError: any) {
+          throw new InternalServerErrorException(
+            this.toTrimmedString(fallbackError?.message) ||
+              'Failed to save provider availability',
+          );
+        }
+      }
+      throw new InternalServerErrorException(
+        this.toTrimmedString(error?.message) ||
+          'Failed to save provider availability',
+      );
+    }
+  }
+
+  async getReservedSlots(providerId: string, date: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    const normalizedDate = this.toTrimmedString(date);
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+    if (!normalizedDate) throw new BadRequestException('date is required');
+
+    const startOfDay = `${normalizedDate}T00:00:00`;
+    const endOfDay = `${normalizedDate}T23:59:59`;
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('scheduled_at, hours_required')
+      .eq('provider_id', normalizedProviderId)
+      .gte('scheduled_at', startOfDay)
+      .lte('scheduled_at', endOfDay)
+      .in('status', ['pending', 'confirmed', 'in_progress']);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { reservedSlots: data || [] };
+  }
+
+  async checkAvailability(
+    providerId: string,
+    scheduledAt: string,
+    hoursRequired: string,
+  ) {
+    const normalizedScheduledAt = this.toTrimmedString(scheduledAt);
+    if (!normalizedScheduledAt) throw new BadRequestException('scheduledAt is required');
+
+    const date = normalizedScheduledAt.slice(0, 10);
+    const slots = (await this.getReservedSlots(providerId, date)).reservedSlots;
+    const requestedStart = new Date(normalizedScheduledAt).getTime();
+    const requestedEnd = requestedStart + Number(hoursRequired || 1) * 3600000;
+
+    for (const slot of slots) {
+      const slotStart = new Date(slot.scheduled_at).getTime();
+      const slotEnd = slotStart + (slot.hours_required || 1) * 3600000;
+      if (requestedStart < slotEnd && requestedEnd > slotStart) {
+        return {
+          available: false,
+          reason: 'This time slot overlaps with an existing booking.',
+        };
+      }
+    }
+    return { available: true };
+  }
+
+  async createRescheduleRequest(body: any) {
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('booking_reschedule_requests')
+      .insert([
+        {
+          booking_id: body.bookingId,
+          provider_id: body.providerId,
+          reason: body.reason,
+          explanation: body.explanation,
+          proposed_date: body.proposedDate,
+          proposed_time: body.proposedTime,
+          status: 'pending',
+        },
+      ])
+      .select()
+      .single();
+    if (error) throw new InternalServerErrorException(error.message);
+    return { request: data };
+  }
+
+  async getRescheduleRequests(bookingId: string) {
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    if (!normalizedBookingId) return { requests: [] };
+
+    try {
+      const result = await this.withQueryTimeout<any>(
+        this.supabase
+          .schema('booking')
+          .from('booking_reschedule_requests')
+          .select('*')
+          .eq('booking_id', normalizedBookingId)
+          .order('created_at', { ascending: false }),
+        4500,
+        'booking.get-reschedules query',
+      );
+      const { data, error } = result || {};
+      if (error) {
+        this.logger.warn(
+          `booking.get-reschedules degraded: ${this.toTrimmedString(error?.message) || 'query error'}`,
+        );
+        return { requests: [] };
+      }
+      return { requests: data || [] };
+    } catch (error) {
+      if (this.isTimeoutLikeError(error)) {
+        this.logger.warn(
+          `booking.get-reschedules degraded: query timed out for bookingId=${normalizedBookingId}`,
+        );
+        return { requests: [] };
+      }
+      throw new InternalServerErrorException(
+        this.toTrimmedString((error as any)?.message) ||
+          'Failed to fetch reschedule requests',
+      );
+    }
+  }
+
+  async reviewRescheduleRequest(requestId: string, body: any) {
+    const updates: any = {
+      status: body.decision,
+      reviewed_at: new Date().toISOString(),
+    };
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('booking_reschedule_requests')
+      .update(updates)
+      .eq('id', requestId)
+      .select()
+      .single();
+    if (error) throw new InternalServerErrorException(error.message);
+
+    if (body.decision === 'approved' && data) {
+      const req = data as any;
+      if (req.proposed_date && req.proposed_time) {
+        await this.supabase
+          .schema('booking')
+          .from('bookings')
+          .update({ scheduled_at: `${req.proposed_date}T${req.proposed_time}` })
+          .eq('id', req.booking_id);
+      }
+    }
+    return { request: data };
+  }
+
+  async createAdditionalCharges(body: any) {
+    const items = (body.items || []).map((item: any) => ({
+      booking_id: body.bookingId,
+      requested_by: body.providerId,
+      description: item.description,
+      amount: item.amount,
+      justification: body.justification,
+      status: 'pending',
+    }));
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('additional_charges')
+      .insert(items)
+      .select();
+    if (error) throw new InternalServerErrorException(error.message);
+    return { charges: data || [] };
+  }
+
+  async getAdditionalCharges(bookingId: string) {
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    if (!normalizedBookingId) return { charges: [] };
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('additional_charges')
+      .select('*')
+      .eq('booking_id', normalizedBookingId);
+    if (error) {
+      this.logger.warn(
+        `booking.get-additional-charges degraded: ${this.toTrimmedString(error.message) || 'query error'}`,
+      );
+      return { charges: [] };
+    }
+    return { charges: data || [] };
+  }
+
+  async reviewAdditionalCharges(body: any) {
+    const { chargeIds, decision } = body;
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('additional_charges')
+      .update({
+        status: decision,
+        reviewed_at: new Date().toISOString(),
+      })
+      .in('id', chargeIds)
+      .select();
+    if (error) throw new InternalServerErrorException(error.message);
+
+    if (decision === 'approved' && data?.length && body.bookingId) {
+      const totalAdditional = data.reduce(
+        (acc: number, charge: any) => acc + Number(charge.amount),
+        0,
+      );
+      const { data: booking } = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .select('total_amount')
+        .eq('id', body.bookingId)
+        .single();
+      if (booking) {
+        await this.supabase
+          .schema('booking')
+          .from('bookings')
+          .update({
+            total_amount: Number(booking.total_amount) + totalAdditional,
+          })
+          .eq('id', body.bookingId);
+      }
+    }
+    return { charges: data || [] };
   }
 
   async getHistory() {
@@ -368,48 +1554,34 @@ export class BookingService {
   }
 
   async getBookingById(id: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('*')
-      .eq('id', id)
-      .single();
-    if (error) {
-      if (error.code === 'PGRST116')
-        throw new NotFoundException('Booking not found');
-      throw new InternalServerErrorException(error.message);
-    }
+    const data = await this.getBookingRowByIdentifier(id);
+    if (!data) throw new NotFoundException('Booking not found');
 
-    // Fetch provider and customer info separately (cross-schema join not supported)
-    const [providerUser, providerProfile, customerUser] = await Promise.all([
-      this.supabase
-        .schema('identity_and_user')
-        .from('users')
-        .select('full_name, contact_number')
-        .eq('id', data.provider_id)
-        .single(),
-      this.supabase
-        .schema('provider_catalog')
-        .from('provider_profiles')
-        .select('business_name, average_rating')
-        .eq('user_id', data.provider_id)
-        .single(),
-      this.supabase
-        .schema('identity_and_user')
-        .from('users')
-        .select('full_name, contact_number')
-        .eq('id', data.customer_id)
-        .single(),
+    const providerId = this.toTrimmedString(data.provider_id);
+    const customerId = this.toTrimmedString(data.customer_id);
+    const [providerUser, customerUser] = await Promise.all([
+      this.getUserProfileFromAuth(providerId),
+      this.getUserProfileFromAuth(customerId),
     ]);
 
     return {
       booking: {
         ...data,
+        service_title: this.resolveServiceTitle(data),
         provider: {
-          ...(providerUser.data || {}),
-          ...(providerProfile.data || {}),
+          full_name: this.toTrimmedString((providerUser as any)?.full_name),
+          contact_number: this.toTrimmedString(
+            (providerUser as any)?.contact_number,
+          ),
+          business_name: null as string | null,
+          average_rating: null as number | null,
         },
-        customer: customerUser.data || {},
+        customer: {
+          full_name: this.toTrimmedString((customerUser as any)?.full_name),
+          contact_number: this.toTrimmedString(
+            (customerUser as any)?.contact_number,
+          ),
+        },
       },
     };
   }
@@ -561,15 +1733,28 @@ export class BookingService {
   }
 
   async createDispute(bookingId: string, userId: string, reason: string) {
-    const { data, error } = await this.supabase
-      .schema('notification_and_support')
-      .from('disputes')
-      .insert([
-        { booking_id: bookingId, raised_by: userId, reason, status: 'open' },
-      ])
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    return { dispute: data };
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    const normalizedUserId = this.toTrimmedString(userId);
+    const normalizedReason = this.toTrimmedString(reason);
+    if (!normalizedBookingId)
+      throw new BadRequestException('bookingId is required');
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+    if (!normalizedReason) throw new BadRequestException('reason is required');
+
+    try {
+      return await sendKafkaRpcRequest(
+        () =>
+          this.kafka.send(SUPPORT_PATTERNS.CREATE_DISPUTE, {
+            bookingId: normalizedBookingId,
+            userId: normalizedUserId,
+            reason: normalizedReason,
+          }),
+        { context: SUPPORT_PATTERNS.CREATE_DISPUTE },
+      );
+    } catch (error: any) {
+      throw new InternalServerErrorException(
+        this.toTrimmedString(error?.message) || 'Failed to create dispute',
+      );
+    }
   }
 }

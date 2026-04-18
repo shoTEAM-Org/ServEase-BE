@@ -1,15 +1,132 @@
 import {
+  Inject,
   Injectable,
   BadRequestException,
   NotFoundException,
   InternalServerErrorException,
+  Logger,
+  OnModuleInit,
 } from '@nestjs/common';
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { ClientKafka } from '@nestjs/microservices';
+import { SupabaseClient } from '@supabase/supabase-js';
+import {
+  AUTH_PATTERNS,
+  BOOKING_PATTERNS,
+  KafkaRpcRequestOptions,
+  PAYMENT_PATTERNS,
+  TRUST_PATTERNS,
+  sendKafkaRpcRequest,
+} from '@app/common';
 
 @Injectable()
-export class ProviderService {
-  constructor(private readonly supabase: SupabaseClient) {}
-  private readonly availabilitySchemas = ['booking', 'booking_svc'] as const;
+export class ProviderService implements OnModuleInit {
+  constructor(
+    private readonly supabase: SupabaseClient,
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+  ) {}
+  private readonly logger = new Logger(ProviderService.name);
+
+  async onModuleInit() {
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.UPDATE_USER_STATUS);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_AVAILABILITY);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.SAVE_PROVIDER_AVAILABILITY);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESERVED_SLOTS);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.CHECK_PROVIDER_AVAILABILITY);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.CREATE_RESCHEDULE);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESCHEDULES);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.REVIEW_RESCHEDULE);
+    this.kafka.subscribeToResponseOf(
+      BOOKING_PATTERNS.CREATE_ADDITIONAL_CHARGES,
+    );
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_ADDITIONAL_CHARGES);
+    this.kafka.subscribeToResponseOf(
+      BOOKING_PATTERNS.REVIEW_ADDITIONAL_CHARGES,
+    );
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.GET_EARNINGS_SUMMARY);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_PROVIDER_REVIEWS);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.CREATE_REVIEW);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.CREATE_PROVIDER_REPORT);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_ALL_REVIEWS);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.DELETE_REVIEW);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_PERFORMANCE_REPORT);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_COMPLIANCE_REPORT);
+    await this.kafka.connect();
+  }
+
+  private async request<T = any>(
+    pattern: string,
+    payload: unknown,
+    options: Pick<KafkaRpcRequestOptions, 'timeoutMs' | 'retries' | 'retryDelayMs'> = {},
+  ): Promise<T> {
+    return await sendKafkaRpcRequest(
+      () => this.kafka.send<T, unknown>(pattern, payload),
+      { context: pattern, ...options },
+    );
+  }
+
+  private isTimeoutLikeError(error: unknown) {
+    const message = this.toTrimmedString((error as any)?.message).toLowerCase();
+    return message.includes('timeout') || message.includes('timed out');
+  }
+
+  private async withQueryTimeout<T>(
+    operation: PromiseLike<T>,
+    timeoutMs: number,
+    context: string,
+  ): Promise<T> {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    try {
+      return await Promise.race([
+        operation,
+        new Promise<T>((_, reject) => {
+          timeoutHandle = setTimeout(
+            () => reject(new Error(`${context} timed out after ${timeoutMs}ms`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+    }
+  }
+
+  private buildDateFilter(query: any, from?: string, to?: string, column = 'created_at') {
+    if (from) query = query.gte(column, from);
+    if (to) query = query.lte(column, to);
+    return query;
+  }
+
+  private async getUserProfileFromAuth(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) return null;
+    return await this.request<any>(AUTH_PATTERNS.GET_PROFILE, {
+      userId: normalizedUserId,
+    });
+  }
+
+  private async getUsersByIdsFromAuth(userIds: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(userIds) ? userIds : [])
+          .map((userId) => this.toTrimmedString(userId))
+          .filter((userId) => Boolean(userId)),
+      ),
+    );
+    if (!normalizedIds.length) return [] as any[];
+
+    const response = await this.request<any>(AUTH_PATTERNS.GET_USERS_BY_IDS, {
+      userIds: normalizedIds,
+    });
+    const users =
+      response && typeof response === 'object' && 'users' in response
+        ? (response as any).users
+        : [];
+    return Array.isArray(users) ? users : [];
+  }
 
   private toTrimmedString(value: unknown) {
     return String(value ?? '').trim();
@@ -57,325 +174,6 @@ export class ProviderService {
       message.includes('pgrst204') ||
       message.includes('pgrst200')
     );
-  }
-
-  private isMissingRelationError(error: any) {
-    const code = this.toTrimmedString(error?.code).toUpperCase();
-    const message = this.toTrimmedString(error?.message).toLowerCase();
-    return (
-      code === '42P01' ||
-      code === 'PGRST106' ||
-      ((message.includes('relation') || message.includes('schema')) &&
-        message.includes('does not exist'))
-    );
-  }
-
-  private isPermissionDeniedError(error: any) {
-    const code = this.toTrimmedString(error?.code).toUpperCase();
-    const message = this.toTrimmedString(error?.message).toLowerCase();
-    return code === '42501' || message.includes('permission denied');
-  }
-
-  private normalizeTime(value: unknown): string | null {
-    const raw = this.toTrimmedString(value);
-    if (!raw) return null;
-    const hhmmss = raw.match(/^(\d{2}):(\d{2}):(\d{2})$/);
-    if (hhmmss) return raw;
-    const hhmm = raw.match(/^(\d{2}):(\d{2})$/);
-    if (hhmm) return `${hhmm[1]}:${hhmm[2]}:00`;
-    return null;
-  }
-
-  private normalizeWeekdayKey(value: unknown): string {
-    return this.toTrimmedString(value).toLowerCase();
-  }
-
-  private normalizeOffDate(value: unknown): string | null {
-    const raw = this.toTrimmedString(value);
-    if (!raw) return null;
-
-    const yyyyMmDd = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    if (yyyyMmDd) return `${yyyyMmDd[1]}-${yyyyMmDd[2]}-${yyyyMmDd[3]}`;
-
-    const isoPrefix = raw.match(/^(\d{4})-(\d{2})-(\d{2})T/);
-    if (isoPrefix) return `${isoPrefix[1]}-${isoPrefix[2]}-${isoPrefix[3]}`;
-
-    const ddMmYyyy = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-    if (ddMmYyyy) return `${ddMmYyyy[3]}-${ddMmYyyy[2]}-${ddMmYyyy[1]}`;
-
-    const parsed = new Date(raw);
-    if (Number.isNaN(parsed.getTime())) return null;
-    const year = parsed.getFullYear();
-    const month = String(parsed.getMonth() + 1).padStart(2, '0');
-    const day = String(parsed.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
-  }
-
-  private createAccessScopedSupabase(accessToken: string): SupabaseClient | null {
-    const token = this.toTrimmedString(accessToken);
-    const supabaseUrl = this.toTrimmedString(process.env.SUPABASE_URL);
-    const supabaseKey = this.toTrimmedString(process.env.SUPABASE_SECRET_KEY);
-    if (!token || !supabaseUrl || !supabaseKey) return null;
-
-    return createClient(supabaseUrl, supabaseKey, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-      global: {
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-      },
-    });
-  }
-
-  private normalizeWeeklyScheduleRows(userId: string, source: unknown) {
-    if (!Array.isArray(source)) return [] as Record<string, any>[];
-
-    return source
-      .map((row: any) => ({
-        user_id: userId,
-        day_of_week: this.toTrimmedString(row?.day_of_week),
-        is_active: this.toBoolean(row?.is_active, false),
-        start_time: this.normalizeTime(row?.start_time),
-        end_time: this.normalizeTime(row?.end_time),
-        break_start_time: this.normalizeTime(row?.break_start_time),
-        break_end_time: this.normalizeTime(row?.break_end_time),
-      }))
-      .filter((row) => row.day_of_week);
-  }
-
-  private normalizeDaysOffRows(userId: string, source: unknown) {
-    if (!Array.isArray(source)) return [] as Record<string, any>[];
-
-    return source
-      .map((row: any) => {
-        const normalizedDate = this.normalizeOffDate(row?.off_date);
-        if (!normalizedDate) return null;
-        return {
-          user_id: userId,
-          off_date: normalizedDate,
-          reason: this.toNullableString(row?.reason),
-        };
-      })
-      .filter((row) => Boolean(row)) as Record<string, any>[];
-  }
-
-  private async getProviderAvailabilityWithClient(
-    client: SupabaseClient,
-    userId: string,
-  ) {
-    let lastError: any = null;
-
-    for (const schemaName of this.availabilitySchemas) {
-      const [weeklyResult, daysOffResult] = await Promise.all([
-        client
-          .schema(schemaName)
-          .from('provider_availability')
-          .select('*')
-          .eq('user_id', userId),
-        client
-          .schema(schemaName)
-          .from('provider_days_off')
-          .select('*')
-          .eq('user_id', userId),
-      ]);
-
-      if (!weeklyResult.error && !daysOffResult.error) {
-        const normalizedDaysOff = (daysOffResult.data || []).map((row: any) => ({
-          ...row,
-          off_date: this.normalizeOffDate(row?.off_date) || row?.off_date,
-        }));
-        return { weeklySchedule: weeklyResult.data || [], daysOff: normalizedDaysOff };
-      }
-
-      const combinedErrors = [weeklyResult.error, daysOffResult.error].filter(Boolean);
-      const permissionError = combinedErrors.find((error) =>
-        this.isPermissionDeniedError(error),
-      );
-      if (permissionError) throw permissionError;
-
-      lastError = combinedErrors[0] || lastError;
-      if (combinedErrors.every((error) => this.isMissingRelationError(error))) {
-        continue;
-      }
-      throw lastError;
-    }
-
-    if (lastError) throw lastError;
-    return { weeklySchedule: [], daysOff: [] };
-  }
-
-  private async saveProviderAvailabilityWithClient(
-    client: SupabaseClient,
-    userId: string,
-    body: any,
-  ) {
-    const weeklyRows = this.normalizeWeeklyScheduleRows(userId, body?.weeklySchedule);
-    const daysOffRows = this.normalizeDaysOffRows(userId, body?.daysOff);
-    const includesWeeklySchedule = body?.weeklySchedule !== undefined;
-    const includesDaysOff = body?.daysOff !== undefined;
-
-    let lastError: any = null;
-
-    for (const schemaName of this.availabilitySchemas) {
-      let operationError: any = null;
-
-      if (includesWeeklySchedule) {
-        const { data: existingWeeklyRows, error: selectWeeklyError } = await client
-          .schema(schemaName)
-          .from('provider_availability')
-          .select('day_of_week')
-          .eq('user_id', userId);
-        if (selectWeeklyError) {
-          operationError = selectWeeklyError;
-        } else {
-          const existingDayMap = new Map<string, string>();
-          for (const row of existingWeeklyRows || []) {
-            const dayValue = this.toTrimmedString((row as any)?.day_of_week);
-            const dayKey = this.normalizeWeekdayKey(dayValue);
-            if (!dayKey || existingDayMap.has(dayKey)) continue;
-            existingDayMap.set(dayKey, dayValue);
-          }
-
-          for (const row of weeklyRows) {
-            const dayKey = this.normalizeWeekdayKey(row.day_of_week);
-            if (!dayKey) continue;
-
-            const updatePayload = {
-              is_active: this.toBoolean(row.is_active, false),
-              start_time: this.normalizeTime(row.start_time),
-              end_time: this.normalizeTime(row.end_time),
-              break_start_time: this.normalizeTime(row.break_start_time),
-              break_end_time: this.normalizeTime(row.break_end_time),
-            };
-
-            const existingDayValue = existingDayMap.get(dayKey);
-            if (existingDayValue) {
-              const { error: updateWeeklyError } = await client
-                .schema(schemaName)
-                .from('provider_availability')
-                .update(updatePayload)
-                .eq('user_id', userId)
-                .eq('day_of_week', existingDayValue);
-              if (updateWeeklyError) {
-                operationError = updateWeeklyError;
-                break;
-              }
-              continue;
-            }
-
-            const insertPayload = {
-              user_id: userId,
-              day_of_week: this.toTrimmedString(row.day_of_week),
-              ...updatePayload,
-            };
-            const { error: insertWeeklyError } = await client
-              .schema(schemaName)
-              .from('provider_availability')
-              .insert([insertPayload]);
-            if (insertWeeklyError) {
-              operationError = insertWeeklyError;
-              break;
-            }
-          }
-        }
-      }
-
-      if (!operationError && includesDaysOff) {
-        const { data: existingDaysOffRows, error: selectDaysOffError } = await client
-          .schema(schemaName)
-          .from('provider_days_off')
-          .select('off_date, reason')
-          .eq('user_id', userId);
-        if (selectDaysOffError) {
-          operationError = selectDaysOffError;
-        } else {
-          const existingDaysOffMap = new Map<string, { off_date: string; reason: string | null }>();
-          for (const row of existingDaysOffRows || []) {
-            const normalizedDate = this.normalizeOffDate((row as any)?.off_date);
-            if (!normalizedDate || existingDaysOffMap.has(normalizedDate)) continue;
-            existingDaysOffMap.set(normalizedDate, {
-              off_date: normalizedDate,
-              reason: this.toNullableString((row as any)?.reason),
-            });
-          }
-
-          const desiredDaysOffMap = new Map<string, { off_date: string; reason: string | null }>();
-          for (const row of daysOffRows) {
-            const normalizedDate = this.normalizeOffDate(row.off_date);
-            if (!normalizedDate) continue;
-            desiredDaysOffMap.set(normalizedDate, {
-              off_date: normalizedDate,
-              reason: this.toNullableString(row.reason),
-            });
-          }
-
-          for (const [dateKey, existingRow] of existingDaysOffMap.entries()) {
-            if (desiredDaysOffMap.has(dateKey)) continue;
-            const { error: deleteDaysOffError } = await client
-              .schema(schemaName)
-              .from('provider_days_off')
-              .delete()
-              .eq('user_id', userId)
-              .eq('off_date', existingRow.off_date);
-            if (deleteDaysOffError) {
-              operationError = deleteDaysOffError;
-              break;
-            }
-          }
-
-          if (!operationError) {
-            for (const [dateKey, desiredRow] of desiredDaysOffMap.entries()) {
-              const existingRow = existingDaysOffMap.get(dateKey);
-              if (existingRow) {
-                if (existingRow.reason === desiredRow.reason) continue;
-                const { error: updateDaysOffError } = await client
-                  .schema(schemaName)
-                  .from('provider_days_off')
-                  .update({ reason: desiredRow.reason })
-                  .eq('user_id', userId)
-                  .eq('off_date', existingRow.off_date);
-                if (updateDaysOffError) {
-                  operationError = updateDaysOffError;
-                  break;
-                }
-                continue;
-              }
-
-              const { error: insertDaysOffError } = await client
-                .schema(schemaName)
-                .from('provider_days_off')
-                .insert([
-                  {
-                    user_id: userId,
-                    off_date: desiredRow.off_date,
-                    reason: desiredRow.reason,
-                  },
-                ]);
-              if (insertDaysOffError) {
-                operationError = insertDaysOffError;
-                break;
-              }
-            }
-          }
-        }
-      }
-
-      if (!operationError) return { ok: true };
-
-      if (this.isPermissionDeniedError(operationError)) {
-        throw operationError;
-      }
-
-      lastError = operationError;
-      if (this.isMissingRelationError(operationError)) continue;
-      throw operationError;
-    }
-
-    if (lastError) throw lastError;
-    return { ok: true };
   }
 
   private normalizeServicePayload(
@@ -478,11 +276,11 @@ export class ProviderService {
     return { success: true, data };
   }
 
-  async searchProviders(searchTerm: string) {
+  async searchProviders(searchTerm?: string) {
     const { data: services, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .select('id, title, price, description, provider_id');
+      .select('id, title, price, description, category_id, provider_id');
     if (error) throw new InternalServerErrorException(error.message);
 
     const providerIds = [...new Set((services || []).map((s: any) => s.provider_id))];
@@ -494,11 +292,12 @@ export class ProviderService {
 
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
 
-    const lower = searchTerm.toLowerCase();
+    const lower = this.toTrimmedString(searchTerm).toLowerCase();
     const filtered = (services || [])
       .filter((s: any) => profileMap[s.provider_id]?.verification_status === 'approved')
       .filter(
         (s: any) =>
+          !lower ||
           s.title?.toLowerCase().includes(lower) ||
           s.description?.toLowerCase().includes(lower) ||
           profileMap[s.provider_id]?.business_name?.toLowerCase().includes(lower),
@@ -541,29 +340,474 @@ export class ProviderService {
     };
   }
 
+  async createProviderApplication(payload: any) {
+    const userId = this.toTrimmedString(payload?.userId);
+    const businessName = this.toTrimmedString(payload?.businessName);
+    const documentType = this.toTrimmedString(payload?.documentType);
+    const filePath = this.toTrimmedString(payload?.filePath);
+
+    if (!userId) throw new BadRequestException('userId is required');
+    if (!businessName) throw new BadRequestException('businessName is required');
+    if (!documentType) throw new BadRequestException('documentType is required');
+    if (!filePath) throw new BadRequestException('filePath is required');
+
+    const { data: profile, error: profileError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .insert([
+        {
+          user_id: userId,
+          business_name: businessName,
+          verification_status: 'pending',
+        },
+      ])
+      .select()
+      .single();
+    if (profileError)
+      throw new InternalServerErrorException(profileError.message);
+
+    const { error: docError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .insert([
+        {
+          provider_id: userId,
+          document_type: documentType,
+          document_file_path: filePath,
+          status: 'pending',
+        },
+      ]);
+    if (docError) {
+      await this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .delete()
+        .eq('user_id', userId);
+      throw new InternalServerErrorException(docError.message);
+    }
+
+    return {
+      provider_id: userId,
+      business_name: profile?.business_name || businessName,
+      verification_status: profile?.verification_status || 'pending',
+    };
+  }
+
+  async getProviderProfilesByIds(userIds: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(userIds) ? userIds : [])
+          .map((userId) => this.toTrimmedString(userId))
+          .filter((userId) => Boolean(userId)),
+      ),
+    );
+    if (!normalizedIds.length) return { profiles: [] };
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('user_id, business_name, average_rating, verification_status')
+      .in('user_id', normalizedIds);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { profiles: data || [] };
+  }
+
+  async getProviderApplications(page = 1, limit = 20, status = 'pending') {
+    const normalizedPage = Number.isFinite(Number(page))
+      ? Math.max(1, Number(page))
+      : 1;
+    const normalizedLimit = Number.isFinite(Number(limit))
+      ? Math.max(1, Number(limit))
+      : 20;
+    const offset = (normalizedPage - 1) * normalizedLimit;
+
+    const query = this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select(
+        'user_id, business_name, verification_status, created_at, updated_at, service_description',
+        { count: 'exact' },
+      )
+      .order('created_at', { ascending: false })
+      .range(offset, offset + normalizedLimit - 1);
+
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase() || 'pending';
+    if (normalizedStatus !== 'all') {
+      query.eq('verification_status', normalizedStatus);
+    }
+
+    const { data: profiles, error, count } = await query;
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const rows = profiles || [];
+    if (rows.length === 0) {
+      return {
+        applications: [],
+        total: count || 0,
+        page: normalizedPage,
+        limit: normalizedLimit,
+      };
+    }
+
+    const providerIds = rows.map((row: any) => row.user_id);
+    const [users, docsResult] = await Promise.all([
+      this.getUsersByIdsFromAuth(providerIds),
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_documents')
+        .select('provider_id, status')
+        .in('provider_id', providerIds),
+    ]);
+    if (docsResult.error) {
+      throw new InternalServerErrorException(docsResult.error.message);
+    }
+
+    const userMap = new Map(users.map((user: any) => [user.id, user]));
+    const docRows = docsResult.data || [];
+
+    const applications = rows.map((profile: any) => {
+      const user = userMap.get(profile.user_id);
+      const providerDocs = docRows.filter(
+        (doc: any) => doc.provider_id === profile.user_id,
+      );
+      const hasRejectedDoc = providerDocs.some(
+        (doc: any) => this.toTrimmedString(doc.status) === 'rejected',
+      );
+      const hasPendingDoc = providerDocs.some(
+        (doc: any) => this.toTrimmedString(doc.status) === 'pending',
+      );
+      const hasApprovedDoc = providerDocs.some(
+        (doc: any) => this.toTrimmedString(doc.status) === 'approved',
+      );
+
+      const derivedStatus =
+        profile.verification_status ||
+        (hasRejectedDoc
+          ? 'rejected'
+          : hasPendingDoc
+            ? 'pending'
+            : hasApprovedDoc
+              ? 'approved'
+              : 'pending');
+
+      return {
+        applicationId: profile.user_id,
+        providerId: profile.user_id,
+        businessName: profile.business_name || user?.full_name || 'Unnamed Business',
+        ownerName: user?.full_name || 'Unknown Owner',
+        category: 'General Services',
+        dateApplied: profile.created_at || profile.updated_at,
+        location: '-',
+        status: derivedStatus,
+        email: user?.email || null,
+        contact_number: user?.contact_number || null,
+      };
+    });
+
+    return {
+      applications,
+      total: count || 0,
+      page: normalizedPage,
+      limit: normalizedLimit,
+    };
+  }
+
+  async getProviderApplicationById(id: string) {
+    const normalizedId = this.toTrimmedString(id);
+    if (!normalizedId) throw new BadRequestException('id is required');
+
+    const [user, profileResult, docsResult] = await Promise.all([
+      this.getUserProfileFromAuth(normalizedId),
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .select('*')
+        .eq('user_id', normalizedId)
+        .single(),
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_documents')
+        .select(
+          'document_id, provider_id, document_type, document_file_path, status, reject_reason, uploaded_at, reviewed_at',
+        )
+        .eq('provider_id', normalizedId)
+        .order('uploaded_at', { ascending: false }),
+    ]);
+
+    if (!user) throw new NotFoundException(`Provider application ${normalizedId} not found`);
+    if (profileResult.error || !profileResult.data) {
+      throw new NotFoundException(`Provider application ${normalizedId} not found`);
+    }
+    if (docsResult.error) {
+      throw new InternalServerErrorException(docsResult.error.message);
+    }
+
+    const profile = profileResult.data;
+    const documents = (docsResult.data || []).map((doc: any) => ({
+      id: doc.document_id,
+      name: doc.document_type || 'Document',
+      file: doc.document_file_path || '',
+      status: doc.status || 'pending',
+      reject_reason: doc.reject_reason || null,
+      uploaded_at: doc.uploaded_at || null,
+      reviewed_at: doc.reviewed_at || null,
+    }));
+
+    const status = profile.verification_status || user.status || 'pending';
+
+    return {
+      applicationId: profile.user_id,
+      providerId: profile.user_id,
+      businessName: profile.business_name || user.full_name || 'Unnamed Business',
+      ownerName: user.full_name || 'Unknown Owner',
+      category: 'General Services',
+      dateApplied: profile.created_at || user.created_at,
+      location: '-',
+      status,
+      email: user.email || null,
+      contact_number: user.contact_number || null,
+      profile: {
+        service_description: profile.service_description || null,
+        verification_status: profile.verification_status || null,
+        trust_score: profile.trust_score || null,
+        average_rating: profile.average_rating || null,
+      },
+      documents,
+      notes: [],
+    };
+  }
+
+  async updateProviderApplicationStatus(
+    id: string,
+    status: string,
+    rejectReason?: string,
+  ) {
+    const normalizedId = this.toTrimmedString(id);
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+    if (!normalizedId) throw new BadRequestException('id is required');
+    if (!['approved', 'rejected', 'pending'].includes(normalizedStatus)) {
+      throw new BadRequestException(
+        'status must be one of: approved, rejected, pending',
+      );
+    }
+    if (
+      normalizedStatus === 'rejected' &&
+      !this.toTrimmedString(rejectReason)
+    ) {
+      throw new BadRequestException(
+        'reject_reason is required when rejecting an application',
+      );
+    }
+
+    const docsResult = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .select('document_id')
+      .eq('provider_id', normalizedId);
+    if (docsResult.error) {
+      throw new InternalServerErrorException(docsResult.error.message);
+    }
+
+    const profileUpdate = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .update({ verification_status: normalizedStatus })
+      .eq('user_id', normalizedId);
+    if (profileUpdate.error) {
+      throw new BadRequestException(profileUpdate.error.message);
+    }
+
+    const mappedUserStatus =
+      normalizedStatus === 'approved'
+        ? 'active'
+        : normalizedStatus === 'rejected'
+          ? 'rejected'
+          : 'pending';
+    await this.request(AUTH_PATTERNS.UPDATE_USER_STATUS, {
+      userId: normalizedId,
+      status: mappedUserStatus,
+    });
+
+    const documentIds = (docsResult.data || []).map((doc: any) => doc.document_id);
+    if (documentIds.length > 0) {
+      const docUpdate = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_documents')
+        .update({
+          status: normalizedStatus,
+          reject_reason:
+            normalizedStatus === 'rejected'
+              ? this.toTrimmedString(rejectReason)
+              : null,
+          reviewed_at: new Date().toISOString(),
+        })
+        .in('document_id', documentIds);
+      if (docUpdate.error) {
+        throw new BadRequestException(docUpdate.error.message);
+      }
+    }
+
+    return { ok: true };
+  }
+
+  async updateDocumentStatus(documentId: string, dto: any) {
+    const normalizedDocumentId = this.toTrimmedString(documentId);
+    if (!normalizedDocumentId)
+      throw new BadRequestException('documentId is required');
+
+    const normalizedStatus = this.toTrimmedString(dto?.status).toLowerCase();
+    if (!['approved', 'rejected', 'pending'].includes(normalizedStatus)) {
+      throw new BadRequestException(
+        'status must be one of: approved, rejected, pending',
+      );
+    }
+    if (
+      normalizedStatus === 'rejected' &&
+      !this.toTrimmedString(dto?.reject_reason)
+    ) {
+      throw new BadRequestException(
+        'A rejection reason must be provided when rejecting a KYC application.',
+      );
+    }
+
+    const fetchResult = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .select('document_id, provider_id, status')
+      .eq('document_id', normalizedDocumentId)
+      .single();
+    if (fetchResult.error || !fetchResult.data) {
+      throw new NotFoundException(
+        `Document with ID ${normalizedDocumentId} not found`,
+      );
+    }
+
+    const providerId = this.toTrimmedString(fetchResult.data.provider_id);
+    const docUpdatePayload: Record<string, any> = {
+      status: normalizedStatus,
+      reject_reason:
+        normalizedStatus === 'rejected'
+          ? this.toTrimmedString(dto?.reject_reason)
+          : null,
+      reviewed_at: new Date().toISOString(),
+    };
+    if (dto?.admin_id) {
+      docUpdatePayload.reviewed_by = this.toTrimmedString(dto.admin_id);
+    }
+
+    const docUpdate = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .update(docUpdatePayload)
+      .eq('document_id', normalizedDocumentId)
+      .select()
+      .single();
+    if (docUpdate.error || !docUpdate.data) {
+      throw new BadRequestException(
+        `Failed to update document status: ${docUpdate.error?.message || 'Unknown error'}`,
+      );
+    }
+
+    const profileUpdate = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .update({ verification_status: normalizedStatus })
+      .eq('user_id', providerId);
+    if (profileUpdate.error) {
+      throw new InternalServerErrorException(profileUpdate.error.message);
+    }
+
+    const mappedUserStatus =
+      normalizedStatus === 'approved'
+        ? 'active'
+        : normalizedStatus === 'rejected'
+          ? 'rejected'
+          : 'pending';
+    await this.request(AUTH_PATTERNS.UPDATE_USER_STATUS, {
+      userId: providerId,
+      status: mappedUserStatus,
+    });
+
+    return {
+      status: 'success',
+      message: `Document ${normalizedStatus} successfully`,
+      data: {
+        document_id: docUpdate.data.document_id,
+        provider_id: docUpdate.data.provider_id,
+        new_status: docUpdate.data.status,
+        reviewed_at: docUpdate.data.reviewed_at,
+      },
+    };
+  }
+
   async getProviderDashboard(providerId: string) {
-    const now = new Date();
-    const firstDayOfMonth = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      1,
-    ).toISOString();
-    const { count: newRequests } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('*', { count: 'exact', head: true })
-      .eq('provider_id', providerId)
-      .eq('status', 'pending');
-    const { data: payments } = await this.supabase
-      .schema('payment')
-      .from('payments')
-      .select('amount')
-      .eq('provider_id', providerId)
-      .eq('status', 'completed')
-      .gte('created_at', firstDayOfMonth);
-    const totalEarnings =
-      payments?.reduce((acc: number, curr: any) => acc + Number(curr.amount), 0) || 0;
-    return { new_job_requests: newRequests || 0, total_earnings: totalEarnings };
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) {
+      return {
+        new_job_requests: 0,
+        total_earnings: 0,
+      };
+    }
+
+    const [bookingResponse, earningsSummary] = await Promise.all([
+      this.request<any>(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS, {
+        providerId: normalizedProviderId,
+      }),
+      this.request<any>(PAYMENT_PATTERNS.GET_EARNINGS_SUMMARY, {
+        providerId: normalizedProviderId,
+      }),
+    ]);
+
+    const bookings = Array.isArray(bookingResponse?.bookings)
+      ? bookingResponse.bookings
+      : [];
+    const newRequests = bookings.filter(
+      (booking: any) => this.toTrimmedString(booking?.status) === 'pending',
+    ).length;
+
+    return {
+      new_job_requests: newRequests,
+      total_earnings: Number(earningsSummary?.monthly_earnings || 0),
+    };
+  }
+
+  async getServicesByIds(serviceIds: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(serviceIds) ? serviceIds : [])
+          .map((serviceId) => this.toTrimmedString(serviceId))
+          .filter((serviceId) => Boolean(serviceId)),
+      ),
+    );
+    if (!normalizedIds.length) return { services: [] };
+
+    try {
+      const result = await this.withQueryTimeout<any>(
+        this.supabase
+          .schema('provider_catalog')
+          .from('provider_services')
+          .select('id, title')
+          .in('id', normalizedIds),
+        4500,
+        'provider.get-services-by-ids query',
+      );
+      const { data, error } = result || {};
+      if (error) {
+        this.logger.warn(
+          `provider.get-services-by-ids degraded: ${this.toTrimmedString(error?.message) || 'query error'}`,
+        );
+        return { services: [] };
+      }
+      return { services: data || [] };
+    } catch (error) {
+      if (this.isTimeoutLikeError(error)) {
+        this.logger.warn(
+          `provider.get-services-by-ids degraded: query timed out for ${normalizedIds.length} id(s)`,
+        );
+        return { services: [] };
+      }
+      throw error;
+    }
   }
 
   async getTrustScore(providerId: string) {
@@ -583,27 +827,74 @@ export class ProviderService {
   }
 
   async getProviderReviews(providerId: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) {
+      throw new BadRequestException('providerId is required');
+    }
+
     const { data: profile } = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
       .select('average_rating, total_reviews')
-      .eq('user_id', providerId)
+      .eq('user_id', normalizedProviderId)
       .single();
-    const { data: reviews } = await this.supabase
-      .schema('trust_and_reputation')
-      .from('reviews')
-      .select('id, reviewer_id, rating, review_text, created_at')
-      .eq('reviewee_id', providerId)
-      .order('created_at', { ascending: false });
+    const reviewsResponse = await this.request<any>(
+      TRUST_PATTERNS.GET_PROVIDER_REVIEWS,
+      { providerId: normalizedProviderId },
+    );
+    const reviews = Array.isArray(reviewsResponse?.reviews)
+      ? reviewsResponse.reviews
+      : [];
+
     return {
       status: 'success',
       data: {
-        provider_id: providerId,
+        provider_id: normalizedProviderId,
         average_rating: Number(profile?.average_rating) || 0,
         total_reviews: Number(profile?.total_reviews) || 0,
-        reviews: reviews || [],
+        reviews,
       },
     };
+  }
+
+  async getAllReviews(page = 1, limit = 20) {
+    return await this.request<any>(TRUST_PATTERNS.GET_ALL_REVIEWS, {
+      page,
+      limit,
+    });
+  }
+
+  async deleteReview(id: string) {
+    return await this.request<any>(TRUST_PATTERNS.DELETE_REVIEW, { id });
+  }
+
+  async getPerformanceReport(from?: string, to?: string) {
+    const trustResponse = await this.request<any>(
+      TRUST_PATTERNS.GET_PERFORMANCE_REPORT,
+      { from, to },
+    );
+    const reviews = Array.isArray(trustResponse?.reviews)
+      ? trustResponse.reviews
+      : [];
+
+    const { data: profiles, error: profilesError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select(
+        'user_id, business_name, average_rating, total_reviews, trust_score, verification_status',
+      );
+    if (profilesError) {
+      throw new InternalServerErrorException(profilesError.message);
+    }
+
+    return { reviews, provider_profiles: profiles || [] };
+  }
+
+  async getComplianceReport(from?: string, to?: string) {
+    return await this.request<any>(TRUST_PATTERNS.GET_COMPLIANCE_REPORT, {
+      from,
+      to,
+    });
   }
 
   async reuploadKycDocument(userId: string, file: Express.Multer.File) {
@@ -640,147 +931,55 @@ export class ProviderService {
       .from('provider_profiles')
       .update({ verification_status: 'pending' })
       .eq('user_id', userId);
-    await this.supabase
-      .schema('identity_and_user')
-      .from('users')
-      .update({ status: 'pending' })
-      .eq('id', userId);
+    await this.request(AUTH_PATTERNS.UPDATE_USER_STATUS, {
+      userId,
+      status: 'pending',
+    });
     return { status: 'success', message: 'KYC document reuploaded successfully.' };
   }
 
   // === Provider Bookings ===
   async getProviderBookings(providerId: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('*')
-      .eq('provider_id', providerId)
-      .order('created_at', { ascending: false });
-    if (error) throw new InternalServerErrorException(error.message);
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) return { bookings: [] };
 
-    // Fetch customer and service info separately (cross-schema join not supported)
-    const bookings = await Promise.all((data || []).map(async (b: any) => {
-      const { data: customerUser } = await this.supabase
-        .schema('identity_and_user').from('users')
-        .select('full_name, contact_number').eq('id', b.customer_id).single();
-      const { data: service } = await this.supabase
-        .schema('provider_catalog').from('provider_services')
-        .select('title').eq('id', b.service_id).single();
-      return {
-        ...b,
-        customer_name: customerUser?.full_name || '',
-        customer_contact: customerUser?.contact_number || '',
-        service_title: service?.title || '',
-      };
-    }));
-
-    return { bookings };
+    return await this.request<any>(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS, {
+      providerId: normalizedProviderId,
+    });
   }
 
   async getProviderBookingById(bookingId: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('*')
-      .eq('id', bookingId)
-      .single();
-    if (error) throw new NotFoundException('Booking not found');
-
-    const [{ data: customerUser }, { data: service }] = await Promise.all([
-      this.supabase.schema('identity_and_user').from('users').select('full_name, contact_number').eq('id', data.customer_id).single(),
-      this.supabase.schema('provider_catalog').from('provider_services').select('title').eq('id', data.service_id).single(),
-    ]);
-
-    return {
-      booking: {
-        ...data,
-        customer_name: customerUser?.full_name || '',
-        customer_contact: customerUser?.contact_number || '',
-        service_title: service?.title || '',
-      },
-    };
+    return await this.request<any>(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID, {
+      bookingId,
+    });
   }
 
   async updateProviderBookingStatus(bookingId: string, status: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .update({ status })
-      .eq('id', bookingId)
-      .select()
-      .single();
-    if (error) throw new BadRequestException(error.message);
-    return { booking: data };
+    this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, { id: bookingId, status });
+    return { ok: true };
   }
 
   // === Provider Availability ===
   async getProviderAvailability(userId: string, accessToken?: string) {
-    const normalizedUserId = this.toTrimmedString(userId);
-    if (!normalizedUserId) throw new BadRequestException('userId is required');
-
-    try {
-      return await this.getProviderAvailabilityWithClient(this.supabase, normalizedUserId);
-    } catch (error: any) {
-      const scopedClient = this.createAccessScopedSupabase(accessToken || '');
-      if (scopedClient && this.isPermissionDeniedError(error)) {
-        try {
-          return await this.getProviderAvailabilityWithClient(scopedClient, normalizedUserId);
-        } catch (fallbackError: any) {
-          throw new InternalServerErrorException(
-            this.toTrimmedString(fallbackError?.message) || 'Failed to fetch provider availability',
-          );
-        }
-      }
-      throw new InternalServerErrorException(
-        this.toTrimmedString(error?.message) || 'Failed to fetch provider availability',
-      );
-    }
+    return await this.request<any>(BOOKING_PATTERNS.GET_PROVIDER_AVAILABILITY, {
+      userId,
+      accessToken,
+    });
   }
 
   async saveProviderAvailability(userId: string, body: any, accessToken?: string) {
-    const normalizedUserId = this.toTrimmedString(userId);
-    if (!normalizedUserId) throw new BadRequestException('userId is required');
-
-    try {
-      return await this.saveProviderAvailabilityWithClient(
-        this.supabase,
-        normalizedUserId,
-        body,
-      );
-    } catch (error: any) {
-      const scopedClient = this.createAccessScopedSupabase(accessToken || '');
-      if (scopedClient && this.isPermissionDeniedError(error)) {
-        try {
-          return await this.saveProviderAvailabilityWithClient(
-            scopedClient,
-            normalizedUserId,
-            body,
-          );
-        } catch (fallbackError: any) {
-          throw new InternalServerErrorException(
-            this.toTrimmedString(fallbackError?.message) || 'Failed to save provider availability',
-          );
-        }
-      }
-      throw new InternalServerErrorException(
-        this.toTrimmedString(error?.message) || 'Failed to save provider availability',
-      );
-    }
+    return await this.request<any>(BOOKING_PATTERNS.SAVE_PROVIDER_AVAILABILITY, {
+      userId,
+      accessToken,
+      ...body,
+    });
   }
 
   async getReservedSlots(providerId: string, date: string) {
-    const startOfDay = `${date}T00:00:00`;
-    const endOfDay = `${date}T23:59:59`;
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('scheduled_at, hours_required')
-      .eq('provider_id', providerId)
-      .gte('scheduled_at', startOfDay)
-      .lte('scheduled_at', endOfDay)
-      .in('status', ['pending', 'confirmed', 'in_progress']);
-    if (error) throw new InternalServerErrorException(error.message);
-    return { reservedSlots: data || [] };
+    return await this.request<any>(BOOKING_PATTERNS.GET_RESERVED_SLOTS, {
+      providerId,
+      date,
+    });
   }
 
   async checkAvailability(
@@ -788,33 +987,85 @@ export class ProviderService {
     scheduledAt: string,
     hoursRequired: string,
   ) {
-    const date = scheduledAt.slice(0, 10);
-    const slots = (await this.getReservedSlots(providerId, date)).reservedSlots;
-    const requestedStart = new Date(scheduledAt).getTime();
-    const requestedEnd = requestedStart + Number(hoursRequired || 1) * 3600000;
-
-    for (const slot of slots) {
-      const slotStart = new Date(slot.scheduled_at).getTime();
-      const slotEnd = slotStart + (slot.hours_required || 1) * 3600000;
-      if (requestedStart < slotEnd && requestedEnd > slotStart) {
-        return {
-          available: false,
-          reason: 'This time slot overlaps with an existing booking.',
-        };
-      }
-    }
-    return { available: true };
+    return await this.request<any>(BOOKING_PATTERNS.CHECK_PROVIDER_AVAILABILITY, {
+      providerId,
+      scheduledAt,
+      hoursRequired,
+    });
   }
 
   // === My Services (Provider Catalog) ===
   async getMyServices(providerId: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) return { services: [] };
+
     const { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
       .select('*')
-      .eq('provider_id', providerId);
+      .eq('provider_id', normalizedProviderId);
     if (error) throw new InternalServerErrorException(error.message);
     return { services: data || [] };
+  }
+
+  async getAdminServices(page = 1, limit = 20) {
+    const normalizedPage = Number.isFinite(Number(page))
+      ? Math.max(1, Number(page))
+      : 1;
+    const normalizedLimit = Number.isFinite(Number(limit))
+      ? Math.max(1, Number(limit))
+      : 20;
+    const offset = (normalizedPage - 1) * normalizedLimit;
+
+    const { data, error, count } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(offset, offset + normalizedLimit - 1);
+    if (error) throw new InternalServerErrorException(error.message);
+
+    return {
+      services: data || [],
+      total: count || 0,
+      page: normalizedPage,
+      limit: normalizedLimit,
+    };
+  }
+
+  async updateAdminService(id: string, body: any) {
+    const normalizedId = this.toTrimmedString(id);
+    if (!normalizedId) throw new BadRequestException('id is required');
+
+    const { provider_id: _providerId, id: _id, ...updates } = body || {};
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .update(updates)
+      .eq('id', normalizedId)
+      .select('id');
+    if (error) throw new BadRequestException(error.message);
+    if (!data || data.length === 0) {
+      throw new NotFoundException(`Service ${normalizedId} not found`);
+    }
+    return { ok: true };
+  }
+
+  async deleteAdminService(id: string) {
+    const normalizedId = this.toTrimmedString(id);
+    if (!normalizedId) throw new BadRequestException('id is required');
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .delete()
+      .eq('id', normalizedId)
+      .select('id');
+    if (error) throw new InternalServerErrorException(error.message);
+    if (!data || data.length === 0) {
+      throw new NotFoundException(`Service ${normalizedId} not found`);
+    }
+    return { ok: true };
   }
 
   async createMyService(providerId: string, body: any) {
@@ -936,181 +1187,79 @@ export class ProviderService {
 
   // === Reschedule Requests ===
   async createRescheduleRequest(body: any) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('booking_reschedule_requests')
-      .insert([
-        {
-          booking_id: body.bookingId,
-          provider_id: body.providerId,
-          reason: body.reason,
-          explanation: body.explanation,
-          proposed_date: body.proposedDate,
-          proposed_time: body.proposedTime,
-          status: 'pending',
-        },
-      ])
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    return { request: data };
+    return await this.request<any>(BOOKING_PATTERNS.CREATE_RESCHEDULE, body);
   }
 
   async getRescheduleRequests(bookingId: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('booking_reschedule_requests')
-      .select('*')
-      .eq('booking_id', bookingId)
-      .order('created_at', { ascending: false });
-    if (error) throw new InternalServerErrorException(error.message);
-    return { requests: data || [] };
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    if (!normalizedBookingId) return { requests: [] };
+
+    try {
+      return await this.request<any>(
+        BOOKING_PATTERNS.GET_RESCHEDULES,
+        { bookingId: normalizedBookingId },
+        { timeoutMs: 10_000, retries: 1, retryDelayMs: 300 },
+      );
+    } catch (error) {
+      if (this.isTimeoutLikeError(error)) {
+        this.logger.warn(
+          `booking.get-reschedules degraded: timeout for bookingId=${normalizedBookingId}`,
+        );
+        return { requests: [] };
+      }
+      throw error;
+    }
   }
 
   async reviewRescheduleRequest(requestId: string, body: any) {
-    const updates: any = {
-      status: body.decision,
-      reviewed_at: new Date().toISOString(),
-    };
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('booking_reschedule_requests')
-      .update(updates)
-      .eq('id', requestId)
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
-
-    // If approved, update booking scheduled_at
-    if (body.decision === 'approved' && data) {
-      const req = data as any;
-      if (req.proposed_date && req.proposed_time) {
-        await this.supabase
-          .schema('booking')
-          .from('bookings')
-          .update({ scheduled_at: `${req.proposed_date}T${req.proposed_time}` })
-          .eq('id', req.booking_id);
-      }
-    }
-    return { request: data };
+    return await this.request<any>(BOOKING_PATTERNS.REVIEW_RESCHEDULE, {
+      requestId,
+      ...body,
+    });
   }
 
   // === Additional Charges ===
   async createAdditionalCharges(body: any) {
-    const items = (body.items || []).map((item: any) => ({
-      booking_id: body.bookingId,
-      requested_by: body.providerId,
-      description: item.description,
-      amount: item.amount,
-      justification: body.justification,
-      status: 'pending',
-    }));
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('additional_charges')
-      .insert(items)
-      .select();
-    if (error) throw new InternalServerErrorException(error.message);
-    return { charges: data || [] };
+    return await this.request<any>(
+      BOOKING_PATTERNS.CREATE_ADDITIONAL_CHARGES,
+      body,
+    );
   }
 
   async getAdditionalCharges(bookingId: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('additional_charges')
-      .select('*')
-      .eq('booking_id', bookingId);
-    if (error) throw new InternalServerErrorException(error.message);
-    return { charges: data || [] };
+    return await this.request<any>(BOOKING_PATTERNS.GET_ADDITIONAL_CHARGES, {
+      bookingId,
+    });
   }
 
   async reviewAdditionalCharges(body: any) {
-    const { chargeIds, decision } = body;
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('additional_charges')
-      .update({
-        status: decision,
-        reviewed_at: new Date().toISOString(),
-      })
-      .in('id', chargeIds)
-      .select();
-    if (error) throw new InternalServerErrorException(error.message);
-
-    // If approved, update booking total
-    if (decision === 'approved' && data?.length && body.bookingId) {
-      const totalAdditional = data.reduce(
-        (acc: number, c: any) => acc + Number(c.amount),
-        0,
-      );
-      const { data: booking } = await this.supabase
-        .schema('booking')
-        .from('bookings')
-        .select('total_amount')
-        .eq('id', body.bookingId)
-        .single();
-      if (booking) {
-        await this.supabase
-          .schema('booking')
-          .from('bookings')
-          .update({ total_amount: Number(booking.total_amount) + totalAdditional })
-          .eq('id', body.bookingId);
-      }
-    }
-    return { charges: data || [] };
+    return await this.request<any>(
+      BOOKING_PATTERNS.REVIEW_ADDITIONAL_CHARGES,
+      body,
+    );
   }
 
   // === Reviews & Reports ===
   async submitReview(body: any) {
-    const { data, error } = await this.supabase
-      .schema('trust_and_reputation')
-      .from('reviews')
-      .insert([
-        {
-          booking_id: body.booking_id,
-          reviewer_id: body.reviewer_id,
-          reviewee_id: body.reviewee_id,
-          rating: body.rating,
-          review_text: body.review_text || null,
-        },
-      ])
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
+    const revieweeId = this.toTrimmedString(body?.reviewee_id);
+    const response = await this.request<any>(TRUST_PATTERNS.CREATE_REVIEW, body);
+    const totalReviews = Number(response?.total_reviews || 0);
+    const averageRating = Number(response?.average_rating || 0);
 
-    // Update provider average rating
-    const { data: allReviews } = await this.supabase
-      .schema('trust_and_reputation')
-      .from('reviews')
-      .select('rating')
-      .eq('reviewee_id', body.reviewee_id);
-    if (allReviews?.length) {
-      const avg = allReviews.reduce((sum: number, r: any) => sum + r.rating, 0) / allReviews.length;
+    if (revieweeId && totalReviews >= 0) {
       await this.supabase
         .schema('provider_catalog')
         .from('provider_profiles')
-        .update({ average_rating: avg, total_reviews: allReviews.length })
-        .eq('user_id', body.reviewee_id);
+        .update({
+          average_rating: averageRating,
+          total_reviews: totalReviews,
+        })
+        .eq('user_id', revieweeId);
     }
-    return { review: data };
+    return { review: response?.review || null };
   }
 
   async submitReport(body: any) {
-    const { data, error } = await this.supabase
-      .schema('trust_and_reputation')
-      .from('provider_profile_reports')
-      .insert([
-        {
-          reported_provider_id: body.provider_id,
-          reporter_id: body.reporter_id,
-          reason: body.reason,
-          description: body.details,
-          status: 'pending',
-        },
-      ])
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    return data;
+    return await this.request<any>(TRUST_PATTERNS.CREATE_PROVIDER_REPORT, body);
   }
 }

@@ -32,9 +32,67 @@ export class PaymentKafkaController {
     return this.paymentService.getProviderEarningsSummary(data.providerId);
   }
 
+  @MessagePattern(PAYMENT_PATTERNS.GET_ADMIN_TRANSACTIONS)
+  async getAdminTransactions(@Payload() data: any) {
+    return this.paymentService.getAdminTransactions(data?.page, data?.limit);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.GET_ADMIN_EARNINGS)
+  async getAdminEarnings(@Payload() data: any) {
+    return this.paymentService.getAdminProviderEarnings(data?.page, data?.limit);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.GET_ADMIN_PAYOUTS)
+  async getAdminPayouts(@Payload() data: any) {
+    return this.paymentService.getAdminPayouts(data?.page, data?.limit);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.UPDATE_ADMIN_PAYOUT)
+  async updateAdminPayout(@Payload() data: any) {
+    return this.paymentService.updateAdminPayout(data?.id, data?.status);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.GET_ADMIN_REFUNDS)
+  async getAdminRefunds(@Payload() data: any) {
+    return this.paymentService.getAdminRefunds(data?.page, data?.limit);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.MARK_ADMIN_REFUND)
+  async markAdminRefund(@Payload() data: any) {
+    return this.paymentService.markAdminRefund(data?.id);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.GET_ADMIN_FAILED_PAYMENTS)
+  async getAdminFailedPayments(@Payload() data: any) {
+    return this.paymentService.getAdminFailedPayments(data?.page, data?.limit);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.GET_REVENUE_REPORT)
+  async getRevenueReport(@Payload() data: any) {
+    return this.paymentService.getRevenueReport(data?.from, data?.to);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.GET_FINANCIAL_REPORT)
+  async getFinancialReport(@Payload() data: any) {
+    return this.paymentService.getFinancialReport(data?.from, data?.to);
+  }
+
   @MessagePattern(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT)
   async ensureBookingPayment(@Payload() data: any) {
-    return this.paymentService.ensureBookingPayment(data);
+    try {
+      return await this.paymentService.ensureBookingPayment(data);
+    } catch (error: any) {
+      console.error('[payment-service.ensure-booking] failed', {
+        bookingId: data?.bookingId,
+        customerId: data?.customerId,
+        providerId: data?.provider_id,
+        amount: data?.amount,
+        method: data?.method,
+        message: error?.message,
+        details: error?.response || error,
+      });
+      throw error;
+    }
   }
 
   @EventPattern(PAYMENT_PATTERNS.MARK_PAID)

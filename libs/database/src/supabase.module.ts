@@ -11,7 +11,9 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
         const supabaseKey = process.env.SUPABASE_SECRET_KEY;
 
         if (!supabaseUrl || !supabaseKey) {
-          throw new Error('Supabase URL and Key are missing from environment variables.');
+          throw new Error(
+            'Supabase URL and Key are missing from environment variables.',
+          );
         }
 
         return createClient(supabaseUrl, supabaseKey);

@@ -1,14 +1,33 @@
 import {
+  Inject,
   Injectable,
   BadRequestException,
   InternalServerErrorException,
+  OnModuleInit,
 } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
+import { BOOKING_PATTERNS, sendKafkaRpcRequest } from '@app/common';
 
 @Injectable()
-export class CustomerService {
-  constructor(private readonly supabase: SupabaseClient) {}
+export class CustomerService implements OnModuleInit {
+  constructor(
+    private readonly supabase: SupabaseClient,
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+  ) {}
   private readonly identitySchemas = ['identity_and_user', 'identity_svc'] as const;
+
+  async onModuleInit() {
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS);
+    await this.kafka.connect();
+  }
+
+  private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
+    return await sendKafkaRpcRequest(
+      () => this.kafka.send<T, unknown>(pattern, payload),
+      { context: pattern },
+    );
+  }
 
   private toTrimmedString(value: unknown) {
     return String(value ?? '').trim();
@@ -53,25 +72,19 @@ export class CustomerService {
   }
 
   async getDashboardData(customerId: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('id, booking_reference, status, scheduled_at, total_amount, created_at, updated_at, provider_id')
-      .eq('customer_id', customerId)
-      .in('status', ['pending', 'completed']);
-    if (error)
-      throw new InternalServerErrorException(error.message);
+    const bookingResponse = await this.request<any>(
+      BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS,
+      { customerId },
+    );
+    const bookings = Array.isArray(bookingResponse?.bookings)
+      ? bookingResponse.bookings
+      : [];
 
-    // Fetch provider info separately (cross-schema join not supported)
-    return Promise.all((data || []).map(async (booking: any) => {
-      const { data: providerUser } = await this.supabase
-        .schema('identity_and_user').from('users')
-        .select('full_name, contact_number').eq('id', booking.provider_id).single();
-      const { data: providerProfile } = await this.supabase
-        .schema('provider_catalog').from('provider_profiles')
-        .select('business_name, total_reviews, average_rating').eq('user_id', booking.provider_id).single();
-
-      return {
+    return bookings
+      .filter((booking: any) =>
+        ['pending', 'completed'].includes(this.toTrimmedString(booking?.status)),
+      )
+      .map((booking: any) => ({
         id: booking.id,
         booking_reference: booking.booking_reference,
         status: booking.status,
@@ -80,14 +93,13 @@ export class CustomerService {
         created_at: booking.created_at,
         updated_at: booking.updated_at,
         provider: {
-          full_name: providerUser?.full_name || '',
-          contact_number: providerUser?.contact_number || '',
-          business_name: providerProfile?.business_name || 'N/A',
-          total_reviews: providerProfile?.total_reviews || 0,
-          average_rating: providerProfile?.average_rating || 0,
+          full_name: booking?.provider?.full_name || '',
+          contact_number: booking?.provider?.contact_number || '',
+          business_name: booking?.provider?.business_name || 'N/A',
+          total_reviews: Number(booking?.provider?.total_reviews || 0),
+          average_rating: Number(booking?.provider?.average_rating || 0),
         },
-      };
-    }));
+      }));
   }
 
   async getProfile(userId: string) {

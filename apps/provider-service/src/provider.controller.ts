@@ -25,6 +25,84 @@ export class ProviderKafkaController {
     return this.providerService.getProviderProfile(data.userId);
   }
 
+  @MessagePattern(PROVIDER_PATTERNS.GET_SERVICES_BY_IDS)
+  async getServicesByIds(@Payload() data: any) {
+    return this.providerService.getServicesByIds(data?.serviceIds);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.CREATE_PROVIDER_APPLICATION)
+  async createProviderApplication(@Payload() data: any) {
+    return this.providerService.createProviderApplication(data);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS)
+  async getProviderProfilesByIds(@Payload() data: any) {
+    return this.providerService.getProviderProfilesByIds(data?.userIds);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_APPLICATIONS)
+  async getProviderApplications(@Payload() data: any) {
+    return this.providerService.getProviderApplications(
+      data?.page,
+      data?.limit,
+      data?.status,
+    );
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_APPLICATION_BY_ID)
+  async getProviderApplicationById(@Payload() data: any) {
+    return this.providerService.getProviderApplicationById(data?.id);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.UPDATE_APPLICATION_STATUS)
+  async updateProviderApplicationStatus(@Payload() data: any) {
+    return this.providerService.updateProviderApplicationStatus(
+      data?.id,
+      data?.status,
+      data?.reject_reason,
+    );
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.UPDATE_DOCUMENT_STATUS)
+  async updateDocumentStatus(@Payload() data: any) {
+    return this.providerService.updateDocumentStatus(data?.documentId, data);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_ADMIN_SERVICES)
+  async getAdminServices(@Payload() data: any) {
+    return this.providerService.getAdminServices(data?.page, data?.limit);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.UPDATE_ADMIN_SERVICE)
+  async updateAdminService(@Payload() data: any) {
+    return this.providerService.updateAdminService(data?.id, data?.body);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.DELETE_ADMIN_SERVICE)
+  async deleteAdminService(@Payload() data: any) {
+    return this.providerService.deleteAdminService(data?.id);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_ALL_REVIEWS)
+  async getAllReviews(@Payload() data: any) {
+    return this.providerService.getAllReviews(data?.page, data?.limit);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.DELETE_REVIEW)
+  async deleteReview(@Payload() data: any) {
+    return this.providerService.deleteReview(data?.id);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_PERFORMANCE_REPORT)
+  async getPerformanceReport(@Payload() data: any) {
+    return this.providerService.getPerformanceReport(data?.from, data?.to);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_COMPLIANCE_REPORT)
+  async getComplianceReport(@Payload() data: any) {
+    return this.providerService.getComplianceReport(data?.from, data?.to);
+  }
+
   @MessagePattern(PROVIDER_PATTERNS.GET_DASHBOARD)
   async getProviderDashboard(@Payload() data: any) {
     return this.providerService.getProviderDashboard(data.providerId);

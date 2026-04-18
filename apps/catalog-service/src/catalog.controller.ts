@@ -72,4 +72,59 @@ export class CatalogKafkaController {
   async getBarangays(@Payload() data: any) {
     return this.locationsService.getBarangays(data.cityCode);
   }
+
+  @MessagePattern(CATALOG_PATTERNS.GET_ADMIN_CATEGORIES)
+  async getAdminCategories(@Payload() data: any) {
+    return this.servicesService.getCategoriesAdmin(data?.page, data?.limit);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.CREATE_ADMIN_CATEGORY)
+  async createAdminCategory(@Payload() data: any) {
+    return this.servicesService.createCategoryAdmin(data);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.UPDATE_ADMIN_CATEGORY)
+  async updateAdminCategory(@Payload() data: any) {
+    return this.servicesService.updateCategoryAdmin(data?.id, data?.body);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.DELETE_ADMIN_CATEGORY)
+  async deleteAdminCategory(@Payload() data: any) {
+    return this.servicesService.deleteCategoryAdmin(data?.id);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.GET_ADMIN_SERVICES)
+  async getAdminServices(@Payload() data: any) {
+    return this.servicesService.getAllServicesAdmin(data?.page, data?.limit);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.UPDATE_ADMIN_SERVICE)
+  async updateAdminService(@Payload() data: any) {
+    return this.servicesService.updateServiceAdmin(data?.id, data?.body);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.DELETE_ADMIN_SERVICE)
+  async deleteAdminService(@Payload() data: any) {
+    return this.servicesService.deleteServiceAdmin(data?.id);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.GET_ADMIN_SERVICE_AREAS)
+  async getAdminServiceAreas() {
+    return this.servicesService.getServiceAreasAdmin();
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.CREATE_ADMIN_SERVICE_AREA)
+  async createAdminServiceArea(@Payload() data: any) {
+    return this.servicesService.createServiceAreaAdmin(data);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.UPDATE_ADMIN_SERVICE_AREA)
+  async updateAdminServiceArea(@Payload() data: any) {
+    return this.servicesService.updateServiceAreaAdmin(data?.id, data?.body);
+  }
+
+  @MessagePattern(CATALOG_PATTERNS.DELETE_ADMIN_SERVICE_AREA)
+  async deleteAdminServiceArea(@Payload() data: any) {
+    return this.servicesService.deleteServiceAreaAdmin(data?.id);
+  }
 }

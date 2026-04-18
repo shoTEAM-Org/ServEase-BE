@@ -17,7 +17,10 @@ export async function ensureKafkaTopics(broker?: string): Promise<void> {
 
   if (topicsToCreate.length > 0) {
     await admin.createTopics({ topics: topicsToCreate });
-    console.log('Created Kafka topics:', topicsToCreate.map((t) => t.topic).join(', '));
+    console.log(
+      'Created Kafka topics:',
+      topicsToCreate.map((t) => t.topic).join(', '),
+    );
   } else {
     console.log('All Kafka topics already exist');
   }

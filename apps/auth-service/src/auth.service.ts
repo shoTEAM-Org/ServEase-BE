@@ -1,11 +1,45 @@
-import { Injectable, UnauthorizedException, InternalServerErrorException, BadRequestException } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  UnauthorizedException,
+  InternalServerErrorException,
+  BadRequestException,
+  OnModuleInit,
+} from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { RegisterProviderDto, LoginUserDto } from '@app/common';
+import {
+  RegisterProviderDto,
+  LoginUserDto,
+  PROVIDER_PATTERNS,
+  sendKafkaRpcRequest,
+} from '@app/common';
 import 'multer';
 
 @Injectable()
-export class AuthService {
-  constructor(private readonly supabase: SupabaseClient) {}
+export class AuthService implements OnModuleInit {
+  constructor(
+    private readonly supabase: SupabaseClient,
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+  ) {}
+
+  async onModuleInit() {
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.CREATE_PROVIDER_APPLICATION);
+    await this.kafka.connect();
+  }
+
+  private async createProviderApplication(payload: {
+    userId: string;
+    businessName: string;
+    documentType: string;
+    filePath: string;
+  }) {
+    return await sendKafkaRpcRequest(
+      () =>
+        this.kafka.send(PROVIDER_PATTERNS.CREATE_PROVIDER_APPLICATION, payload),
+      { context: PROVIDER_PATTERNS.CREATE_PROVIDER_APPLICATION },
+    );
+  }
 
   private createAuthClient() {
     const supabaseUrl = process.env.SUPABASE_URL;
@@ -29,7 +63,7 @@ export class AuthService {
   async register(dto: any) {
     try {
       const authClient = this.createAuthClient();
-      const { data: authData, error: authError } = await this.supabase.auth.signUp({
+      const { data: authData, error: authError } = await authClient.auth.signUp({
         email: dto.email,
         password: dto.password,
       });
@@ -37,7 +71,15 @@ export class AuthService {
       const userId = authData.user!.id;
 
       const { error: userTableError } = await this.supabase.schema('identity_and_user').from('users')
-        .insert([{ id: userId, role: dto.role || 'customer', full_name: dto.full_name, email: dto.email, contact_number: dto.contact_number }]);
+        .insert([{
+          id: userId,
+          role: dto.role || 'customer',
+          status: 'active',
+          is_verified: true,
+          full_name: dto.full_name,
+          email: dto.email,
+          contact_number: dto.contact_number,
+        }]);
       if (userTableError) {
         await this.supabase.auth.admin.deleteUser(userId);
         throw new Error(`Users Table Error: ${userTableError.message}`);
@@ -75,8 +117,17 @@ export class AuthService {
       let loginEmail = identifier;
 
       if (!isEmail) {
-        const { data: userRecord, error: dbError } = await this.supabase.schema('identity_and_user').from('users').select('email').eq('contact_number', identifier).single();
-        if (dbError || !userRecord) throw new UnauthorizedException('Phone number not registered.');
+        const { data: userRecord, error: dbError } = await this.supabase
+          .schema('identity_and_user')
+          .from('users')
+          .select('email')
+          .eq('contact_number', identifier)
+          .order('updated_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (dbError || !userRecord?.email) {
+          throw new UnauthorizedException('Phone number not registered.');
+        }
         loginEmail = userRecord.email;
       }
 
@@ -91,7 +142,9 @@ export class AuthService {
         .from('users')
         .select('id, full_name, email, contact_number, role, status')
         .eq('id', userId)
-        .single();
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
       console.log('[auth] Users table lookup result:', userData);
       if (userError || !userData) {
         console.error('Users table error:', userError);
@@ -135,20 +188,43 @@ export class AuthService {
       .insert([{ id: newUserId, full_name, email, contact_number, role, status: 'pending', is_verified: false, date_of_birth }]);
     if (userError) { await this.supabase.auth.admin.deleteUser(newUserId); throw new BadRequestException(`User Profile Error: ${userError.message}`); }
 
-    const { data: profile, error: profileError } = await this.supabase.schema('provider_catalog').from('provider_profiles')
-      .insert([{ user_id: newUserId, business_name, verification_status: 'pending' }]).select().single();
-    if (profileError) throw new BadRequestException(`Provider Profile Error: ${profileError.message}`);
-
     const filePath = `kyc/${newUserId}/${Date.now()}_${file.originalname}`;
     const { error: uploadError } = await this.supabase.storage.from('verification-docs')
       .upload(filePath, file.buffer, { contentType: file.mimetype, upsert: false });
-    if (uploadError) throw new BadRequestException(`Storage Upload Error: ${uploadError.message}`);
+    if (uploadError) {
+      await this.supabase.schema('identity_and_user').from('users').delete().eq('id', newUserId);
+      await this.supabase.auth.admin.deleteUser(newUserId);
+      throw new BadRequestException(`Storage Upload Error: ${uploadError.message}`);
+    }
 
-    const { error: docError } = await this.supabase.schema('provider_catalog').from('provider_documents')
-      .insert([{ provider_id: newUserId, document_type, document_file_path: filePath, status: 'pending' }]);
-    if (docError) throw new BadRequestException(`Document Link Error: ${docError.message}`);
+    try {
+      const providerApplication = await this.createProviderApplication({
+        userId: newUserId,
+        businessName: business_name,
+        documentType: document_type,
+        filePath,
+      });
 
-    return { status: 'success', message: 'Provider application submitted. Pending approval.', data: { provider_id: newUserId, business_name: profile.business_name, verification_status: profile.verification_status } };
+      return {
+        status: 'success',
+        message: 'Provider application submitted. Pending approval.',
+        data: providerApplication,
+      };
+    } catch (error: any) {
+      await this.supabase.storage
+        .from('verification-docs')
+        .remove([filePath]);
+      await this.supabase
+        .schema('identity_and_user')
+        .from('users')
+        .delete()
+        .eq('id', newUserId);
+      await this.supabase.auth.admin.deleteUser(newUserId);
+
+      throw new BadRequestException(
+        `Provider Profile Error: ${error?.message || 'Failed to create provider application'}`,
+      );
+    }
   }
 
   async refreshSession(refreshToken: string) {
@@ -158,7 +234,14 @@ export class AuthService {
     const userId = data.user?.id;
     let userData: any = null;
     if (userId) {
-      const { data: u } = await this.supabase.schema('identity_and_user').from('users').select('role, full_name').eq('id', userId).single();
+      const { data: u } = await this.supabase
+        .schema('identity_and_user')
+        .from('users')
+        .select('role, full_name')
+        .eq('id', userId)
+        .order('updated_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
       userData = u;
     }
     return { access_token: data.session?.access_token, refresh_token: data.session?.refresh_token, user: { id: data.user?.id, email: data.user?.email, full_name: userData?.full_name, role: userData?.role } };
@@ -166,7 +249,11 @@ export class AuthService {
 
   async getCurrentUser(userId: string) {
     const { data, error } = await this.supabase.schema('identity_and_user').from('users')
-      .select('id, full_name, email, contact_number, role, status').eq('id', userId).single();
+      .select('id, full_name, email, contact_number, role, status')
+      .eq('id', userId)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
     if (error) throw new InternalServerErrorException('Failed to fetch user: ' + error.message);
     return { user: data };
   }

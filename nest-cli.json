@@ -25,6 +25,83 @@
       "compilerOptions": {
         "tsConfigPath": "libs/database/tsconfig.lib.json"
       }
+    },
+    "auth-service": {
+      "type": "application",
+      "root": "apps/auth-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/auth-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/auth-service/tsconfig.app.json" }
+    },
+    "booking-service": {
+      "type": "application",
+      "root": "apps/booking-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/booking-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/booking-service/tsconfig.app.json" }
+    },
+    "chat-service": {
+      "type": "application",
+      "root": "apps/chat-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/chat-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/chat-service/tsconfig.app.json" }
+    },
+    "payment-service": {
+      "type": "application",
+      "root": "apps/payment-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/payment-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/payment-service/tsconfig.app.json" }
+    },
+    "provider-service": {
+      "type": "application",
+      "root": "apps/provider-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/provider-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/provider-service/tsconfig.app.json" }
+    },
+    "customer-service": {
+      "type": "application",
+      "root": "apps/customer-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/customer-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/customer-service/tsconfig.app.json" }
+    },
+    "admin-service": {
+      "type": "application",
+      "root": "apps/admin-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/admin-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/admin-service/tsconfig.app.json" }
+    },
+    "catalog-service": {
+      "type": "application",
+      "root": "apps/catalog-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/catalog-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/catalog-service/tsconfig.app.json" }
+    },
+    "notifications-service": {
+      "type": "application",
+      "root": "apps/notifications-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/notifications-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/notifications-service/tsconfig.app.json" }
+    },
+    "support-service": {
+      "type": "application",
+      "root": "apps/support-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/support-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/support-service/tsconfig.app.json" }
+    },
+    "trust-service": {
+      "type": "application",
+      "root": "apps/trust-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/trust-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/trust-service/tsconfig.app.json" }
     }
   }
 }

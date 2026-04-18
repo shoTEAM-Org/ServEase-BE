@@ -1,5 +1,6 @@
 // Kafka
 export * from './kafka/index.js';
+export * from './utils/kafka-rpc.js';
 
 // DTOs
 export * from './dto/auth/index.js';

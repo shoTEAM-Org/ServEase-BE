@@ -12,7 +12,9 @@ export enum CancellationReason {
 }
 
 export class CancelBookingDto {
-  @IsEnum(CancellationReason, { message: 'Please select a valid cancellation reason.' })
+  @IsEnum(CancellationReason, {
+    message: 'Please select a valid cancellation reason.',
+  })
   reason: CancellationReason;
 
   @IsOptional()
