@@ -19,7 +19,10 @@ export class PaymentKafkaController {
 
   @MessagePattern(PAYMENT_PATTERNS.GET_BY_BOOKING)
   async getPaymentByBookingId(@Payload() data: any) {
-    return this.paymentService.getPaymentByBookingId(data.bookingId);
+    return this.paymentService.getPaymentByBookingId(
+      data.bookingId,
+      data.requesterId,
+    );
   }
 
   @MessagePattern(PAYMENT_PATTERNS.GET_PROVIDER_HISTORY)
@@ -80,7 +83,10 @@ export class PaymentKafkaController {
   @MessagePattern(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT)
   async ensureBookingPayment(@Payload() data: any) {
     try {
-      return await this.paymentService.ensureBookingPayment(data);
+      return await this.paymentService.ensureBookingPayment(
+        data,
+        data.requesterId,
+      );
     } catch (error: any) {
       console.error('[payment-service.ensure-booking] failed', {
         bookingId: data?.bookingId,

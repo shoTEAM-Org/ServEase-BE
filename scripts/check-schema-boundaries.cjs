@@ -10,12 +10,12 @@ const SERVICE_SCHEMA_OWNERSHIP = {
   'booking-service': ['booking'],
   'catalog-service': ['provider_catalog'],
   'chat-service': ['messages'],
-  'customer-service': ['identity_and_user', 'identity_svc'],
+  'customer-service': [],
   'notifications-service': ['notification_and_support'],
   'payment-service': ['payment'],
   'provider-service': ['provider_catalog'],
   'support-service': ['notification_and_support'],
-  'trust-service': ['trust_and_reputation', 'trust_svc'],
+  'trust-service': ['trust_and_reputation'],
 };
 
 function collectTypeScriptFiles(dirPath) {

@@ -13,12 +13,13 @@ import {
   AUTH_PATTERNS,
   PROVIDER_PATTERNS,
   SUPPORT_PATTERNS,
+  NOTIFICATION_PATTERNS,
   sendKafkaRpcRequest,
 } from '@app/common';
 
 @Injectable()
 export class BookingService implements OnModuleInit {
-  private readonly availabilitySchemas = ['booking', 'booking_svc'] as const;
+  private readonly availabilitySchemas = ['booking'] as const;
   private readonly logger = new Logger(BookingService.name);
 
   constructor(
@@ -32,6 +33,34 @@ export class BookingService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
     await this.kafka.connect();
+  }
+
+  private async emitNotifications(bookingId: string, type: string, metadata: any = {}) {
+    try {
+      const booking = await this.getBookingRowByIdentifier(
+        bookingId,
+        'id, customer_id, provider_id',
+      );
+      if (!booking) return;
+      
+      // Emit to customer
+      this.kafka.emit(type, {
+        userId: booking.customer_id,
+        bookingId,
+        type,
+        metadata,
+      });
+      
+      // Emit to provider
+      this.kafka.emit(type, {
+        userId: booking.provider_id,
+        bookingId,
+        type,
+        metadata,
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to emit notification for booking ${bookingId}:`, error);
+    }
   }
 
   private toTrimmedString(value: unknown) {
@@ -49,8 +78,9 @@ export class BookingService implements OnModuleInit {
   }
 
   private toNullableString(value: unknown): string | null {
-    const parsed = this.toTrimmedString(value);
-    return parsed || null;
+    if (typeof value === 'string') return value.trim() || null;
+    if (value === null || value === undefined) return null;
+    return String(value).trim() || null;
   }
 
   private toBoolean(value: unknown, fallback = false) {
@@ -939,10 +969,8 @@ export class BookingService implements OnModuleInit {
       service_address: this.toTrimmedString(dto?.service_address),
       service_location_type: normalizedServiceLocationType,
       scheduled_at: normalizedScheduledAt,
-      pricing_mode: normalizedPricingMode,
-      hourly_rate: hourlyRate,
-      flat_rate: flatRate,
       hours_required: normalizedHoursRequired,
+      service_amount: totalAmount,
       total_amount: totalAmount,
       payment_method: normalizedPaymentMethod,
       customer_notes: this.toNullableString(dto?.customer_notes),
@@ -1043,13 +1071,21 @@ export class BookingService implements OnModuleInit {
     return { bookings };
   }
 
-  async getProviderBookingById(bookingId: string) {
+  async getProviderBookingById(bookingId: string, providerId?: string) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId)
       throw new BadRequestException('bookingId is required');
 
     const data = await this.getBookingRowByIdentifier(normalizedBookingId);
     if (!data) throw new NotFoundException('Booking not found');
+
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (
+      normalizedProviderId &&
+      this.toTrimmedString(data.provider_id) !== normalizedProviderId
+    ) {
+      throw new NotFoundException('Booking not found');
+    }
 
     const customerId = this.toTrimmedString(data.customer_id);
     const customerUser = await this.getUserProfileFromAuth(customerId);
@@ -1158,8 +1194,7 @@ export class BookingService implements OnModuleInit {
           this.toTrimmedString(booking.booking_reference) ||
           this.toTrimmedString(booking.id),
         status: this.toTrimmedString(booking.status) || 'pending',
-        payment_status: this.toTrimmedString(booking.payment_status) || 'pending',
-        amount: Number(booking.amount || booking.total_amount || 0),
+        amount: Number(booking.total_amount || 0),
         scheduled_at: booking.scheduled_at || null,
         created_at: booking.created_at || null,
         customer_id: customerId || null,
@@ -1393,97 +1428,21 @@ export class BookingService implements OnModuleInit {
     return { available: true };
   }
 
-  async createRescheduleRequest(body: any) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('booking_reschedule_requests')
-      .insert([
-        {
-          booking_id: body.bookingId,
-          provider_id: body.providerId,
-          reason: body.reason,
-          explanation: body.explanation,
-          proposed_date: body.proposedDate,
-          proposed_time: body.proposedTime,
-          status: 'pending',
-        },
-      ])
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    return { request: data };
-  }
-
-  async getRescheduleRequests(bookingId: string) {
-    const normalizedBookingId = this.toTrimmedString(bookingId);
-    if (!normalizedBookingId) return { requests: [] };
-
-    try {
-      const result = await this.withQueryTimeout<any>(
-        this.supabase
-          .schema('booking')
-          .from('booking_reschedule_requests')
-          .select('*')
-          .eq('booking_id', normalizedBookingId)
-          .order('created_at', { ascending: false }),
-        4500,
-        'booking.get-reschedules query',
-      );
-      const { data, error } = result || {};
-      if (error) {
-        this.logger.warn(
-          `booking.get-reschedules degraded: ${this.toTrimmedString(error?.message) || 'query error'}`,
-        );
-        return { requests: [] };
-      }
-      return { requests: data || [] };
-    } catch (error) {
-      if (this.isTimeoutLikeError(error)) {
-        this.logger.warn(
-          `booking.get-reschedules degraded: query timed out for bookingId=${normalizedBookingId}`,
-        );
-        return { requests: [] };
-      }
-      throw new InternalServerErrorException(
-        this.toTrimmedString((error as { message?: unknown })?.message) ||
-          'Failed to fetch reschedule requests',
-      );
-    }
-  }
-
-  async reviewRescheduleRequest(requestId: string, body: any) {
-    const updates: any = {
-      status: body.decision,
-      reviewed_at: new Date().toISOString(),
-    };
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('booking_reschedule_requests')
-      .update(updates)
-      .eq('id', requestId)
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
-
-    if (body.decision === 'approved' && data) {
-      const req = data as Record<string, unknown>;
-      const proposedDate = this.toTrimmedString(req.proposed_date);
-      const proposedTime = this.toTrimmedString(req.proposed_time);
-      if (proposedDate && proposedTime) {
-        await this.supabase
-          .schema('booking')
-          .from('bookings')
-          .update({ scheduled_at: `${proposedDate}T${proposedTime}` })
-          .eq('id', this.toTrimmedString(req.booking_id));
-      }
-    }
-    return { request: data };
-  }
-
   async createAdditionalCharges(body: any) {
+    const bookingId = this.toTrimmedString(body?.bookingId);
+    const providerId = this.toTrimmedString(body?.providerId);
+    if (!bookingId) throw new BadRequestException('bookingId is required');
+    if (!providerId) throw new BadRequestException('providerId is required');
+
+    const booking = await this.getBookingRowByIdentifier(bookingId, 'id, provider_id');
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (this.toTrimmedString(booking.provider_id) !== providerId) {
+      throw new BadRequestException('Booking does not belong to provider');
+    }
+
     const items = (body.items || []).map((item: any) => ({
-      booking_id: body.bookingId,
-      requested_by: body.providerId,
+      booking_id: bookingId,
+      requested_by: providerId,
       description: item.description,
       amount: item.amount,
       justification: body.justification,
@@ -1498,9 +1457,21 @@ export class BookingService implements OnModuleInit {
     return { charges: data || [] };
   }
 
-  async getAdditionalCharges(bookingId: string) {
+  async getAdditionalCharges(bookingId: string, providerId?: string) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId) return { charges: [] };
+
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (normalizedProviderId) {
+      const booking = await this.getBookingRowByIdentifier(
+        normalizedBookingId,
+        'id, provider_id',
+      );
+      if (!booking) throw new NotFoundException('Booking not found');
+      if (this.toTrimmedString(booking.provider_id) !== normalizedProviderId) {
+        throw new NotFoundException('Booking not found');
+      }
+    }
 
     const { data, error } = await this.supabase
       .schema('booking')
@@ -1517,7 +1488,28 @@ export class BookingService implements OnModuleInit {
   }
 
   async reviewAdditionalCharges(body: any) {
-    const { chargeIds, decision } = body;
+    const bookingId = this.toTrimmedString(body?.bookingId);
+    const providerId = this.toTrimmedString(body?.providerId);
+    const chargeIds = Array.isArray(body?.chargeIds)
+      ? body.chargeIds
+          .map((chargeId: unknown) => this.toTrimmedString(chargeId))
+          .filter(Boolean)
+      : [];
+    const decision = this.toTrimmedString(body?.decision).toLowerCase();
+
+    if (!bookingId) throw new BadRequestException('bookingId is required');
+    if (!providerId) throw new BadRequestException('providerId is required');
+    if (!chargeIds.length) throw new BadRequestException('chargeIds is required');
+    if (!['approved', 'rejected'].includes(decision)) {
+      throw new BadRequestException('decision must be approved or rejected');
+    }
+
+    const booking = await this.getBookingRowByIdentifier(bookingId, 'id, provider_id, total_amount');
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (this.toTrimmedString(booking.provider_id) !== providerId) {
+      throw new BadRequestException('Booking does not belong to provider');
+    }
+
     const { data, error } = await this.supabase
       .schema('booking')
       .from('additional_charges')
@@ -1525,21 +1517,16 @@ export class BookingService implements OnModuleInit {
         status: decision,
         reviewed_at: new Date().toISOString(),
       })
+      .eq('booking_id', bookingId)
       .in('id', chargeIds)
       .select();
     if (error) throw new InternalServerErrorException(error.message);
 
-    if (decision === 'approved' && data?.length && body.bookingId) {
+    if (decision === 'approved' && data?.length) {
       const totalAdditional = data.reduce(
         (acc: number, charge: any) => acc + Number(charge.amount),
         0,
       );
-      const { data: booking } = await this.supabase
-        .schema('booking')
-        .from('bookings')
-        .select('total_amount')
-        .eq('id', body.bookingId)
-        .single();
       if (booking) {
         await this.supabase
           .schema('booking')
@@ -1547,35 +1534,65 @@ export class BookingService implements OnModuleInit {
           .update({
             total_amount: Number(booking.total_amount) + totalAdditional,
           })
-          .eq('id', body.bookingId);
+          .eq('id', bookingId);
       }
     }
     return { charges: data || [] };
   }
 
-  async getHistory() {
+  async getHistory(requesterId?: string) {
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
       .select('*')
       .in('status', ['completed', 'cancelled', 'disputed']);
     if (error) throw new BadRequestException(error.message);
-    return { history: data };
+
+    const normalizedRequesterId = this.toTrimmedString(requesterId);
+    const history = normalizedRequesterId
+      ? (data || []).filter((booking: any) => {
+          const bookingCustomerId = this.toTrimmedString(booking?.customer_id);
+          const bookingProviderId = this.toTrimmedString(booking?.provider_id);
+          return (
+            bookingCustomerId === normalizedRequesterId ||
+            bookingProviderId === normalizedRequesterId
+          );
+        })
+      : data || [];
+
+    return { history };
   }
 
-  async getRequests() {
+  async getRequests(providerId?: string) {
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
       .select('*')
       .eq('status', 'pending');
     if (error) throw new BadRequestException(error.message);
-    return { requests: data };
+
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    const requests = normalizedProviderId
+      ? (data || []).filter((booking: any) => {
+          return this.toTrimmedString(booking?.provider_id) === normalizedProviderId;
+        })
+      : data || [];
+
+    return { requests };
   }
 
-  async getBookingById(id: string) {
+  async getBookingById(id: string, requesterId?: string) {
     const data = await this.getBookingRowByIdentifier(id);
     if (!data) throw new NotFoundException('Booking not found');
+
+    const normalizedRequesterId = this.toTrimmedString(requesterId);
+    if (normalizedRequesterId) {
+      const providerId = this.toTrimmedString(data.provider_id);
+      const customerId = this.toTrimmedString(data.customer_id);
+      if (normalizedRequesterId !== providerId && normalizedRequesterId !== customerId) {
+        throw new NotFoundException('Booking not found');
+      }
+    }
 
     const providerId = this.toTrimmedString(data.provider_id);
     const customerId = this.toTrimmedString(data.customer_id);
@@ -1602,7 +1619,16 @@ export class BookingService implements OnModuleInit {
     };
   }
 
-  async updateStatus(id: string, status: string) {
+  async updateStatus(id: string, status: string, providerId?: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (normalizedProviderId) {
+      const booking = await this.getBookingRowByIdentifier(id, 'id, provider_id');
+      if (!booking) throw new NotFoundException(`Booking with id ${id} not found`);
+      if (this.toTrimmedString(booking.provider_id) !== normalizedProviderId) {
+        throw new NotFoundException(`Booking with id ${id} not found`);
+      }
+    }
+
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
@@ -1615,6 +1641,21 @@ export class BookingService implements OnModuleInit {
         throw new NotFoundException(`Booking with id ${id} not found`);
       throw new BadRequestException(error.message);
     }
+
+    // Emit notification for status change
+    const notificationPattern =
+      status === 'confirmed'
+        ? NOTIFICATION_PATTERNS.BOOKING_CONFIRMED
+        : status === 'in_progress'
+          ? NOTIFICATION_PATTERNS.BOOKING_IN_PROGRESS
+          : status === 'completed'
+            ? NOTIFICATION_PATTERNS.BOOKING_COMPLETED
+            : null;
+
+    if (notificationPattern) {
+      await this.emitNotifications(id, notificationPattern, { status });
+    }
+
     return { message: 'Booking status updated successfully.', booking: data };
   }
 
@@ -1624,10 +1665,34 @@ export class BookingService implements OnModuleInit {
     reason: string,
     explanation: string,
   ) {
+    const booking = await this.getBookingRowByIdentifier(
+      id,
+      'id, customer_id, provider_id',
+    );
+    if (!booking) throw new NotFoundException(`Booking with id ${id} not found`);
+
+    const normalizedUserId = this.toTrimmedString(userId);
+    const canCancel =
+      normalizedUserId === this.toTrimmedString(booking.customer_id) ||
+      normalizedUserId === this.toTrimmedString(booking.provider_id);
+    if (!canCancel) {
+      throw new NotFoundException(`Booking with id ${id} not found`);
+    }
+
+    const normalizedReason = this.toNullableString(reason);
+    const normalizedExplanation = this.toNullableString(explanation);
+    const cancelledAt = new Date().toISOString();
+
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
-      .update({ status: 'cancelled' })
+      .update({
+        status: 'cancelled',
+        cancelled_by: normalizedUserId,
+        cancel_reason: normalizedReason,
+        cancel_explanation: normalizedExplanation,
+        cancelled_at: cancelledAt,
+      })
       .eq('id', id)
       .select()
       .single();
@@ -1639,20 +1704,43 @@ export class BookingService implements OnModuleInit {
       .insert([
         {
           booking_id: id,
-          cancelled_by: userId,
-          reason,
-          detailed_explanation: explanation,
+          user_id: normalizedUserId,
+          reason: normalizedReason,
+          explanation: normalizedExplanation,
         },
       ]);
     if (cancellationError)
       throw new BadRequestException(cancellationError.message);
 
+    // Emit notification for cancellation
+    await this.emitNotifications(id, NOTIFICATION_PATTERNS.BOOKING_CANCELLED, {
+      cancelledBy: normalizedUserId,
+      reason: normalizedReason,
+    });
+
     return { booking: data };
   }
 
-  async getAttachments(bookingId: string, accessToken?: string) {
+  async getAttachments(
+    bookingId: string,
+    userId?: string,
+    accessToken?: string,
+  ) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId) return { attachments: [] };
+
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (normalizedUserId) {
+      const booking = await this.getBookingRowByIdentifier(
+        normalizedBookingId,
+        'id, customer_id, provider_id',
+      );
+      if (!booking) throw new NotFoundException('Booking not found');
+      const ownerMatches =
+        normalizedUserId === this.toTrimmedString(booking.customer_id) ||
+        normalizedUserId === this.toTrimmedString(booking.provider_id);
+      if (!ownerMatches) throw new NotFoundException('Booking not found');
+    }
 
     let tableResult: { attachments: any[] } | null = null;
     let lastError: any = null;
@@ -1706,10 +1794,24 @@ export class BookingService implements OnModuleInit {
   async saveAttachments(
     bookingId: string,
     attachments: any[],
+    userId?: string,
     accessToken?: string,
   ) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId) return { attachments: [] };
+
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (normalizedUserId) {
+      const booking = await this.getBookingRowByIdentifier(
+        normalizedBookingId,
+        'id, customer_id, provider_id',
+      );
+      if (!booking) throw new NotFoundException('Booking not found');
+      const ownerMatches =
+        normalizedUserId === this.toTrimmedString(booking.customer_id) ||
+        normalizedUserId === this.toTrimmedString(booking.provider_id);
+      if (!ownerMatches) throw new NotFoundException('Booking not found');
+    }
 
     try {
       return await this.saveAttachmentsWithClient(
@@ -1757,8 +1859,18 @@ export class BookingService implements OnModuleInit {
     if (!normalizedUserId) throw new BadRequestException('userId is required');
     if (!normalizedReason) throw new BadRequestException('reason is required');
 
+    const booking = await this.getBookingRowByIdentifier(
+      normalizedBookingId,
+      'id, customer_id, provider_id',
+    );
+    if (!booking) throw new NotFoundException('Booking not found');
+    const ownerMatches =
+      normalizedUserId === this.toTrimmedString(booking.customer_id) ||
+      normalizedUserId === this.toTrimmedString(booking.provider_id);
+    if (!ownerMatches) throw new NotFoundException('Booking not found');
+
     try {
-      return await sendKafkaRpcRequest(
+      const result = await sendKafkaRpcRequest(
         () =>
           this.kafka.send(SUPPORT_PATTERNS.CREATE_DISPUTE, {
             bookingId: normalizedBookingId,
@@ -1767,6 +1879,14 @@ export class BookingService implements OnModuleInit {
           }),
         { context: SUPPORT_PATTERNS.CREATE_DISPUTE },
       );
+
+      // Emit notification for dispute creation
+      await this.emitNotifications(normalizedBookingId, NOTIFICATION_PATTERNS.DISPUTE_CREATED, {
+        raisedBy: normalizedUserId,
+        reason: normalizedReason,
+      });
+
+      return result;
     } catch (error: any) {
       throw new InternalServerErrorException(
         this.toTrimmedString(error?.message) || 'Failed to create dispute',

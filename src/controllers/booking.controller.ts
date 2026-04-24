@@ -78,19 +78,30 @@ export class BookingController implements OnModuleInit {
   }
 
   @Get('v1/history')
-  async getHistory() {
-    return sendWithTimeout(this.kafka.send(BOOKING_PATTERNS.GET_HISTORY, {}));
+  async getHistory(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(BOOKING_PATTERNS.GET_HISTORY, {
+        requesterId: req['user'].id,
+      }),
+    );
   }
 
   @Get('v1/requests')
-  async getRequests() {
-    return sendWithTimeout(this.kafka.send(BOOKING_PATTERNS.GET_REQUESTS, {}));
+  async getRequests(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(BOOKING_PATTERNS.GET_REQUESTS, {
+        providerId: req['user'].id,
+      }),
+    );
   }
 
   @Get('v1/:id')
-  async getById(@Param('id') id: string) {
+  async getById(@Param('id') id: string, @Request() req: any) {
     const result = await sendWithTimeout<any>(
-      this.kafka.send(BOOKING_PATTERNS.GET_BY_ID, { id }),
+      this.kafka.send(BOOKING_PATTERNS.GET_BY_ID, {
+        id,
+        requesterId: req['user'].id,
+      }),
     );
     const booking = result?.booking;
     const providerId = String(booking?.provider_id || '').trim();
@@ -129,10 +140,11 @@ export class BookingController implements OnModuleInit {
 
   @Patch('v1/:id/status')
   @HttpCode(202)
-  async updateStatus(@Param('id') id: string, @Body() body: any) {
+  async updateStatus(@Param('id') id: string, @Request() req: any, @Body() body: any) {
     this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, {
       id,
       status: body.status,
+      providerId: req['user'].id,
     });
     return { status: 'accepted' };
   }
@@ -158,6 +170,7 @@ export class BookingController implements OnModuleInit {
     return sendWithTimeout(
       this.kafka.send(BOOKING_PATTERNS.GET_ATTACHMENTS, {
         bookingId: id,
+        userId: req['user'].id,
         accessToken: this.extractAccessToken(req),
       }),
     );
@@ -173,6 +186,7 @@ export class BookingController implements OnModuleInit {
       this.kafka.send(BOOKING_PATTERNS.SAVE_ATTACHMENTS, {
         bookingId: id,
         attachments: body.attachments,
+        userId: req['user'].id,
         accessToken: this.extractAccessToken(req),
       }),
     );

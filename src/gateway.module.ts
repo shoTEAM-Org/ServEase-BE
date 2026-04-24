@@ -23,6 +23,7 @@ import { SupportController } from './controllers/support.controller.js';
 import { UploadsController } from './controllers/uploads.controller.js';
 import { HealthController } from './controllers/health.controller.js';
 import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
+import { AdminRoleGuard } from './guards/admin-role.guard.js';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
     UploadsController,
     HealthController,
   ],
+  providers: [AdminRoleGuard],
 })
 export class GatewayModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

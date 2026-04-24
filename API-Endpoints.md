@@ -75,8 +75,8 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 |--------|------|------|-------------|
 | POST | `/api/booking/v1/create` | Yes | Create a new booking |
 | GET | `/api/booking/v1/customer` | Yes | Get authenticated customer's bookings |
-| GET | `/api/booking/v1/history` | Yes | Get completed/cancelled/disputed bookings |
-| GET | `/api/booking/v1/requests` | Yes | Get pending booking requests (provider view) |
+| GET | `/api/booking/v1/history` | Yes | Get authenticated user's completed/cancelled/disputed bookings |
+| GET | `/api/booking/v1/requests` | Yes | Get authenticated provider's pending booking requests |
 | GET | `/api/booking/v1/:id` | Yes | Get a single booking by ID |
 | PATCH | `/api/booking/v1/:id/status` | Yes | Update booking status **(async)** |
 | PATCH | `/api/booking/v1/:id/cancel` | Yes | Cancel a booking (with reason + explanation) **(async)** |
@@ -174,16 +174,8 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/provider/v1/:id/profile-draft` | No | Get provider profile draft |
-| PATCH | `/api/provider/v1/:id/profile-draft` | No | Save/update provider profile draft **(async)** |
-
-### Reschedule Requests
-
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| POST | `/api/provider/v1/reschedule-requests` | Yes | Create a reschedule request **(async)** |
-| GET | `/api/provider/v1/reschedule-requests/:bookingId` | Yes | Get reschedule requests for a booking |
-| PATCH | `/api/provider/v1/reschedule-requests/:requestId/review` | Yes | Approve or decline a reschedule request **(async)** |
+| GET | `/api/provider/v1/:id/profile-draft` | Yes | Get provider profile draft for authenticated provider |
+| PATCH | `/api/provider/v1/:id/profile-draft` | Yes | Save/update provider profile draft **(async)** |
 
 ### Additional Charges
 

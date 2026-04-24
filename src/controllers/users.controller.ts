@@ -42,8 +42,8 @@ export class UsersController implements OnModuleInit {
   @HttpCode(202)
   async updateProfile(@Request() req: any, @Body() body: any) {
     this.kafka.emit(AUTH_PATTERNS.UPDATE_PROFILE, {
-      userId: req['user'].id,
       ...body,
+      userId: req['user'].id,
     });
     return { status: 'accepted' };
   }
@@ -61,8 +61,8 @@ export class UsersController implements OnModuleInit {
   @HttpCode(202)
   async updateCustomerProfile(@Request() req: any, @Body() body: any) {
     this.kafka.emit(AUTH_PATTERNS.UPDATE_CUSTOMER_PROFILE, {
-      userId: req['user'].id,
       ...body,
+      userId: req['user'].id,
     });
     return { status: 'accepted' };
   }
@@ -78,8 +78,8 @@ export class UsersController implements OnModuleInit {
   @HttpCode(202)
   async addAddress(@Request() req: any, @Body() body: any) {
     this.kafka.emit(AUTH_PATTERNS.ADD_ADDRESS, {
-      userId: req['user'].id,
       ...body,
+      userId: req['user'].id,
     });
     return { status: 'accepted' };
   }
@@ -92,9 +92,9 @@ export class UsersController implements OnModuleInit {
     @Body() body: any,
   ) {
     this.kafka.emit(AUTH_PATTERNS.UPDATE_ADDRESS, {
+      ...body,
       addressId: id,
       userId: req['user'].id,
-      ...body,
     });
     return { status: 'accepted' };
   }

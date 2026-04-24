@@ -4,6 +4,7 @@ import {
   IsEnum,
   MinLength,
   IsNotEmpty,
+  Equals,
 } from 'class-validator';
 
 export enum DocumentType {
@@ -29,8 +30,7 @@ export class RegisterProviderDto {
   @MinLength(8, { message: 'Password must be at least 8 characters' })
   password: string;
 
-  @IsString()
-  @IsNotEmpty()
+  @Equals('provider', { message: 'role must be provider' })
   role: string;
 
   @IsString()

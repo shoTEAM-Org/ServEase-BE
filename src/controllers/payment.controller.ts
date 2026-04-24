@@ -15,6 +15,7 @@ import { ClientKafka } from '@nestjs/microservices';
 import { sendWithTimeout } from '../utils/kafka-request.js';
 import { PAYMENT_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
+import { AdminRoleGuard } from '../guards/admin-role.guard.js';
 
 @Controller('api/payments')
 @UseGuards(SupabaseAuthGuard)
@@ -34,11 +35,13 @@ export class PaymentController implements OnModuleInit {
   }
 
   @Post('v1/create')
+  @UseGuards(AdminRoleGuard)
   async create(@Body() dto: any) {
     return sendWithTimeout(this.kafka.send(PAYMENT_PATTERNS.CREATE, dto));
   }
 
   @Get('v1/earnings/:provider_id')
+  @UseGuards(AdminRoleGuard)
   async getEarnings(@Param('provider_id') providerId: string) {
     return sendWithTimeout(
       this.kafka.send(PAYMENT_PATTERNS.GET_EARNINGS, { providerId }),
@@ -46,9 +49,15 @@ export class PaymentController implements OnModuleInit {
   }
 
   @Get('v1/booking/:bookingId')
-  async getByBooking(@Param('bookingId') bookingId: string) {
+  async getByBooking(
+    @Param('bookingId') bookingId: string,
+    @Request() req: any,
+  ) {
     return sendWithTimeout(
-      this.kafka.send(PAYMENT_PATTERNS.GET_BY_BOOKING, { bookingId }),
+      this.kafka.send(PAYMENT_PATTERNS.GET_BY_BOOKING, {
+        bookingId,
+        requesterId: req['user'].id,
+      }),
     );
   }
 
@@ -71,10 +80,13 @@ export class PaymentController implements OnModuleInit {
   }
 
   @Post('v1/booking/ensure')
-  async ensurePayment(@Body() body: any) {
+  async ensurePayment(@Request() req: any, @Body() body: any) {
     try {
       return await sendWithTimeout(
-        this.kafka.send(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT, body),
+        this.kafka.send(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT, {
+          ...body,
+          customerId: req['user'].id,
+        }),
       );
     } catch (error: any) {
       console.error('[gateway.payments.ensure] failed', {
@@ -91,6 +103,7 @@ export class PaymentController implements OnModuleInit {
   }
 
   @Patch('v1/booking/mark-paid')
+  @UseGuards(AdminRoleGuard)
   @HttpCode(202)
   async markPaid(@Body() body: any) {
     this.kafka.emit(PAYMENT_PATTERNS.MARK_PAID, body);
@@ -98,6 +111,7 @@ export class PaymentController implements OnModuleInit {
   }
 
   @Patch('v1/booking/:bookingId/cancel')
+  @UseGuards(AdminRoleGuard)
   @HttpCode(202)
   async cancelPayment(@Param('bookingId') bookingId: string) {
     this.kafka.emit(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT, { bookingId });
@@ -105,6 +119,7 @@ export class PaymentController implements OnModuleInit {
   }
 
   @Patch('v1/booking/:bookingId/amount')
+  @UseGuards(AdminRoleGuard)
   @HttpCode(202)
   async updateAmount(
     @Param('bookingId') bookingId: string,

@@ -37,8 +37,12 @@ export class AuthController implements OnModuleInit {
 
   @Post('v1/register/customer')
   async register(@Body() dto: any) {
+    const payload = {
+      ...dto,
+      role: 'customer',
+    };
     return sendWithTimeout(
-      this.kafka.send(AUTH_PATTERNS.REGISTER_CUSTOMER, dto),
+      this.kafka.send(AUTH_PATTERNS.REGISTER_CUSTOMER, payload),
     );
   }
 
@@ -83,6 +87,7 @@ export class AuthController implements OnModuleInit {
   ) {
     const payload = {
       ...dto,
+      role: 'provider',
       file: file
         ? {
             originalname: file.originalname,

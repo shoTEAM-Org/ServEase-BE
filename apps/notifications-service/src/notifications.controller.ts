@@ -36,4 +36,67 @@ export class NotificationsKafkaController {
   async markAllRead(@Payload() data: any) {
     return this.notificationsService.markAllRead(data.userId);
   }
+
+  @EventPattern(NOTIFICATION_PATTERNS.BOOKING_CREATED)
+  async handleBookingCreated(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      bookingId: data.bookingId,
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.BOOKING_CONFIRMED)
+  async handleBookingConfirmed(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      bookingId: data.bookingId,
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.BOOKING_IN_PROGRESS)
+  async handleBookingInProgress(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      bookingId: data.bookingId,
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.BOOKING_COMPLETED)
+  async handleBookingCompleted(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      bookingId: data.bookingId,
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.BOOKING_CANCELLED)
+  async handleBookingCancelled(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      bookingId: data.bookingId,
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.DISPUTE_CREATED)
+  async handleDisputeCreated(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      bookingId: data.bookingId,
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.DISPUTE_STATUS_CHANGED)
+  async handleDisputeStatusChanged(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      bookingId: data.bookingId,
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.REVIEW_CREATED)
+  async handleReviewCreated(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      metadata: data.metadata,
+    });
+  }
 }

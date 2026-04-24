@@ -45,9 +45,6 @@ export const BOOKING_PATTERNS = {
   SAVE_PROVIDER_AVAILABILITY: 'booking.save-provider-availability',
   GET_RESERVED_SLOTS: 'booking.get-reserved-slots',
   CHECK_PROVIDER_AVAILABILITY: 'booking.check-provider-availability',
-  CREATE_RESCHEDULE: 'booking.create-reschedule',
-  GET_RESCHEDULES: 'booking.get-reschedules',
-  REVIEW_RESCHEDULE: 'booking.review-reschedule',
   CREATE_ADDITIONAL_CHARGES: 'booking.create-additional-charges',
   GET_ADDITIONAL_CHARGES: 'booking.get-additional-charges',
   REVIEW_ADDITIONAL_CHARGES: 'booking.review-additional-charges',
@@ -106,9 +103,6 @@ export const PROVIDER_PATTERNS = {
   DELETE_MY_SERVICE: 'provider.delete-my-service',
   GET_PROFILE_DRAFT: 'provider.get-profile-draft',
   SAVE_PROFILE_DRAFT: 'provider.save-profile-draft',
-  CREATE_RESCHEDULE: 'provider.create-reschedule',
-  GET_RESCHEDULES: 'provider.get-reschedules',
-  REVIEW_RESCHEDULE: 'provider.review-reschedule',
   CREATE_ADDITIONAL_CHARGES: 'provider.create-additional-charges',
   GET_ADDITIONAL_CHARGES: 'provider.get-additional-charges',
   REVIEW_ADDITIONAL_CHARGES: 'provider.review-additional-charges',
@@ -232,6 +226,16 @@ export const NOTIFICATION_PATTERNS = {
   MARK_ALL_READ: 'notification.mark-all-read',
   GET_UNREAD_COUNT: 'notification.get-unread-count',
   SEND_BROADCAST: 'notification.send-broadcast',
+  // Booking state notifications
+  BOOKING_CREATED: 'notification.booking-created',
+  BOOKING_CONFIRMED: 'notification.booking-confirmed',
+  BOOKING_IN_PROGRESS: 'notification.booking-in-progress',
+  BOOKING_COMPLETED: 'notification.booking-completed',
+  BOOKING_CANCELLED: 'notification.booking-cancelled',
+  // Event notifications
+  DISPUTE_CREATED: 'notification.dispute-created',
+  DISPUTE_STATUS_CHANGED: 'notification.dispute-status-changed',
+  REVIEW_CREATED: 'notification.review-created',
 } as const;
 
 export const SUPPORT_PATTERNS = {

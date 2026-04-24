@@ -125,7 +125,10 @@ export class ProviderKafkaController {
 
   @MessagePattern(PROVIDER_PATTERNS.GET_BOOKING_BY_ID)
   async getProviderBookingById(@Payload() data: any) {
-    return this.providerService.getProviderBookingById(data.bookingId);
+    return this.providerService.getProviderBookingById(
+      data.bookingId,
+      data.providerId,
+    );
   }
 
   @MessagePattern(PROVIDER_PATTERNS.GET_AVAILABILITY)
@@ -153,14 +156,12 @@ export class ProviderKafkaController {
     return this.providerService.getProfileDraft(data.userId);
   }
 
-  @MessagePattern(PROVIDER_PATTERNS.GET_RESCHEDULES)
-  async getRescheduleRequests(@Payload() data: any) {
-    return this.providerService.getRescheduleRequests(data.bookingId);
-  }
-
   @MessagePattern(PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES)
   async getAdditionalCharges(@Payload() data: any) {
-    return this.providerService.getAdditionalCharges(data.bookingId);
+    return this.providerService.getAdditionalCharges(
+      data.bookingId,
+      data.providerId,
+    );
   }
 
   @EventPattern(PROVIDER_PATTERNS.REUPLOAD_KYC)
@@ -174,7 +175,11 @@ export class ProviderKafkaController {
 
   @EventPattern(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS)
   async updateProviderBookingStatus(@Payload() data: any) {
-    return this.providerService.updateProviderBookingStatus(data.bookingId, data.status);
+    return this.providerService.updateProviderBookingStatus(
+      data.bookingId,
+      data.status,
+      data.providerId,
+    );
   }
 
   @EventPattern(PROVIDER_PATTERNS.SAVE_AVAILABILITY)
@@ -203,16 +208,6 @@ export class ProviderKafkaController {
   @EventPattern(PROVIDER_PATTERNS.SAVE_PROFILE_DRAFT)
   async saveProfileDraft(@Payload() data: any) {
     return this.providerService.saveProfileDraft(data.userId, data);
-  }
-
-  @EventPattern(PROVIDER_PATTERNS.CREATE_RESCHEDULE)
-  async createRescheduleRequest(@Payload() data: any) {
-    return this.providerService.createRescheduleRequest(data);
-  }
-
-  @EventPattern(PROVIDER_PATTERNS.REVIEW_RESCHEDULE)
-  async reviewRescheduleRequest(@Payload() data: any) {
-    return this.providerService.reviewRescheduleRequest(data.requestId, data);
   }
 
   @EventPattern(PROVIDER_PATTERNS.CREATE_ADDITIONAL_CHARGES)

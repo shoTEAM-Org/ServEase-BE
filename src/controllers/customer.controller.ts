@@ -28,9 +28,11 @@ export class CustomerController implements OnModuleInit {
   }
 
   @Get('v1/dashboard/:id')
-  async getDashboard(@Param('id') id: string) {
+  async getDashboard(@Param('id') _id: string, @Request() req: any) {
     return sendWithTimeout(
-      this.kafka.send(CUSTOMER_PATTERNS.GET_DASHBOARD, { customerId: id }),
+      this.kafka.send(CUSTOMER_PATTERNS.GET_DASHBOARD, {
+        customerId: req['user'].id,
+      }),
     );
   }
 
@@ -47,8 +49,8 @@ export class CustomerController implements OnModuleInit {
   @HttpCode(202)
   async updateProfile(@Request() req: any, @Body() body: any) {
     this.kafka.emit(CUSTOMER_PATTERNS.UPDATE_PROFILE, {
-      userId: req['user'].id,
       ...body,
+      userId: req['user'].id,
     });
     return { status: 'accepted' };
   }

@@ -39,7 +39,10 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID)
   async getProviderBookingById(@Payload() data: any) {
-    return this.bookingService.getProviderBookingById(data.bookingId);
+    return this.bookingService.getProviderBookingById(
+      data.bookingId,
+      data.providerId,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_CHAT_BOOKINGS)
@@ -84,12 +87,19 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_BY_ID)
   async getBookingById(@Payload() data: any) {
-    return this.bookingService.getBookingById(data.id);
+    return this.bookingService.getBookingById(
+      data.id,
+      data.requesterId || data.providerId || data.userId,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_ATTACHMENTS)
   async getAttachments(@Payload() data: any) {
-    return this.bookingService.getAttachments(data.bookingId, data.accessToken);
+    return this.bookingService.getAttachments(
+      data.bookingId,
+      data.userId,
+      data.accessToken,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_PROVIDER_AVAILABILITY)
@@ -117,22 +127,6 @@ export class BookingKafkaController {
     );
   }
 
-  @MessagePattern(BOOKING_PATTERNS.CREATE_RESCHEDULE)
-  async createReschedule(@Payload() data: any) {
-    return this.bookingService.createRescheduleRequest(data);
-  }
-
-  @MessagePattern(BOOKING_PATTERNS.GET_RESCHEDULES)
-  async getReschedules(@Payload() data: any) {
-    return this.bookingService.getRescheduleRequests(data.bookingId);
-  }
-
-  @MessagePattern(BOOKING_PATTERNS.REVIEW_RESCHEDULE)
-  async reviewReschedule(@Payload() data: any) {
-    const { requestId, ...body } = data || {};
-    return this.bookingService.reviewRescheduleRequest(requestId, body);
-  }
-
   @MessagePattern(BOOKING_PATTERNS.CREATE_ADDITIONAL_CHARGES)
   async createAdditionalCharges(@Payload() data: any) {
     return this.bookingService.createAdditionalCharges(data);
@@ -140,7 +134,10 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_ADDITIONAL_CHARGES)
   async getAdditionalCharges(@Payload() data: any) {
-    return this.bookingService.getAdditionalCharges(data.bookingId);
+    return this.bookingService.getAdditionalCharges(
+      data.bookingId,
+      data.providerId,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.REVIEW_ADDITIONAL_CHARGES)
@@ -150,7 +147,11 @@ export class BookingKafkaController {
 
   @EventPattern(BOOKING_PATTERNS.UPDATE_STATUS)
   async updateStatus(@Payload() data: any) {
-    return this.bookingService.updateStatus(data.id, data.status);
+    return this.bookingService.updateStatus(
+      data.id,
+      data.status,
+      data.providerId,
+    );
   }
 
   @EventPattern(BOOKING_PATTERNS.CANCEL)
@@ -168,6 +169,7 @@ export class BookingKafkaController {
     return this.bookingService.saveAttachments(
       data.bookingId,
       data.attachments,
+      data.userId,
       data.accessToken,
     );
   }

@@ -20,8 +20,8 @@ export class SupportController {
   @HttpCode(202)
   createTicket(@Request() req: any, @Body() body: any) {
     this.kafka.emit(SUPPORT_PATTERNS.CREATE_TICKET, {
-      userId: req['user'].id,
       ...body,
+      userId: req['user'].id,
     });
     return { status: 'accepted' };
   }

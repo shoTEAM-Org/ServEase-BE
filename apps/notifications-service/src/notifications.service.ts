@@ -80,6 +80,70 @@ export class NotificationsService {
     return { count: count || 0 };
   }
 
+  async createNotification(
+    userId: string,
+    type: string,
+    payload: {
+      bookingId?: string;
+      title?: string;
+      body?: string;
+      metadata?: any;
+    },
+  ) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const normalizedType = this.toTrimmedString(type);
+    const normalizedTitle = this.toTrimmedString(payload?.title) || this.getTitleForType(normalizedType);
+    const normalizedBody = this.toTrimmedString(payload?.body) || this.getBodyForType(normalizedType);
+    const bookingId = this.toTrimmedString(payload?.bookingId) || null;
+
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const { error } = await this.supabase
+      .schema('notification_and_support')
+      .from('notifications')
+      .insert([
+        {
+          user_id: normalizedUserId,
+          type: normalizedType,
+          title: normalizedTitle,
+          body: normalizedBody,
+          booking_id: bookingId,
+          data: payload?.metadata || null,
+          is_read: false,
+        },
+      ]);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { ok: true };
+  }
+
+  private getTitleForType(type: string): string {
+    const typeMap: { [key: string]: string } = {
+      'notification.booking-created': 'Booking Created',
+      'notification.booking-confirmed': 'Booking Confirmed',
+      'notification.booking-in-progress': 'Service in Progress',
+      'notification.booking-completed': 'Booking Completed',
+      'notification.booking-cancelled': 'Booking Cancelled',
+      'notification.dispute-created': 'Dispute Raised',
+      'notification.dispute-status-changed': 'Dispute Updated',
+      'notification.review-created': 'You Have a New Review',
+    };
+    return typeMap[type] || 'Notification';
+  }
+
+  private getBodyForType(type: string): string {
+    const typeMap: { [key: string]: string } = {
+      'notification.booking-created': 'Your booking has been created',
+      'notification.booking-confirmed': 'Your booking has been confirmed',
+      'notification.booking-in-progress': 'Your service is now in progress',
+      'notification.booking-completed': 'Your booking has been completed',
+      'notification.booking-cancelled': 'Your booking has been cancelled',
+      'notification.dispute-created': 'A dispute has been raised',
+      'notification.dispute-status-changed': 'Your dispute status has been updated',
+      'notification.review-created': 'Someone left you a review',
+    };
+    return typeMap[type] || 'You have a new notification';
+  }
+
   async sendBroadcast(
     userIds: unknown,
     title: unknown,

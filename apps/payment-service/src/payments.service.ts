@@ -186,7 +186,26 @@ export class PaymentService implements OnModuleInit {
     return { status: 'success', data: { provider_id: providerId, total_earnings: total } };
   }
 
-  async getPaymentByBookingId(bookingId: string) {
+  async getPaymentByBookingId(bookingId: string, requesterId?: string) {
+    const normalizedRequesterId = this.toTrimmedString(requesterId);
+    if (normalizedRequesterId) {
+      const bookingResponse = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
+        id: bookingId,
+        requesterId: normalizedRequesterId,
+      });
+      const booking = bookingResponse?.booking;
+      if (!booking) throw new NotFoundException('Payment not found');
+
+      const bookingCustomerId = this.toTrimmedString(booking.customer_id);
+      const bookingProviderId = this.toTrimmedString(booking.provider_id);
+      if (
+        normalizedRequesterId !== bookingCustomerId &&
+        normalizedRequesterId !== bookingProviderId
+      ) {
+        throw new NotFoundException('Payment not found');
+      }
+    }
+
     const payment = await this.getLatestPaymentByBookingId(bookingId);
     return { payment };
   }
@@ -238,9 +257,22 @@ export class PaymentService implements OnModuleInit {
     return { total_earnings: total, net_earnings: total - platformFees, platform_fees: platformFees, monthly_earnings: monthlyTotal, completed_payments: completed.length };
   }
 
-  async ensureBookingPayment(body: any) {
+  async ensureBookingPayment(body: any, requesterId?: string) {
     const { bookingId, customerId, providerId, amount, method } =
       this.normalizeEnsurePaymentInput(body);
+
+    const bookingResponse = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
+      id: bookingId,
+      requesterId: this.toTrimmedString(requesterId),
+    });
+    const booking = bookingResponse?.booking;
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (this.toTrimmedString(booking.customer_id) !== customerId) {
+      throw new NotFoundException('Booking not found');
+    }
+    if (this.toTrimmedString(booking.provider_id) !== providerId) {
+      throw new NotFoundException('Booking not found');
+    }
 
     const existing = await this.getLatestPaymentByBookingId(bookingId);
     if (existing) {

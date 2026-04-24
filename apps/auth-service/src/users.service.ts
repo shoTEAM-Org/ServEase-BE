@@ -10,7 +10,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 @Injectable()
 export class UsersService {
   constructor(private readonly supabase: SupabaseClient) {}
-  private readonly addressSchemas = ['identity_and_user', 'identity_svc'] as const;
+  private readonly addressSchemas = ['identity_and_user'] as const;
 
   private toTrimmedString(value: unknown) {
     if (typeof value === 'string') return value.trim();

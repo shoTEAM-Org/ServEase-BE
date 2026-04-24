@@ -36,9 +36,6 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.SAVE_PROVIDER_AVAILABILITY);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESERVED_SLOTS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.CHECK_PROVIDER_AVAILABILITY);
-    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.CREATE_RESCHEDULE);
-    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESCHEDULES);
-    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.REVIEW_RESCHEDULE);
     this.kafka.subscribeToResponseOf(
       BOOKING_PATTERNS.CREATE_ADDITIONAL_CHARGES,
     );
@@ -412,22 +409,27 @@ export class ProviderService implements OnModuleInit {
     const businessName = this.toTrimmedString(payload?.businessName);
     const documentType = this.toTrimmedString(payload?.documentType);
     const filePath = this.toTrimmedString(payload?.filePath);
+    const dateOfBirthRaw = this.toTrimmedString(payload?.dateOfBirth);
+    const dateOfBirth = dateOfBirthRaw && /^\d{4}-\d{2}-\d{2}$/.test(dateOfBirthRaw)
+      ? dateOfBirthRaw
+      : null;
 
     if (!userId) throw new BadRequestException('userId is required');
     if (!businessName) throw new BadRequestException('businessName is required');
     if (!documentType) throw new BadRequestException('documentType is required');
     if (!filePath) throw new BadRequestException('filePath is required');
 
+    const profileRow: Record<string, unknown> = {
+      user_id: userId,
+      business_name: businessName,
+      verification_status: 'pending',
+    };
+    if (dateOfBirth) profileRow.date_of_birth = dateOfBirth;
+
     const { data: profile, error: profileError } = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
-      .insert([
-        {
-          user_id: userId,
-          business_name: businessName,
-          verification_status: 'pending',
-        },
-      ])
+      .insert([profileRow])
       .select()
       .single();
     if (profileError)
@@ -1006,14 +1008,23 @@ export class ProviderService implements OnModuleInit {
     });
   }
 
-  async getProviderBookingById(bookingId: string) {
+  async getProviderBookingById(bookingId: string, providerId?: string) {
     return await this.request<any>(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID, {
       bookingId,
+      providerId,
     });
   }
 
-  async updateProviderBookingStatus(bookingId: string, status: string) {
-    this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, { id: bookingId, status });
+  async updateProviderBookingStatus(
+    bookingId: string,
+    status: string,
+    providerId?: string,
+  ) {
+    this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, {
+      id: bookingId,
+      status,
+      providerId,
+    });
     return { ok: true };
   }
 
@@ -1225,7 +1236,6 @@ export class ProviderService implements OnModuleInit {
     const allowed = [
       'business_name',
       'service_description',
-      'verification_status',
     ];
     const updates: any = {};
     for (const key of allowed) {
@@ -1243,39 +1253,6 @@ export class ProviderService implements OnModuleInit {
     return { draft: data };
   }
 
-  // === Reschedule Requests ===
-  async createRescheduleRequest(body: any) {
-    return await this.request<any>(BOOKING_PATTERNS.CREATE_RESCHEDULE, body);
-  }
-
-  async getRescheduleRequests(bookingId: string) {
-    const normalizedBookingId = this.toTrimmedString(bookingId);
-    if (!normalizedBookingId) return { requests: [] };
-
-    try {
-      return await this.request<any>(
-        BOOKING_PATTERNS.GET_RESCHEDULES,
-        { bookingId: normalizedBookingId },
-        { timeoutMs: 10_000, retries: 1, retryDelayMs: 300 },
-      );
-    } catch (error) {
-      if (this.isTimeoutLikeError(error)) {
-        this.logger.warn(
-          `booking.get-reschedules degraded: timeout for bookingId=${normalizedBookingId}`,
-        );
-        return { requests: [] };
-      }
-      throw error;
-    }
-  }
-
-  async reviewRescheduleRequest(requestId: string, body: any) {
-    return await this.request<any>(BOOKING_PATTERNS.REVIEW_RESCHEDULE, {
-      requestId,
-      ...body,
-    });
-  }
-
   // === Additional Charges ===
   async createAdditionalCharges(body: any) {
     return await this.request<any>(
@@ -1284,9 +1261,10 @@ export class ProviderService implements OnModuleInit {
     );
   }
 
-  async getAdditionalCharges(bookingId: string) {
+  async getAdditionalCharges(bookingId: string, providerId?: string) {
     return await this.request<any>(BOOKING_PATTERNS.GET_ADDITIONAL_CHARGES, {
       bookingId,
+      providerId,
     });
   }
 

@@ -3,14 +3,25 @@ import {
   Injectable,
   InternalServerErrorException,
   NotFoundException,
+  Inject,
+  OnModuleInit,
 } from '@nestjs/common';
+import { ClientKafka } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
+import { NOTIFICATION_PATTERNS } from '@app/common';
 
 @Injectable()
-export class TrustService {
-  private readonly trustSchemas = ['trust_and_reputation', 'trust_svc'] as const;
+export class TrustService implements OnModuleInit {
+  private readonly trustSchemas = ['trust_and_reputation'] as const;
 
-  constructor(private readonly supabase: SupabaseClient) {}
+  constructor(
+    private readonly supabase: SupabaseClient,
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+  ) {}
+
+  async onModuleInit() {
+    await this.kafka.connect();
+  }
 
   private toTrimmedString(value: unknown) {
     if (typeof value === 'string') return value.trim();
@@ -18,6 +29,18 @@ export class TrustService {
       return String(value).trim();
     }
     return '';
+  }
+
+  private emitReviewNotification(revieweeId: string, metadata: any = {}) {
+    try {
+      this.kafka.emit(NOTIFICATION_PATTERNS.REVIEW_CREATED, {
+        userId: revieweeId,
+        type: NOTIFICATION_PATTERNS.REVIEW_CREATED,
+        metadata,
+      });
+    } catch (error) {
+      // Silently fail, notifications are non-critical
+    }
   }
 
   private isMissingRelationError(error: any) {
@@ -137,6 +160,15 @@ export class TrustService {
           0,
         ) / totalReviews
       : 0;
+
+    // Emit notification for review creation
+    this.emitReviewNotification(revieweeId, {
+      bookingId,
+      reviewerId,
+      rating,
+      totalReviews,
+      averageRating,
+    });
 
     return {
       review,

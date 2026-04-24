@@ -16,6 +16,7 @@ import {
   OnModuleInit,
   HttpCode,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
@@ -51,7 +52,6 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.CHECK_AVAILABILITY,
       PROVIDER_PATTERNS.GET_MY_SERVICES,
       PROVIDER_PATTERNS.GET_PROFILE_DRAFT,
-      PROVIDER_PATTERNS.GET_RESCHEDULES,
       PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
     await this.kafka.connect();
@@ -87,9 +87,12 @@ export class ProviderController implements OnModuleInit {
 
   @Get('v1/booking/:id')
   @UseGuards(SupabaseAuthGuard)
-  async getBookingById(@Param('id') id: string) {
+  async getBookingById(@Param('id') id: string, @Request() req: any) {
     return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_BOOKING_BY_ID, { bookingId: id }),
+      this.kafka.send(PROVIDER_PATTERNS.GET_BOOKING_BY_ID, {
+        bookingId: id,
+        providerId: req['user'].id,
+      }),
     );
   }
 
@@ -98,10 +101,12 @@ export class ProviderController implements OnModuleInit {
   @HttpCode(202)
   async updateBookingStatus(
     @Param('id') id: string,
+    @Request() req: any,
     @Body('status') status: string,
   ) {
     this.kafka.emit(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS, {
       bookingId: id,
+      providerId: req['user'].id,
       status,
     });
     return { status: 'accepted' };
@@ -112,9 +117,9 @@ export class ProviderController implements OnModuleInit {
   @HttpCode(202)
   async saveAvailability(@Request() req: any, @Body() body: any) {
     this.kafka.emit(PROVIDER_PATTERNS.SAVE_AVAILABILITY, {
+      ...body,
       userId: req['user'].id,
       accessToken: this.extractAccessToken(req),
-      ...body,
     });
     return { status: 'accepted' };
   }
@@ -133,9 +138,12 @@ export class ProviderController implements OnModuleInit {
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
   async createMyService(@Request() req: any, @Body() body: any) {
+    if (String(req['user']?.role || '').trim() !== 'provider') {
+      throw new ForbiddenException('Provider access required');
+    }
     this.kafka.emit(PROVIDER_PATTERNS.CREATE_MY_SERVICE, {
-      providerId: req['user'].id,
       ...body,
+      providerId: req['user'].id,
     });
     return { status: 'accepted' };
   }
@@ -148,10 +156,13 @@ export class ProviderController implements OnModuleInit {
     @Request() req: any,
     @Body() body: any,
   ) {
+    if (String(req['user']?.role || '').trim() !== 'provider') {
+      throw new ForbiddenException('Provider access required');
+    }
     this.kafka.emit(PROVIDER_PATTERNS.UPDATE_MY_SERVICE, {
+      ...body,
       serviceId,
       providerId: req['user'].id,
-      ...body,
     });
     return { status: 'accepted' };
   }
@@ -163,6 +174,9 @@ export class ProviderController implements OnModuleInit {
     @Param('serviceId') serviceId: string,
     @Request() req: any,
   ) {
+    if (String(req['user']?.role || '').trim() !== 'provider') {
+      throw new ForbiddenException('Provider access required');
+    }
     this.kafka.emit(PROVIDER_PATTERNS.DELETE_MY_SERVICE, {
       serviceId,
       providerId: req['user'].id,
@@ -170,73 +184,61 @@ export class ProviderController implements OnModuleInit {
     return { status: 'accepted' };
   }
 
-  @Post('v1/reschedule-requests')
-  @UseGuards(SupabaseAuthGuard)
-  @HttpCode(202)
-  async createReschedule(@Body() body: any) {
-    this.kafka.emit(PROVIDER_PATTERNS.CREATE_RESCHEDULE, body);
-    return { status: 'accepted' };
-  }
-
-  @Get('v1/reschedule-requests/:bookingId')
-  @UseGuards(SupabaseAuthGuard)
-  async getReschedules(@Param('bookingId') bookingId: string) {
-    return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_RESCHEDULES, { bookingId }),
-    );
-  }
-
-  @Patch('v1/reschedule-requests/:requestId/review')
-  @UseGuards(SupabaseAuthGuard)
-  @HttpCode(202)
-  async reviewReschedule(
-    @Param('requestId') requestId: string,
-    @Body() body: any,
-  ) {
-    this.kafka.emit(PROVIDER_PATTERNS.REVIEW_RESCHEDULE, {
-      requestId,
-      ...body,
-    });
-    return { status: 'accepted' };
-  }
-
   @Post('v1/additional-charges')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
-  async createAdditionalCharges(@Body() body: any) {
-    this.kafka.emit(PROVIDER_PATTERNS.CREATE_ADDITIONAL_CHARGES, body);
+  async createAdditionalCharges(@Request() req: any, @Body() body: any) {
+    this.kafka.emit(PROVIDER_PATTERNS.CREATE_ADDITIONAL_CHARGES, {
+      ...body,
+      providerId: req['user'].id,
+    });
     return { status: 'accepted' };
   }
 
   @Get('v1/additional-charges/:bookingId')
   @UseGuards(SupabaseAuthGuard)
-  async getAdditionalCharges(@Param('bookingId') bookingId: string) {
+  async getAdditionalCharges(
+    @Param('bookingId') bookingId: string,
+    @Request() req: any,
+  ) {
     return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES, { bookingId }),
+      this.kafka.send(PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES, {
+        bookingId,
+        providerId: req['user'].id,
+      }),
     );
   }
 
   @Patch('v1/additional-charges/review')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
-  async reviewAdditionalCharges(@Body() body: any) {
-    this.kafka.emit(PROVIDER_PATTERNS.REVIEW_ADDITIONAL_CHARGES, body);
+  async reviewAdditionalCharges(@Request() req: any, @Body() body: any) {
+    this.kafka.emit(PROVIDER_PATTERNS.REVIEW_ADDITIONAL_CHARGES, {
+      ...body,
+      providerId: req['user'].id,
+    });
     return { status: 'accepted' };
   }
 
   @Post('v1/reviews')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
-  async submitReview(@Body() body: any) {
-    this.kafka.emit(PROVIDER_PATTERNS.SUBMIT_REVIEW, body);
+  async submitReview(@Request() req: any, @Body() body: any) {
+    this.kafka.emit(PROVIDER_PATTERNS.SUBMIT_REVIEW, {
+      ...body,
+      reviewer_id: req['user'].id,
+    });
     return { status: 'accepted' };
   }
 
   @Post('v1/reports')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
-  async submitReport(@Body() body: any) {
-    this.kafka.emit(PROVIDER_PATTERNS.SUBMIT_REPORT, body);
+  async submitReport(@Request() req: any, @Body() body: any) {
+    this.kafka.emit(PROVIDER_PATTERNS.SUBMIT_REPORT, {
+      ...body,
+      reporter_id: req['user'].id,
+    });
     return { status: 'accepted' };
   }
 
@@ -246,12 +248,12 @@ export class ProviderController implements OnModuleInit {
   @HttpCode(202)
   async reuploadKyc(
     @UploadedFile() file: Express.Multer.File,
-    @Body('user_id') userId: string,
+    @Body('user_id') _userId: string,
     @Request() req: any,
   ) {
     if (!file) throw new BadRequestException('A document file is required');
     const payload = {
-      userId: userId || req['user'].id,
+      userId: req['user'].id,
       file: {
         originalname: file.originalname,
         mimetype: file.mimetype,
@@ -300,34 +302,49 @@ export class ProviderController implements OnModuleInit {
   }
 
   @Get('v1/:id/profile-draft')
-  async getProfileDraft(@Param('id') id: string) {
+  @UseGuards(SupabaseAuthGuard)
+  async getProfileDraft(@Param('id') id: string, @Request() req: any) {
+    if (String(req['user']?.id || '').trim() !== String(id || '').trim()) {
+      throw new ForbiddenException('Provider profile draft access denied');
+    }
     return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_PROFILE_DRAFT, { userId: id }),
+      this.kafka.send(PROVIDER_PATTERNS.GET_PROFILE_DRAFT, {
+        userId: id,
+      }),
     );
   }
 
   @Patch('v1/:id/profile-draft')
+  @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
-  async saveProfileDraft(@Param('id') id: string, @Body() body: any) {
+  async saveProfileDraft(@Param('id') id: string, @Request() req: any, @Body() body: any) {
+    if (String(req['user']?.id || '').trim() !== String(id || '').trim()) {
+      throw new ForbiddenException('Provider profile draft access denied');
+    }
     this.kafka.emit(PROVIDER_PATTERNS.SAVE_PROFILE_DRAFT, {
-      userId: id,
       ...body,
+      userId: id,
     });
     return { status: 'accepted' };
   }
 
   @Get('v1/:user_id')
-  async getProfile(@Param('user_id') userId: string) {
+  @UseGuards(SupabaseAuthGuard)
+  async getProfile(@Request() req: any) {
     return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_PROFILE, { userId }),
+      this.kafka.send(PROVIDER_PATTERNS.GET_PROFILE, {
+        userId: req['user'].id,
+      }),
     );
   }
 
   @Get('v1/dashboard/:id')
   @UseGuards(SupabaseAuthGuard)
-  async getDashboard(@Param('id') id: string) {
+  async getDashboard(@Request() req: any) {
     return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_DASHBOARD, { providerId: id }),
+      this.kafka.send(PROVIDER_PATTERNS.GET_DASHBOARD, {
+        providerId: req['user'].id,
+      }),
     );
   }
 

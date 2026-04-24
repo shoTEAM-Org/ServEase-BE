@@ -84,6 +84,31 @@ export class SupportService implements OnModuleInit {
     }
   }
 
+  private async emitNotifications(bookingId: string, type: string, metadata: any = {}) {
+    try {
+      const booking = await this.getBookingById(bookingId);
+      if (!booking) return;
+      
+      // Emit to customer
+      this.kafka.emit(type, {
+        userId: booking.customer_id,
+        bookingId,
+        type,
+        metadata,
+      });
+      
+      // Emit to provider
+      this.kafka.emit(type, {
+        userId: booking.provider_id,
+        bookingId,
+        type,
+        metadata,
+      });
+    } catch (error) {
+      // Silently fail, notifications are non-critical
+    }
+  }
+
   async createTicket(
     userId: string,
     body: { subject: string; message: string; category?: string; role?: string },
@@ -126,7 +151,7 @@ export class SupportService implements OnModuleInit {
       .insert([
         {
           booking_id: normalizedBookingId,
-          raised_by: normalizedUserId,
+          customer_id: normalizedUserId,
           reason: normalizedReason,
           status: 'open',
         },
@@ -134,6 +159,13 @@ export class SupportService implements OnModuleInit {
       .select()
       .single();
     if (error) throw new InternalServerErrorException(error.message);
+
+    // Emit notification for dispute creation
+    await this.emitNotifications(normalizedBookingId, NOTIFICATION_PATTERNS.DISPUTE_CREATED, {
+      raisedBy: normalizedUserId,
+      reason: normalizedReason,
+    });
+
     return { dispute: data };
   }
 

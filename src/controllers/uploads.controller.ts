@@ -97,6 +97,24 @@ export class UploadsController {
       throw new BadRequestException('Authenticated user is required');
     }
 
+    const { data: booking, error: bookingError } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('customer_id, provider_id')
+      .eq('id', normalizedBookingId)
+      .single();
+    if (bookingError) {
+      throw new InternalServerErrorException(
+        `Failed to verify booking ownership: ${bookingError.message}`,
+      );
+    }
+    const ownerMatches =
+      userId === this.normalizeSegment(booking?.customer_id) ||
+      userId === this.normalizeSegment(booking?.provider_id);
+    if (!ownerMatches) {
+      throw new BadRequestException('Booking not found');
+    }
+
     const safeName = this.sanitizeFileName(
       label || file.originalname || 'attachment.jpg',
     );

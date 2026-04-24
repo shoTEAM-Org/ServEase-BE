@@ -5,8 +5,6 @@ import { SupabaseClient } from '@supabase/supabase-js';
 export class LocationsService {
   private readonly locationSchemas = [
     'provider_catalog',
-    'provider_catalog_svc',
-    'public',
   ] as const;
 
   constructor(private readonly supabase: SupabaseClient) {}
