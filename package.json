@@ -47,6 +47,7 @@
     "lint": "eslint \"src/**/*.ts\" \"libs/**/*.ts\" --fix",
     "test": "jest --passWithNoTests",
     "test:golden": "node scripts/e2e-golden-path.js",
+    "seed:sample": "node scripts/seed-sample-data.js",
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
