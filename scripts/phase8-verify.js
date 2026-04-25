@@ -1,229 +1,320 @@
 #!/usr/bin/env node
-
 /**
- * Phase 8 Verification: Catalog Management
- * 
- * Tests:
- * 1. Get all service categories
- * 2. Create new service category (admin only)
- * 3. Get services by category
- * 4. Search services by keyword
- * 5. Get service details with ratings
- * 6. Filter services by price range
- * 7. Filter services by availability
- * 8. Get provider portfolio
- * 9. Sort services by relevance/rating/price
- * 10. Get featured/trending services
+ * Phase 8 verification - catalog, addresses, PSGC, and storage.
  */
+const fs = require('fs');
+const path = require('path');
+const { randomUUID } = require('crypto');
+const { createClient } = require('@supabase/supabase-js');
 
-const BASE_URL = 'http://localhost:3000';
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://your-project.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
+const envPath = path.resolve(__dirname, '..', '.env');
+const env = Object.fromEntries(
+  fs
+    .readFileSync(envPath, 'utf8')
+    .split('\n')
+    .filter((l) => l && !l.startsWith('#') && l.includes('='))
+    .map((l) => {
+      const i = l.indexOf('=');
+      return [l.slice(0, i).trim(), l.slice(i + 1).trim()];
+    }),
+);
 
-const headers = {
-  'Content-Type': 'application/json',
-  Authorization: `Bearer ${SUPABASE_KEY}`,
-};
-
-let testResults = {
-  total: 0,
-  passed: 0,
-  failed: 0,
-  errors: [],
-};
-
-async function request(method, endpoint, body = null) {
-  const url = `${BASE_URL}${endpoint}`;
-  const options = {
-    method,
-    headers,
-    ...(body && { body: JSON.stringify(body) }),
-  };
-
-  const response = await fetch(url, options);
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(`${response.status}: ${JSON.stringify(data)}`);
-  }
-
-  return data;
-}
-
-async function test(name, fn) {
-  testResults.total++;
-  try {
-    await fn();
-    testResults.passed++;
-    console.log(`✅ ${name}`);
-  } catch (error) {
-    testResults.failed++;
-    testResults.errors.push({ test: name, error: error.message });
-    console.error(`❌ ${name}: ${error.message}`);
-  }
-}
-
-async function runPhase8Tests() {
-  console.log('\n📋 Phase 8: Catalog Management\n');
-
-  let providerId, serviceId, categoryId;
-
-  // Setup: Create provider with service
-  await test('Setup: Create test provider', async () => {
-    const provider = await request('POST', '/auth/provider-register', {
-      email: `catalog-test-provider-${Date.now()}@test.com`,
-      password: 'Test@123456',
-      first_name: 'Catalog',
-      last_name: 'Provider',
-      phone_number: '+1234567891',
-      business_name: 'Catalog Test Business',
-      date_of_birth: '1990-01-01',
-    });
-    providerId = provider.user?.id;
-    if (!providerId) throw new Error('No provider ID returned');
-  });
-
-  await test('Setup: Create provider profile', async () => {
-    await request('POST', '/provider/create-profile', {
-      user_id: providerId,
-      business_name: 'Catalog Test Business',
-      business_description: 'Test business for catalog',
-      phone_number: '+1234567891',
-    });
-  });
-
-  // Test 1: Get all service categories
-  await test('Get all service categories', async () => {
-    const response = await request('GET', '/catalog/categories');
-    if (!response.categories || !Array.isArray(response.categories)) {
-      throw new Error('No categories returned');
-    }
-  });
-
-  // Test 2: Get services by category
-  await test('Get services by category', async () => {
-    const response = await request('GET', '/catalog/categories');
-    if (response.categories?.length > 0) {
-      categoryId = response.categories[0].id;
-      const categoryServices = await request('GET', `/catalog/categories/${categoryId}/services`);
-      if (!categoryServices.services || !Array.isArray(categoryServices.services)) {
-        throw new Error('No services in category');
-      }
-    }
-  });
-
-  // Test 3: Create provider service
-  await test('Create provider service in catalog', async () => {
-    const response = await request('POST', '/catalog/services', {
-      provider_id: providerId,
-      name: 'Premium Cleaning Service',
-      description: 'Professional home and office cleaning',
-      base_price: 99.99,
-      estimated_duration_minutes: 120,
-      category_id: categoryId,
-      tags: ['cleaning', 'home', 'professional'],
-      service_images: [],
-    });
-    serviceId = response.service?.id || response.id;
-    if (!serviceId) throw new Error('No service ID returned');
-  });
-
-  // Test 4: Search services by keyword
-  await test('Search services by keyword', async () => {
-    const response = await request('GET', '/catalog/search?q=cleaning');
-    if (!response.results || !Array.isArray(response.results)) {
-      throw new Error('No search results returned');
-    }
-  });
-
-  // Test 5: Get service details
-  await test('Get service details with ratings', async () => {
-    const response = await request('GET', `/catalog/services/${serviceId}`);
-    if (!response.service) {
-      throw new Error('No service details returned');
-    }
-    // Service details should include provider info and rating
-  });
-
-  // Test 6: Filter services by price range
-  await test('Filter services by price range', async () => {
-    const response = await request('GET', '/catalog/services?min_price=50&max_price=150');
-    if (!response.services || !Array.isArray(response.services)) {
-      throw new Error('No filtered services returned');
-    }
-  });
-
-  // Test 7: Filter services by availability
-  await test('Filter services by availability', async () => {
-    const response = await request('GET', '/catalog/services?available_only=true');
-    if (!response.services || !Array.isArray(response.services)) {
-      throw new Error('No available services returned');
-    }
-  });
-
-  // Test 8: Get provider portfolio
-  await test('Get provider portfolio', async () => {
-    const response = await request('GET', `/catalog/provider/${providerId}/portfolio`);
-    if (!response.services || !Array.isArray(response.services)) {
-      throw new Error('No portfolio services returned');
-    }
-  });
-
-  // Test 9: Sort services by rating
-  await test('Sort services by rating', async () => {
-    const response = await request('GET', '/catalog/services?sort=rating&order=desc');
-    if (!response.services || !Array.isArray(response.services)) {
-      throw new Error('No sorted services returned');
-    }
-  });
-
-  // Test 10: Get featured services
-  await test('Get featured/trending services', async () => {
-    const response = await request('GET', '/catalog/featured');
-    if (!response.services || !Array.isArray(response.services)) {
-      throw new Error('No featured services returned');
-    }
-  });
-
-  // Test 11: Update service details
-  await test('Update service details', async () => {
-    const response = await request('PATCH', `/catalog/services/${serviceId}`, {
-      description: 'Updated: Premium home and office cleaning with eco-friendly products',
-      base_price: 109.99,
-    });
-    if (!response.service && !response.ok) {
-      throw new Error('Failed to update service');
-    }
-  });
-
-  // Test 12: Deactivate service
-  await test('Deactivate service from catalog', async () => {
-    const response = await request('PATCH', `/catalog/services/${serviceId}`, {
-      is_active: false,
-    });
-    if (!response.service && !response.ok) {
-      throw new Error('Failed to deactivate service');
-    }
-  });
-
-  // Print results
-  console.log('\n' + '='.repeat(50));
-  console.log(`📊 Phase 8 Results: ${testResults.passed}/${testResults.total} passed`);
-  console.log('='.repeat(50));
-
-  if (testResults.failed > 0) {
-    console.log('\n❌ Failed tests:');
-    testResults.errors.forEach((err) => {
-      console.log(`  - ${err.test}: ${err.error}`);
-    });
-    process.exit(1);
-  } else {
-    console.log('\n✅ All Phase 8 tests passed!');
-    process.exit(0);
-  }
-}
-
-runPhase8Tests().catch((error) => {
-  console.error('Fatal error:', error);
-  process.exit(1);
+const URL = env.SUPABASE_URL;
+const KEY = env.SUPABASE_SECRET_KEY;
+const supabase = createClient(URL, KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
 });
+
+async function req(method, schema, tableAndQuery, body) {
+  const res = await fetch(`${URL}/rest/v1/${tableAndQuery}`, {
+    method,
+    headers: {
+      apikey: KEY,
+      Authorization: `Bearer ${KEY}`,
+      'Accept-Profile': schema,
+      'Content-Profile': schema,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let parsed = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = text;
+  }
+  return { status: res.status, body: parsed };
+}
+
+function ok(label, cond, detail) {
+  const mark = cond ? 'PASS' : 'FAIL';
+  console.log(`[${mark}] ${label}${detail ? ' - ' + detail : ''}`);
+  if (!cond) process.exitCode = 1;
+  return cond;
+}
+
+async function uploadAndRoundTrip(bucket, objectPath, body, signed) {
+  const upload = await supabase.storage
+    .from(bucket)
+    .upload(objectPath, body, {
+      contentType: 'text/plain',
+      upsert: true,
+    });
+  if (upload.error) return { upload, download: null, signedUrl: null };
+
+  const download = await supabase.storage.from(bucket).download(objectPath);
+  let signedUrl = null;
+  if (signed) {
+    signedUrl = await supabase.storage
+      .from(bucket)
+      .createSignedUrl(objectPath, 60);
+  }
+  return { upload, download, signedUrl };
+}
+
+(async () => {
+  const stamp = Date.now();
+  const customerId = randomUUID();
+  const providerId = randomUUID();
+  const activeLowId = randomUUID();
+  const activeHighId = randomUUID();
+  const inactiveId = randomUUID();
+  let serviceId = null;
+  let addressId = null;
+  const provinceCode = `P8P${String(stamp).slice(-8)}`;
+  const cityCode = `P8C${String(stamp).slice(-8)}`;
+  const barangayCode = `P8B${String(stamp).slice(-8)}`;
+  const bucketObjects = [
+    ['avatars', `phase8/${stamp}/avatar.txt`, false],
+    ['booking-attachments', `phase8/${stamp}/attachment.txt`, true],
+    ['verification-docs', `phase8/${stamp}/verification.txt`, true],
+  ];
+
+  console.log('--- Phase 8 catalog/address/storage DB verification ---');
+
+  await req('POST', 'identity_and_user', 'users', [
+    {
+      id: customerId,
+      email: `ph8_customer_${stamp}@test.local`,
+      full_name: 'P8 Customer',
+      contact_number: '09170000081',
+      role: 'customer',
+      status: 'active',
+      is_verified: true,
+    },
+    {
+      id: providerId,
+      email: `ph8_provider_${stamp}@test.local`,
+      full_name: 'P8 Provider',
+      contact_number: '09170000082',
+      role: 'provider',
+      status: 'active',
+      is_verified: true,
+    },
+  ]);
+  await req('POST', 'identity_and_user', 'customer_profiles', [
+    { user_id: customerId },
+  ]);
+  await req('POST', 'provider_catalog', 'provider_profiles', [
+    {
+      user_id: providerId,
+      business_name: 'P8 Provider Co',
+      verification_status: 'approved',
+    },
+  ]);
+
+  const categories = await req('POST', 'provider_catalog', 'service_categories', [
+    {
+      id: activeHighId,
+      name: `P8 Active High ${stamp}`,
+      slug: `phase8-active-high-${stamp}`,
+      display_order: 20,
+      is_active: true,
+    },
+    {
+      id: activeLowId,
+      name: `P8 Active Low ${stamp}`,
+      slug: `phase8-active-low-${stamp}`,
+      display_order: 10,
+      is_active: true,
+    },
+    {
+      id: inactiveId,
+      name: `P8 Inactive ${stamp}`,
+      slug: `phase8-inactive-${stamp}`,
+      display_order: 5,
+      is_active: false,
+    },
+  ]);
+  ok('seed active and inactive categories', categories.status === 201);
+
+  const activeCategories = await req(
+    'GET',
+    'provider_catalog',
+    `service_categories?slug=like.phase8-*-${stamp}&is_active=eq.true&select=id,slug,display_order,is_active&order=display_order.asc`,
+  );
+  const categoryRows = Array.isArray(activeCategories.body)
+    ? activeCategories.body
+    : [];
+  ok(
+    'active categories are queryable in display_order order',
+    activeCategories.status === 200 &&
+      categoryRows.length === 2 &&
+      categoryRows[0]?.id === activeLowId &&
+      categoryRows[1]?.id === activeHighId,
+    `status=${activeCategories.status} rows=${JSON.stringify(categoryRows)}`,
+  );
+
+  const service = await req('POST', 'provider_catalog', 'provider_services', [
+    {
+      provider_id: providerId,
+      service_id: activeLowId,
+      title: 'P8 Hourly Service',
+      description: 'Provider service verification.',
+      pricing_mode: 'hourly',
+      price: 700,
+      duration_minutes: 60,
+      is_active: true,
+    },
+  ]);
+  serviceId = service.body?.[0]?.id || null;
+  ok(
+    'provider_service inserts with service_id/pricing_mode/price',
+    service.status === 201 && !!serviceId,
+    `status=${service.status} id=${serviceId}`,
+  );
+
+  const badService = await req('POST', 'provider_catalog', 'provider_services', [
+    {
+      provider_id: providerId,
+      service_id: activeLowId,
+      title: 'P8 Bad Pricing',
+      pricing_mode: 'package',
+      price: 100,
+    },
+  ]);
+  ok(
+    'regression: invalid provider_services.pricing_mode rejected',
+    badService.status >= 400,
+    `status=${badService.status}`,
+  );
+
+  const address = await req('POST', 'identity_and_user', 'user_addresses', [
+    {
+      user_id: customerId,
+      label: 'Home',
+      recipient_name: 'P8 Customer',
+      contact_number: '09170000081',
+      address_line: '123 Phase 8 Street',
+      barangay: 'Test Barangay',
+      city: 'Test City',
+      province: 'Test Province',
+      region: 'Test Region',
+      zip_code: '1000',
+      is_default: true,
+    },
+  ]);
+  addressId = address.body?.[0]?.id || null;
+  ok(
+    'user address persists with address_line and is_default',
+    address.status === 201 &&
+      !!addressId &&
+      address.body?.[0]?.address_line === '123 Phase 8 Street' &&
+      address.body?.[0]?.is_default === true,
+    `status=${address.status}`,
+  );
+
+  const oldAddressColumn = await req('POST', 'identity_and_user', 'user_addresses', [
+    {
+      user_id: customerId,
+      street_address: 'Old column should fail',
+    },
+  ]);
+  ok(
+    'regression: old street_address column rejected on user_addresses',
+    oldAddressColumn.status >= 400,
+    `status=${oldAddressColumn.status}`,
+  );
+
+  const psgcProvince = await req('POST', 'provider_catalog', 'psgc_provinces', [
+    { code: provinceCode, name: `Phase 8 Province ${stamp}` },
+  ]);
+  const psgcCity = await req('POST', 'provider_catalog', 'psgc_cities', [
+    { code: cityCode, province_code: provinceCode, name: `Phase 8 City ${stamp}` },
+  ]);
+  const psgcBarangay = await req('POST', 'provider_catalog', 'psgc_barangays', [
+    { code: barangayCode, city_code: cityCode, name: `Phase 8 Barangay ${stamp}` },
+  ]);
+  ok(
+    'seed PSGC province/city/barangay',
+    psgcProvince.status === 201 &&
+      psgcCity.status === 201 &&
+      psgcBarangay.status === 201,
+    `province=${psgcProvince.status} city=${psgcCity.status} barangay=${psgcBarangay.status}`,
+  );
+
+  const deleteCity = await req('DELETE', 'provider_catalog', `psgc_cities?code=eq.${cityCode}`);
+  const remainingBarangay = await req(
+    'GET',
+    'provider_catalog',
+    `psgc_barangays?code=eq.${barangayCode}&select=code`,
+  );
+  ok(
+    'PSGC cascade deletes barangays when city is deleted',
+    deleteCity.status === 200 &&
+      remainingBarangay.status === 200 &&
+      Array.isArray(remainingBarangay.body) &&
+      remainingBarangay.body.length === 0,
+    `deleteCity=${deleteCity.status} remaining=${JSON.stringify(remainingBarangay.body)}`,
+  );
+
+  for (const [bucket, objectPath, signed] of bucketObjects) {
+    const result = await uploadAndRoundTrip(
+      bucket,
+      objectPath,
+      Buffer.from(`phase8 ${bucket} ${stamp}`),
+      signed,
+    );
+    ok(
+      `${bucket} upload/download${signed ? '/signed-url' : ''} works`,
+      !result.upload.error &&
+        !result.download?.error &&
+        (!signed || Boolean(result.signedUrl?.data?.signedUrl)),
+      `upload=${result.upload.error?.message || 'ok'} download=${result.download?.error?.message || 'ok'}`,
+    );
+  }
+
+  console.log('--- cleanup ---');
+  for (const [bucket, objectPath] of bucketObjects) {
+    await supabase.storage.from(bucket).remove([objectPath]);
+  }
+  if (serviceId) {
+    await req('DELETE', 'provider_catalog', `provider_services?id=eq.${serviceId}`);
+  }
+  await req(
+    'DELETE',
+    'provider_catalog',
+    `service_categories?id=in.(${activeHighId},${activeLowId},${inactiveId})`,
+  );
+  await req(
+    'DELETE',
+    'identity_and_user',
+    `user_addresses?user_id=eq.${customerId}`,
+  );
+  await req('DELETE', 'provider_catalog', `psgc_provinces?code=eq.${provinceCode}`);
+  await req(
+    'DELETE',
+    'provider_catalog',
+    `provider_profiles?user_id=eq.${providerId}`,
+  );
+  await req(
+    'DELETE',
+    'identity_and_user',
+    `customer_profiles?user_id=eq.${customerId}`,
+  );
+  await req('DELETE', 'identity_and_user', `users?id=eq.${customerId}`);
+  await req('DELETE', 'identity_and_user', `users?id=eq.${providerId}`);
+  console.log('--- done ---');
+})();

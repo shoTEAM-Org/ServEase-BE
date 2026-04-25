@@ -12,8 +12,10 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_PATTERNS,
   PROVIDER_PATTERNS,
+  PAYMENT_PATTERNS,
   SUPPORT_PATTERNS,
   NOTIFICATION_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 
@@ -32,7 +34,12 @@ export class BookingService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
-    await this.kafka.connect();
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.UPDATE_AMOUNT);
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: BookingService.name,
+      logger: this.logger,
+    });
   }
 
   private async emitNotifications(bookingId: string, type: string, metadata: any = {}) {
@@ -202,7 +209,17 @@ export class BookingService implements OnModuleInit {
   }
 
   private normalizeWeekdayKey(value: unknown): string {
-    return this.toTrimmedString(value).toLowerCase();
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    const weekdays: Record<string, string> = {
+      monday: 'Monday',
+      tuesday: 'Tuesday',
+      wednesday: 'Wednesday',
+      thursday: 'Thursday',
+      friday: 'Friday',
+      saturday: 'Saturday',
+      sunday: 'Sunday',
+    };
+    return weekdays[normalized] || '';
   }
 
   private normalizeOffDate(value: unknown): string | null {
@@ -1490,24 +1507,31 @@ export class BookingService implements OnModuleInit {
   async reviewAdditionalCharges(body: any) {
     const bookingId = this.toTrimmedString(body?.bookingId);
     const providerId = this.toTrimmedString(body?.providerId);
+    const requesterId = this.toTrimmedString(body?.requesterId ?? body?.customerId);
     const chargeIds = Array.isArray(body?.chargeIds)
       ? body.chargeIds
           .map((chargeId: unknown) => this.toTrimmedString(chargeId))
           .filter(Boolean)
       : [];
-    const decision = this.toTrimmedString(body?.decision).toLowerCase();
+    const rawDecision = this.toTrimmedString(body?.decision).toLowerCase();
+    const decision = rawDecision === 'rejected' ? 'declined' : rawDecision;
 
     if (!bookingId) throw new BadRequestException('bookingId is required');
-    if (!providerId) throw new BadRequestException('providerId is required');
     if (!chargeIds.length) throw new BadRequestException('chargeIds is required');
-    if (!['approved', 'rejected'].includes(decision)) {
-      throw new BadRequestException('decision must be approved or rejected');
+    if (!['approved', 'declined'].includes(decision)) {
+      throw new BadRequestException('decision must be approved or declined');
     }
 
-    const booking = await this.getBookingRowByIdentifier(bookingId, 'id, provider_id, total_amount');
+    const booking = await this.getBookingRowByIdentifier(
+      bookingId,
+      'id, customer_id, provider_id, total_amount, additional_amount',
+    );
     if (!booking) throw new NotFoundException('Booking not found');
-    if (this.toTrimmedString(booking.provider_id) !== providerId) {
+    if (providerId && this.toTrimmedString(booking.provider_id) !== providerId) {
       throw new BadRequestException('Booking does not belong to provider');
+    }
+    if (requesterId && this.toTrimmedString(booking.customer_id) !== requesterId) {
+      throw new NotFoundException('Booking not found');
     }
 
     const { data, error } = await this.supabase
@@ -1516,8 +1540,9 @@ export class BookingService implements OnModuleInit {
       .update({
         status: decision,
         reviewed_at: new Date().toISOString(),
+        reviewed_by: requesterId || null,
       })
-      .eq('booking_id', bookingId)
+      .eq('booking_id', this.toTrimmedString(booking.id))
       .in('id', chargeIds)
       .select();
     if (error) throw new InternalServerErrorException(error.message);
@@ -1528,13 +1553,25 @@ export class BookingService implements OnModuleInit {
         0,
       );
       if (booking) {
+        const nextAdditionalAmount =
+          Number(booking.additional_amount || 0) + totalAdditional;
+        const nextTotalAmount = Number(booking.total_amount || 0) + totalAdditional;
         await this.supabase
           .schema('booking')
           .from('bookings')
           .update({
-            total_amount: Number(booking.total_amount) + totalAdditional,
+            additional_amount: nextAdditionalAmount,
+            total_amount: nextTotalAmount,
           })
-          .eq('id', bookingId);
+          .eq('id', this.toTrimmedString(booking.id));
+        await sendKafkaRpcRequest(
+          () =>
+            this.kafka.send(PAYMENT_PATTERNS.UPDATE_AMOUNT, {
+              bookingId: this.toTrimmedString(booking.id),
+              amount: nextTotalAmount,
+            }),
+          { context: PAYMENT_PATTERNS.UPDATE_AMOUNT, logger: this.logger },
+        );
       }
     }
     return { charges: data || [] };
@@ -1620,6 +1657,18 @@ export class BookingService implements OnModuleInit {
   }
 
   async updateStatus(id: string, status: string, providerId?: string) {
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+    const allowedStatuses = new Set([
+      'pending',
+      'confirmed',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ]);
+    if (!allowedStatuses.has(normalizedStatus)) {
+      throw new BadRequestException('Unsupported booking status');
+    }
+
     const normalizedProviderId = this.toTrimmedString(providerId);
     if (normalizedProviderId) {
       const booking = await this.getBookingRowByIdentifier(id, 'id, provider_id');
@@ -1629,10 +1678,22 @@ export class BookingService implements OnModuleInit {
       }
     }
 
+    const now = new Date().toISOString();
+    const updates: Record<string, unknown> = {
+      status: normalizedStatus,
+      updated_at: now,
+    };
+    if (normalizedStatus === 'in_progress') {
+      updates.started_at = now;
+    }
+    if (normalizedStatus === 'completed') {
+      updates.completed_at = now;
+    }
+
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
-      .update({ status })
+      .update(updates)
       .eq('id', id)
       .select()
       .single();
@@ -1644,16 +1705,18 @@ export class BookingService implements OnModuleInit {
 
     // Emit notification for status change
     const notificationPattern =
-      status === 'confirmed'
+      normalizedStatus === 'confirmed'
         ? NOTIFICATION_PATTERNS.BOOKING_CONFIRMED
-        : status === 'in_progress'
+        : normalizedStatus === 'in_progress'
           ? NOTIFICATION_PATTERNS.BOOKING_IN_PROGRESS
-          : status === 'completed'
+          : normalizedStatus === 'completed'
             ? NOTIFICATION_PATTERNS.BOOKING_COMPLETED
             : null;
 
     if (notificationPattern) {
-      await this.emitNotifications(id, notificationPattern, { status });
+      await this.emitNotifications(id, notificationPattern, {
+        status: normalizedStatus,
+      });
     }
 
     return { message: 'Booking status updated successfully.', booking: data };
@@ -1679,6 +1742,7 @@ export class BookingService implements OnModuleInit {
       throw new NotFoundException(`Booking with id ${id} not found`);
     }
 
+    const canonicalBookingId = this.toTrimmedString(booking.id);
     const normalizedReason = this.toNullableString(reason);
     const normalizedExplanation = this.toNullableString(explanation);
     const cancelledAt = new Date().toISOString();
@@ -1693,7 +1757,7 @@ export class BookingService implements OnModuleInit {
         cancel_explanation: normalizedExplanation,
         cancelled_at: cancelledAt,
       })
-      .eq('id', id)
+      .eq('id', canonicalBookingId)
       .select()
       .single();
     if (error) throw new BadRequestException(error.message);
@@ -1703,7 +1767,7 @@ export class BookingService implements OnModuleInit {
       .from('bookings_cancellations')
       .insert([
         {
-          booking_id: id,
+          booking_id: canonicalBookingId,
           user_id: normalizedUserId,
           reason: normalizedReason,
           explanation: normalizedExplanation,
@@ -1713,10 +1777,20 @@ export class BookingService implements OnModuleInit {
       throw new BadRequestException(cancellationError.message);
 
     // Emit notification for cancellation
-    await this.emitNotifications(id, NOTIFICATION_PATTERNS.BOOKING_CANCELLED, {
+    await this.emitNotifications(canonicalBookingId, NOTIFICATION_PATTERNS.BOOKING_CANCELLED, {
       cancelledBy: normalizedUserId,
       reason: normalizedReason,
     });
+    await sendKafkaRpcRequest(
+      () =>
+        this.kafka.send(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT, {
+          bookingId: canonicalBookingId,
+        }),
+      {
+        context: PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT,
+        logger: this.logger,
+      },
+    );
 
     return { booking: data };
   }

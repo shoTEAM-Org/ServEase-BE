@@ -56,7 +56,6 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.GET_PERFORMANCE_REPORT,
       ADMIN_PATTERNS.GET_COMPLIANCE_REPORT,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   // ── Existing ──────────────────────────────────────────────

@@ -27,20 +27,13 @@ export class NotificationsService {
     if (error) throw new InternalServerErrorException(error.message);
 
     const notifications = (data || []).map((row: any) => {
-      const normalizedId =
-        this.toTrimmedString(row?.id) ||
-        this.toTrimmedString(row?.notification_id) ||
-        null;
-      const normalizedBody =
-        this.toTrimmedString(row?.body) || this.toTrimmedString(row?.message);
+      const normalizedId = this.toTrimmedString(row?.id) || null;
+      const normalizedBody = this.toTrimmedString(row?.body);
 
       return {
         ...row,
         id: normalizedId,
-        notification_id:
-          this.toTrimmedString(row?.notification_id) || normalizedId,
         body: normalizedBody,
-        message: this.toTrimmedString(row?.message) || normalizedBody,
       };
     });
 
@@ -52,7 +45,7 @@ export class NotificationsService {
       .schema('notification_and_support')
       .from('notifications')
       .update({ is_read: true })
-      .eq('notification_id', notificationId)
+      .eq('id', notificationId)
       .eq('user_id', userId);
     if (error) throw new InternalServerErrorException(error.message);
     return { ok: true };
@@ -108,7 +101,7 @@ export class NotificationsService {
           title: normalizedTitle,
           body: normalizedBody,
           booking_id: bookingId,
-          data: payload?.metadata || null,
+          data: payload?.metadata || {},
           is_read: false,
         },
       ]);
@@ -171,8 +164,9 @@ export class NotificationsService {
     const payload = targetUserIds.map((userId) => ({
       user_id: userId,
       title: normalizedTitle,
-      message: normalizedMessage,
+      body: normalizedMessage,
       type: normalizedType,
+      data: {},
       is_read: false,
     }));
 

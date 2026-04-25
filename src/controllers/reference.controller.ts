@@ -9,7 +9,6 @@ export class ReferenceController implements OnModuleInit {
 
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.GET_REFERENCE_CATEGORIES);
-    await this.kafka.connect();
   }
 
   @Get('v1/categories')

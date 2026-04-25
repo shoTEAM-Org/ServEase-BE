@@ -14,6 +14,7 @@ import {
   PAYMENT_PATTERNS,
   PROVIDER_PATTERNS,
   SUPPORT_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 
@@ -43,6 +44,7 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_ALL);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_ONGOING);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_ANALYTICS);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.UPDATE_STATUS);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.GET_DISPUTES);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.UPDATE_DISPUTE_STATUS);
@@ -73,7 +75,9 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USER_REPORT);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PERFORMANCE_REPORT);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_COMPLIANCE_REPORT);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: AdminService.name,
+    });
   }
 
   private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
@@ -374,8 +378,7 @@ export class AdminService implements OnModuleInit {
   }
 
   async updateBookingStatus(id: string, status: string) {
-    this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, { id, status });
-    return { ok: true };
+    return await this.request(BOOKING_PATTERNS.UPDATE_STATUS, { id, status });
   }
 
   async createBookingDispute(bookingId: string, userId: string, reason: string) {

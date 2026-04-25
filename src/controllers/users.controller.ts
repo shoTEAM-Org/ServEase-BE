@@ -28,7 +28,6 @@ export class UsersController implements OnModuleInit {
       AUTH_PATTERNS.GET_CUSTOMER_PROFILE,
       AUTH_PATTERNS.GET_ADDRESSES,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Get('v1/profile')

@@ -36,11 +36,12 @@ export class BookingController implements OnModuleInit {
       BOOKING_PATTERNS.GET_HISTORY,
       BOOKING_PATTERNS.GET_REQUESTS,
       BOOKING_PATTERNS.GET_BY_ID,
+      BOOKING_PATTERNS.UPDATE_STATUS,
+      BOOKING_PATTERNS.CANCEL,
       BOOKING_PATTERNS.GET_ATTACHMENTS,
       BOOKING_PATTERNS.SAVE_ATTACHMENTS,
       PROVIDER_PATTERNS.GET_PROFILES_BY_IDS,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Post('v1/create')
@@ -141,12 +142,13 @@ export class BookingController implements OnModuleInit {
   @Patch('v1/:id/status')
   @HttpCode(202)
   async updateStatus(@Param('id') id: string, @Request() req: any, @Body() body: any) {
-    this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, {
-      id,
-      status: body.status,
-      providerId: req['user'].id,
-    });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(BOOKING_PATTERNS.UPDATE_STATUS, {
+        id,
+        status: body.status,
+        providerId: req['user'].id,
+      }),
+    );
   }
 
   @Patch('v1/:id/cancel')
@@ -156,13 +158,14 @@ export class BookingController implements OnModuleInit {
     @Request() req: any,
     @Body() body: any,
   ) {
-    this.kafka.emit(BOOKING_PATTERNS.CANCEL, {
-      id,
-      userId: req['user'].id,
-      reason: body.reason,
-      explanation: body.explanation,
-    });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(BOOKING_PATTERNS.CANCEL, {
+        id,
+        userId: req['user'].id,
+        reason: body.reason,
+        explanation: body.explanation,
+      }),
+    );
   }
 
   @Get('v1/:id/attachments')

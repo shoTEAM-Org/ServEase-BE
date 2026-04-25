@@ -1,5 +1,8 @@
 import { Global, Module } from '@nestjs/common';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { config } from 'dotenv';
+
+config();
 
 function toTrimmedString(value: unknown): string {
   if (typeof value === 'string') return value.trim();

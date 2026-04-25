@@ -24,7 +24,6 @@ export class CustomerController implements OnModuleInit {
     [CUSTOMER_PATTERNS.GET_DASHBOARD, CUSTOMER_PATTERNS.GET_PROFILE].forEach(
       (p) => this.kafka.subscribeToResponseOf(p),
     );
-    await this.kafka.connect();
   }
 
   @Get('v1/dashboard/:id')

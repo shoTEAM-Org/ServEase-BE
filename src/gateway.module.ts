@@ -24,6 +24,7 @@ import { UploadsController } from './controllers/uploads.controller.js';
 import { HealthController } from './controllers/health.controller.js';
 import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
 import { AdminRoleGuard } from './guards/admin-role.guard.js';
+import { GatewayKafkaLifecycle } from './kafka/gateway-kafka.lifecycle.js';
 
 @Module({
   imports: [
@@ -66,7 +67,7 @@ import { AdminRoleGuard } from './guards/admin-role.guard.js';
     UploadsController,
     HealthController,
   ],
-  providers: [AdminRoleGuard],
+  providers: [AdminRoleGuard, GatewayKafkaLifecycle],
 })
 export class GatewayModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

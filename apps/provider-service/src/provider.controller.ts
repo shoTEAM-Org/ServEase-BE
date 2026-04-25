@@ -173,7 +173,7 @@ export class ProviderKafkaController {
 
   }
 
-  @EventPattern(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS)
+  @MessagePattern(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS)
   async updateProviderBookingStatus(@Payload() data: any) {
     return this.providerService.updateProviderBookingStatus(
       data.bookingId,
@@ -182,7 +182,7 @@ export class ProviderKafkaController {
     );
   }
 
-  @EventPattern(PROVIDER_PATTERNS.SAVE_AVAILABILITY)
+  @MessagePattern(PROVIDER_PATTERNS.SAVE_AVAILABILITY)
   async saveProviderAvailability(@Payload() data: any) {
     const { userId, accessToken, ...body } = data || {};
     return this.providerService.saveProviderAvailability(userId, body, accessToken);
@@ -220,12 +220,12 @@ export class ProviderKafkaController {
     return this.providerService.reviewAdditionalCharges(data);
   }
 
-  @EventPattern(PROVIDER_PATTERNS.SUBMIT_REVIEW)
+  @MessagePattern(PROVIDER_PATTERNS.SUBMIT_REVIEW)
   async submitReview(@Payload() data: any) {
     return this.providerService.submitReview(data);
   }
 
-  @EventPattern(PROVIDER_PATTERNS.SUBMIT_REPORT)
+  @MessagePattern(PROVIDER_PATTERNS.SUBMIT_REPORT)
   async submitReport(@Payload() data: any) {
     return this.providerService.submitReport(data);
   }

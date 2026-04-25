@@ -1,5 +1,5 @@
 import { Controller, Inject } from '@nestjs/common';
-import { MessagePattern, EventPattern, Payload } from '@nestjs/microservices';
+import { MessagePattern, Payload } from '@nestjs/microservices';
 import { PAYMENT_PATTERNS } from '@app/common';
 import { PaymentService } from './payments.service.js';
 
@@ -101,17 +101,17 @@ export class PaymentKafkaController {
     }
   }
 
-  @EventPattern(PAYMENT_PATTERNS.MARK_PAID)
+  @MessagePattern(PAYMENT_PATTERNS.MARK_PAID)
   async markBookingPaymentPaid(@Payload() data: any) {
     return this.paymentService.markBookingPaymentPaid(data);
   }
 
-  @EventPattern(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT)
+  @MessagePattern(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT)
   async cancelBookingPayment(@Payload() data: any) {
     return this.paymentService.cancelBookingPayment(data.bookingId);
   }
 
-  @EventPattern(PAYMENT_PATTERNS.UPDATE_AMOUNT)
+  @MessagePattern(PAYMENT_PATTERNS.UPDATE_AMOUNT)
   async updateBookingPaymentAmount(@Payload() data: any) {
     return this.paymentService.updateBookingPaymentAmount(data.bookingId, data.amount);
   }

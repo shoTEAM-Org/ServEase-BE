@@ -1,451 +1,71 @@
-# Frontend Integration Guide: Backend API Mapping
+# Frontend Integration Guide
 
-This guide maps ServEase mobile and web apps to the backend microservices APIs.
+All ServEase clients talk to the NestJS gateway at `http://localhost:5000`
+or the configured public gateway URL. Protected endpoints require a Supabase
+access token in `Authorization: Bearer <token>`.
 
----
+## Mobile
 
-## Mobile (ServEase-MB) Integration
+| Area | Gateway endpoints | Canonical backing |
+|---|---|---|
+| Auth | `/api/auth/v1/register/customer`, `/api/auth/v2/register`, `/api/auth/v1/login`, `/api/auth/v1/me` | `identity_and_user.users`, `customer_profiles`, `provider_profiles`, `provider_documents` |
+| Addresses | `/api/users/v1/addresses` | `identity_and_user.user_addresses` using `address_line` |
+| Discovery | `/api/services/v1/categories`, `/api/provider/v1?serviceId=...`, `/api/services/v1/provider/:providerId/services` | `provider_catalog.service_categories`, `provider_services` |
+| Booking | `/api/booking/v1/create`, `/api/booking/v1/:id`, `/api/booking/v1/:id/cancel` | `booking.bookings`, `bookings_cancellations` |
+| Availability | `/api/provider/v1/:id/availability`, `/api/provider/v1/:id/reserved-slots`, `/api/provider/v1/:id/availability/check` | `booking.provider_availability`, `provider_days_off`, `bookings` |
+| Payments | `/api/payments/v1/booking/ensure`, `/api/payments/v1/booking/mark-paid`, `/api/payments/v1/provider/history`, `/api/payments/v1/provider/earnings-summary` | `payment.payments`, `provider_payouts` |
+| Chat | `/api/chat/v1/conversations`, `/api/chat/v1/conversations/:bookingId/messages`, `/api/chat/v1/conversations/:bookingId/read` | `messages.conversations`, `messages.messages` |
+| Notifications | `/api/notifications/v1`, `/api/notifications/v1/unread-count`, `/api/notifications/v1/:id/read`, `/api/notifications/v1/read-all` | `notification_and_support.notifications` using `is_read` |
+| Support and trust | `/api/support/v1/tickets`, `/api/booking/v1/:id/disputes`, `/api/provider/v1/reviews`, `/api/provider/v1/reports` | `support_tickets`, `disputes`, `reviews`, `provider_profile_reports` |
 
-### 1. Authentication Service (`authService.ts`)
+Provider service rows use only the DB-backed payload:
 
-**Current Implementation:** ✅ Ready
-**Status:** Needs minor updates for address integration
-
-#### Endpoints to Integrate
-
-| Function | Endpoint | Method | Purpose |
-|----------|----------|--------|---------|
-| registerCustomer() | `/auth/customer-register` | POST | Register new customer |
-| registerProvider() | `/auth/provider-register` | POST | Register new provider |
-| login() | `/auth/login` | POST | User login |
-| logout() | `/auth/logout` | POST | User logout |
-| getCurrentUser() | `/auth/me` | GET | Get logged-in user profile |
-| updateProfile() | `/auth/profile` | PATCH | Update user profile |
-| getAddresses() | `/auth/addresses?user_id=userId` | GET | Get user's addresses |
-| addAddress() | `/auth/addresses` | POST | Add new address |
-| updateAddress() | `/auth/addresses/:id` | PATCH | Update address |
-| deleteAddress() | `/auth/addresses/:id` | DELETE | Delete address |
-| resetPassword() | `/auth/password-reset` | POST | Reset password |
-
-**Update Required:**
-```typescript
-// Add to authService.ts
-async getAddresses(userId: string) {
-  return fetch(`/auth/addresses?user_id=${userId}`);
-}
-
-async addAddress(userId: string, address) {
-  return fetch(`/auth/addresses`, {
-    method: 'POST',
-    body: JSON.stringify({ user_id: userId, ...address })
-  });
-}
-
-async updateAddress(addressId: string, address) {
-  return fetch(`/auth/addresses/${addressId}`, {
-    method: 'PATCH',
-    body: JSON.stringify(address)
-  });
-}
-
-async deleteAddress(addressId: string) {
-  return fetch(`/auth/addresses/${addressId}`, { method: 'DELETE' });
+```json
+{
+  "service_id": "category uuid",
+  "title": "Aircon Cleaning",
+  "description": "Optional details",
+  "pricing_mode": "hourly",
+  "price": 700,
+  "duration_minutes": 60,
+  "is_active": true
 }
 ```
 
----
-
-### 2. Notification Service (`notificationService.ts`)
-
-**Current Implementation:** ✅ Fully Functional
-**Status:** Backend now creates notifications automatically
-
-#### Endpoints to Integrate
-
-| Function | Endpoint | Method | Purpose |
-|----------|----------|--------|---------|
-| getNotifications() | `/notifications?user_id=userId` | GET | Get all notifications |
-| getUnreadCount() | `/notifications/unread-count?user_id=userId` | GET | Get unread count |
-| markAsRead() | `/notifications/:id/mark-read` | PATCH | Mark notification as read |
-| markAllAsRead() | `/notifications/mark-all-read?user_id=userId` | PATCH | Mark all as read |
-
-**Status:** ✅ No changes needed - backend now emits notifications automatically
-
-**How It Works:**
-1. Customer books service → booking-service emits BOOKING_CREATED
-2. notifications-service receives event → creates notification
-3. notificationService.ts polls GET /notifications
-4. UI displays notification to user
-
----
-
-### 3. Chat Service (`chatService.ts`)
-
-**Current Implementation:** ⚠️ Partial (memory fallback exists)
-**Status:** Needs backend integration
-
-#### Endpoints to Integrate
-
-| Function | Endpoint | Method | Purpose |
-|----------|----------|--------|---------|
-| getConversations() | `/chat/conversations?user_id=userId` | GET | Get user's conversations |
-| getMessages() | `/chat/conversations/:bookingId/messages` | GET | Get chat messages |
-| sendMessage() | `/chat/conversations/:bookingId/messages` | POST | Send message |
-| markAsRead() | `/chat/conversations/:bookingId/read` | PATCH | Mark conversation as read |
-| createConversation() | `/chat/create-conversation` | POST | Create conversation for booking |
-
-**Update Required:**
-```typescript
-// Update chatService.ts
-async sendChatMessage(bookingId: string, senderId: string, message: string) {
-  return fetch(`/chat/conversations/${bookingId}/messages`, {
-    method: 'POST',
-    body: JSON.stringify({
-      sender_id: senderId,
-      message: message,
-      message_type: 'text'
-    })
-  });
-}
-
-async getChatMessages(bookingId: string) {
-  return fetch(`/chat/conversations/${bookingId}/messages`);
-}
-
-async markChatAsRead(bookingId: string, userId: string) {
-  return fetch(`/chat/conversations/${bookingId}/read`, {
-    method: 'PATCH',
-    body: JSON.stringify({ user_id: userId })
-  });
-}
-```
-
----
-
-### 4. Booking Service (`bookingService.ts`)
-
-**Current Implementation:** ✅ Ready
-**Status:** Needs new status/notification awareness
-
-#### Endpoints to Integrate
-
-| Function | Endpoint | Method | Purpose |
-|----------|----------|--------|---------|
-| createBooking() | `/booking/create` | POST | Create new booking |
-| getBooking() | `/booking/:id` | GET | Get booking details |
-| getCustomerBookings() | `/booking/customer/:customerId` | GET | Get customer's bookings |
-| getProviderBookings() | `/booking/provider/:providerId` | GET | Get provider's bookings |
-| updateBookingStatus() | `/booking/:id/update-status` | POST | Update booking status |
-| cancelBooking() | `/booking/:id/cancel` | POST | Cancel booking |
-| completeBooking() | `/booking/:id/complete` | POST | Mark as completed |
-
-**Update Required:**
-```typescript
-// Add notification emission awareness
-async updateBookingStatus(bookingId: string, status: string) {
-  const response = await fetch(`/booking/${bookingId}/update-status`, {
-    method: 'POST',
-    body: JSON.stringify({ status })
-  });
-  
-  // Backend will emit notification automatically
-  // Refresh notifications after status change
-  await notificationService.getNotifications();
-  return response;
-}
-```
-
----
-
-### 5. Payment Service (`paymentService.ts`)
-
-**Current Implementation:** ⚠️ Exists, needs verification
-
-#### Endpoints to Integrate
-
-| Function | Endpoint | Method | Purpose |
-|----------|----------|--------|---------|
-| createPayment() | `/payment/create-payment` | POST | Create payment |
-| getPayment() | `/payment/:id` | GET | Get payment details |
-| listPayments() | `/payment?user_id=userId` | GET | List user payments |
-| refundPayment() | `/payment/:id/refund` | POST | Refund payment |
-| getEarnings() | `/provider/:id/earnings` | GET | Get provider earnings |
-
----
-
-### 6. Provider Service (`providerService.ts`)
-
-**Current Implementation:** ⚠️ Exists, needs updates
-
-#### Endpoints to Integrate
-
-| Function | Endpoint | Method | Purpose |
-|----------|----------|--------|---------|
-| createProfile() | `/provider/create-profile` | POST | Create provider profile |
-| updateProfile() | `/provider/profile` | PATCH | Update profile |
-| getProfile() | `/provider/:id` | GET | Get provider details |
-| createService() | `/provider/create-service` | POST | Add service |
-| getServices() | `/provider/:id/services` | GET | Get provider services |
-| updateService() | `/provider/services/:id` | PATCH | Update service |
-| deleteService() | `/provider/services/:id` | DELETE | Remove service |
-| setAvailability() | `/provider/:id/availability` | POST | Set availability |
-| submitReview() | `/trust/create-review` | POST | Submit review |
-| getReviews() | `/trust/provider-reviews/:id` | GET | Get provider reviews |
-
----
-
-## Web (ServEase-FE/serve-ease) Integration
-
-### Key Pages to Build
-
-| Page | Backend Endpoints | Status |
-|------|------------------|--------|
-| `/catalog` | GET /catalog/categories, GET /catalog/services | Ready |
-| `/catalog/search` | GET /catalog/search | Ready |
-| `/services/:id` | GET /catalog/services/:id | Ready |
-| `/provider/:id` | GET /provider/:id, GET /trust/provider-reviews/:id | Ready |
-| `/booking/create` | POST /booking/create | Ready |
-| `/booking/:id` | GET /booking/:id | Ready |
-| `/chat/:bookingId` | GET /chat/conversations/:bookingId/messages | Ready |
-| `/chat/:bookingId/send` | POST /chat/conversations/:bookingId/messages | Ready |
-| `/profile` | GET /auth/me, PATCH /auth/profile | Ready |
-| `/addresses` | GET /auth/addresses, POST /auth/addresses | Ready |
-| `/notifications` | GET /notifications, PATCH /notifications/:id/mark-read | Ready |
-| `/reviews/:bookingId` | POST /trust/create-review | Ready |
-| `/disputes` | GET /support/disputes, PATCH /support/disputes/:id | Ready |
-| `/my-services` (provider) | GET /provider/:id/services | Ready |
-| `/earnings` (provider) | GET /provider/:id/earnings | Ready |
-
----
-
-## Admin (ServEase-FE/serve-ease-admin) Integration
-
-### Admin Dashboards
-
-| Dashboard | Backend Endpoints | Status |
-|-----------|------------------|--------|
-| Disputes | GET /support/disputes, PATCH /support/disputes/:id | Ready |
-| Reports | GET /trust/compliance-reports | Ready |
-| Users | GET /admin/users | Ready |
-| Analytics | GET /admin/dashboard/stats | Ready |
-| Payments | GET /admin/payments | Ready |
-| Compliance | GET /trust/provider-reports | Ready |
-
----
-
-## API Base URL Configuration
-
-### Environment Variables
-```
-REACT_APP_API_BASE_URL=http://localhost:3000
-# or for production
-REACT_APP_API_BASE_URL=https://api.servease.com
-```
-
-### Mobile Configuration
-```typescript
-// In ServEase-MB/services/api.ts
-const BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
-
-export async function request(method: string, endpoint: string, body?: any) {
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
-    method,
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  
-  const data = await response.json();
-  if (!response.ok) {
-    throw new Error(`${response.status}: ${data.message}`);
-  }
-  return data;
-}
-```
-
----
-
-## Real-Time Updates
-
-### WebSocket Support (Optional for Phase 11+)
-For real-time notifications and chat:
-
-```typescript
-// Example WebSocket integration
-const socket = io('ws://localhost:3000', {
-  query: { userId: currentUser.id },
-  reconnection: true,
-});
-
-// Listen for notifications
-socket.on('notification:new', (notification) => {
-  updateNotificationsUI(notification);
-});
-
-// Listen for chat messages
-socket.on('chat:message', (message) => {
-  addMessageToConversation(message);
-});
-```
-
-**Current Status:** Not required for phases 5-10 (polling is sufficient)
-
----
-
-## Testing Integration
-
-### Frontend Test Checklist
-
-```typescript
-// 1. Auth Flow
-✓ User can register (customer)
-✓ User can register (provider)
-✓ User can login
-✓ User profile loads
-✓ User can add addresses
-✓ User can update profile
-
-// 2. Booking Flow
-✓ User can browse services
-✓ User can search services
-✓ User can create booking
-✓ Booking status updates appear
-✓ User can cancel booking
-✓ Notifications appear on status change
-
-// 3. Chat
-✓ Chat conversation loads
-✓ User can send message
-✓ Message appears in conversation
-✓ Conversation marks as read
-✓ Chat notification appears
-
-// 4. Reviews
-✓ User can submit review after booking
-✓ Review appears on provider profile
-✓ Rating updates provider average
-
-// 5. Disputes
-✓ User can create dispute
-✓ Dispute appears in support section
-✓ Admin can update dispute status
-```
-
----
-
-## Error Handling
-
-### Common Error Codes
-
-| Code | Meaning | Handling |
-|------|---------|----------|
-| 400 | Bad Request | Validate form data |
-| 401 | Unauthorized | Refresh token or logout |
-| 403 | Forbidden | Insufficient permissions |
-| 404 | Not Found | Show 404 error |
-| 409 | Conflict | Handle duplicate entry |
-| 429 | Rate Limited | Show rate limit message |
-| 500 | Server Error | Show generic error, retry |
-
-### Retry Logic
-```typescript
-async function requestWithRetry(method, endpoint, body, maxRetries = 3) {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await request(method, endpoint, body);
-    } catch (error) {
-      if (i === maxRetries - 1) throw error;
-      
-      // Exponential backoff: 1s, 2s, 4s
-      await new Promise(resolve => 
-        setTimeout(resolve, Math.pow(2, i) * 1000)
-      );
-    }
-  }
-}
-```
-
----
-
-## Performance Considerations
-
-### API Response Times (Target: < 1000ms)
-- GET /notifications: ~200ms
-- GET /chat/conversations/:id/messages: ~300ms
-- GET /booking/:id: ~150ms
-- POST /booking/create: ~400ms
-- GET /catalog/services: ~500ms
-
-### Caching Strategy
-```typescript
-// Cache notifications for 30 seconds
-const notificationCache = new Map();
-const CACHE_TTL = 30000;
-
-async function getNotificationsWithCache(userId) {
-  const cached = notificationCache.get(userId);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-    return cached.data;
-  }
-  
-  const data = await request('GET', `/notifications?user_id=${userId}`);
-  notificationCache.set(userId, { data, timestamp: Date.now() });
-  return data;
-}
-```
-
----
-
-## Authentication & Authorization
-
-### JWT Token Handling
-```typescript
-// Store token securely
-localStorage.setItem('auth_token', response.token);
-
-// Include in all requests
-fetch(url, {
-  headers: {
-    'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
-  }
-});
-
-// Refresh on 401
-if (response.status === 401) {
-  const newToken = await refreshToken();
-  localStorage.setItem('auth_token', newToken);
-  return request(method, endpoint, body); // Retry
-}
-```
-
----
-
-## Summary
-
-✅ **All backend endpoints are ready for frontend integration**
-
-**Mobile (ServEase-MB):**
-- Auth service: Update for addresses ✓
-- Chat service: Integrate backend ✓
-- Notification service: Already working ✓
-- Booking service: Ready ✓
-- Payment service: Ready ✓
-- Provider service: Ready ✓
-
-**Web (ServEase-FE):**
-- All pages can call backend endpoints ✓
-- Admin dashboard ready ✓
-- Real-time updates optional ✓
-
-**Next Steps:**
-1. Update mobile services to call new endpoints
-2. Build web UI components for catalog, chat, reviews
-3. Build admin dashboard for disputes and compliance
-4. Run integration tests
-5. Deploy to staging
-
----
-
-Last Updated: April 24, 2026
+Booking create requests may still send `pricing_mode`, `hourly_rate`, and
+`flat_rate` as request-only fields. The booking-service translates those into
+`service_amount`, `hours_required`, and `total_amount`; the database does not
+store pricing-mode columns on `booking.bookings`.
+
+## Provider Web
+
+Provider web should stay inside provider, booking, payment, chat, notification,
+support, and trust surfaces:
+
+| Page group | Gateway endpoints |
+|---|---|
+| Dashboard/bookings | `/api/provider/v1/dashboard/:id`, `/api/provider/v1/bookings`, `/api/provider/v1/booking/:id/status` |
+| Calendar/availability | `/api/provider/v1/:id/availability`, `/api/provider/v1/availability` |
+| Services/pricing | `/api/provider/v1/my-services` |
+| Earnings/payouts | `/api/payments/v1/provider/history`, `/api/payments/v1/provider/earnings-summary` |
+| Messages | `/api/chat/v1/conversations`, `/api/chat/v1/conversations/:bookingId/messages` |
+| Reviews/help | `/api/provider/v1/reviews/:id`, `/api/support/v1/tickets` |
+
+No provider web page should target portfolio, counter-offer, reschedule, or
+notification-preference routes.
+
+## Admin Web
+
+Admin web is a read/manage console over the existing service schemas:
+
+| Area | Gateway endpoints |
+|---|---|
+| Provider approvals | `/api/admin/v1/users/provider-applications`, `/api/admin/v2/documents/status/:id` |
+| Bookings/operations | `/api/admin/v1/operations/ongoing`, `/api/admin/v1/operations/disputes`, `/api/admin/v1/operations/support` |
+| Finance | `/api/admin/v1/finance/transactions`, `/api/admin/v1/finance/earnings`, `/api/admin/v1/finance/payouts`, `/api/admin/v1/finance/failed` |
+| Catalog | `/api/admin/v1/marketplace/categories`, `/api/admin/v1/marketplace/services`, `/api/admin/v1/marketplace/service-areas` |
+| Reports | `/api/admin/v1/reports/revenue`, `/api/admin/v1/reports/bookings`, `/api/admin/v1/reports/business`, `/api/admin/v1/reports/financial`, `/api/admin/v1/reports/users`, `/api/admin/v1/reports/performance`, `/api/admin/v1/reports/compliance` |
+
+Removed admin surfaces include unrelated verticals, commission rules, refund
+policy management, promotions, live ops, statements, security settings, and
+generic platform settings.

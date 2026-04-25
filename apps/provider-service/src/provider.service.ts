@@ -15,6 +15,7 @@ import {
   KafkaRpcRequestOptions,
   PAYMENT_PATTERNS,
   TRUST_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 
@@ -36,6 +37,7 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.SAVE_PROVIDER_AVAILABILITY);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESERVED_SLOTS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.CHECK_PROVIDER_AVAILABILITY);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.UPDATE_STATUS);
     this.kafka.subscribeToResponseOf(
       BOOKING_PATTERNS.CREATE_ADDITIONAL_CHARGES,
     );
@@ -51,7 +53,10 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.DELETE_REVIEW);
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_PERFORMANCE_REPORT);
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_COMPLIANCE_REPORT);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: ProviderService.name,
+      logger: this.logger,
+    });
   }
 
   private async request<T = any>(
@@ -162,47 +167,6 @@ export class ProviderService implements OnModuleInit {
     return null;
   }
 
-  private normalizeServiceLocationType(value: unknown): 'mobile' | 'in_shop' {
-    return this.toTrimmedString(value).toLowerCase() === 'in_shop' ? 'in_shop' : 'mobile';
-  }
-
-  private ensurePricingModes(
-    supportsHourly: boolean,
-    supportsFlat: boolean,
-    flatRateInput: number | null,
-  ) {
-    if (supportsHourly || supportsFlat) {
-      return { supportsHourly, supportsFlat };
-    }
-
-    if (flatRateInput !== null) {
-      return { supportsHourly: false, supportsFlat: true };
-    }
-
-    return { supportsHourly: true, supportsFlat: false };
-  }
-
-  private resolveFallbackRate(resolvedPrice: number): number | null {
-    return resolvedPrice > 0 ? resolvedPrice : null;
-  }
-
-  private resolveDefaultPricingMode(
-    source: Record<string, unknown>,
-    supportsHourly: boolean,
-    supportsFlat: boolean,
-  ): 'hourly' | 'flat' {
-    if (supportsHourly && supportsFlat) {
-      return (
-        this.normalizePricingMode(
-          source.default_pricing_mode ?? source.defaultPricingMode,
-        ) || 'hourly'
-      );
-    }
-
-    if (supportsHourly) return 'hourly';
-    return 'flat';
-  }
-
   private deriveApplicationStatus(
     profileStatus: unknown,
     hasRejectedDoc: boolean,
@@ -218,19 +182,20 @@ export class ProviderService implements OnModuleInit {
   }
 
   private mapVerificationStatusToUserStatus(status: string) {
-    if (status === 'approved') return 'active';
-    if (status === 'rejected') return 'rejected';
-    return 'pending';
+    if (status === 'approved' || status === 'pending' || status === 'rejected') {
+      return 'active';
+    }
+    return 'inactive';
   }
 
   private validateRequiredServiceFields(
     requireCoreFields: boolean,
     title: string,
-    categoryId: string,
+    serviceId: string,
   ) {
     if (!requireCoreFields) return;
     if (!title) throw new BadRequestException('Service title is required');
-    if (!categoryId) throw new BadRequestException('Service category is required');
+    if (!serviceId) throw new BadRequestException('Service category is required');
   }
 
   private isSchemaMismatchError(error: any) {
@@ -256,35 +221,16 @@ export class ProviderService implements OnModuleInit {
       body && typeof body === 'object' ? body : {};
     const requireCoreFields = Boolean(options.requireCoreFields);
     const title = this.toTrimmedString(source.title);
-    const categoryId = this.toTrimmedString(source.category_id ?? source.categoryId);
-    this.validateRequiredServiceFields(requireCoreFields, title, categoryId);
+    const serviceId = this.toTrimmedString(source.service_id ?? source.serviceId);
+    this.validateRequiredServiceFields(requireCoreFields, title, serviceId);
 
-    const hourlyRateInput = this.toPositiveNumber(source.hourly_rate ?? source.hourlyRate);
-    const flatRateInput = this.toPositiveNumber(source.flat_rate ?? source.flatRate);
     const priceInput = this.toPositiveNumber(source.price);
-
-    let supportsHourly = this.toBoolean(
-      source.supports_hourly ?? source.supportsHourly,
-      hourlyRateInput !== null,
+    const durationInput = this.toPositiveNumber(
+      source.duration_minutes ?? source.durationMinutes,
     );
-    let supportsFlat = this.toBoolean(
-      source.supports_flat ?? source.supportsFlat,
-      flatRateInput !== null,
-    );
-
-    const normalizedPricingModes = this.ensurePricingModes(
-      supportsHourly,
-      supportsFlat,
-      flatRateInput,
-    );
-    supportsHourly = normalizedPricingModes.supportsHourly;
-    supportsFlat = normalizedPricingModes.supportsFlat;
-
-    const resolvedPrice = Math.max(priceInput || 0, hourlyRateInput || 0, flatRateInput || 0);
-    const fallbackRate = this.resolveFallbackRate(resolvedPrice);
-    const locationType = this.normalizeServiceLocationType(
-      source.service_location_type ?? source.serviceLocationType,
-    );
+    const pricingMode =
+      this.normalizePricingMode(source.pricing_mode ?? source.pricingMode) ||
+      'hourly';
 
     const payload: Record<string, any> = {};
     if (options.providerId) payload.provider_id = options.providerId;
@@ -292,25 +238,21 @@ export class ProviderService implements OnModuleInit {
     if (Object.hasOwn(source, 'description') || requireCoreFields) {
       payload.description = this.toNullableString(source.description);
     }
-    if (categoryId || requireCoreFields) payload.category_id = categoryId;
-    if (resolvedPrice > 0 || requireCoreFields) payload.price = resolvedPrice;
-
-    if (options.legacyOnly) return payload;
-
-    payload.supports_hourly = supportsHourly;
-    payload.hourly_rate = supportsHourly ? hourlyRateInput ?? fallbackRate : null;
-    payload.supports_flat = supportsFlat;
-    payload.flat_rate = supportsFlat ? flatRateInput ?? fallbackRate : null;
-    payload.default_pricing_mode = this.resolveDefaultPricingMode(
-      source,
-      supportsHourly,
-      supportsFlat,
-    );
-    payload.service_location_type = locationType;
-    payload.service_location_address =
-      locationType === 'in_shop'
-        ? this.toNullableString(source.service_location_address ?? source.serviceLocationAddress)
-        : null;
+    if (serviceId || requireCoreFields) payload.service_id = serviceId;
+    if (priceInput !== null || requireCoreFields) payload.price = priceInput || 0;
+    if (Object.hasOwn(source, 'pricing_mode') || Object.hasOwn(source, 'pricingMode') || requireCoreFields) {
+      payload.pricing_mode = pricingMode;
+    }
+    if (
+      Object.hasOwn(source, 'duration_minutes') ||
+      Object.hasOwn(source, 'durationMinutes') ||
+      requireCoreFields
+    ) {
+      payload.duration_minutes = durationInput || 60;
+    }
+    if (Object.hasOwn(source, 'is_active')) {
+      payload.is_active = this.toBoolean(source.is_active, true);
+    }
 
     return payload;
   }
@@ -320,8 +262,8 @@ export class ProviderService implements OnModuleInit {
     const { data: services, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .select('id, title, price, provider_id')
-      .eq('category_id', serviceId);
+      .select('id, service_id, title, price, pricing_mode, duration_minutes, provider_id')
+      .eq('service_id', serviceId);
     if (error) throw new InternalServerErrorException(error.message);
 
     const providerIds = [...new Set((services || []).map((s: any) => s.provider_id))];
@@ -344,7 +286,7 @@ export class ProviderService implements OnModuleInit {
     const { data: services, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .select('id, title, price, description, category_id, provider_id');
+      .select('id, service_id, title, price, pricing_mode, duration_minutes, description, provider_id');
     if (error) throw new InternalServerErrorException(error.message);
 
     const providerIds = [...new Set((services || []).map((s: any) => s.provider_id))];
@@ -1020,12 +962,11 @@ export class ProviderService implements OnModuleInit {
     status: string,
     providerId?: string,
   ) {
-    this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, {
+    return await this.request(BOOKING_PATTERNS.UPDATE_STATUS, {
       id: bookingId,
       status,
       providerId,
     });
-    return { ok: true };
   }
 
   // === Provider Availability ===
@@ -1153,20 +1094,6 @@ export class ProviderService implements OnModuleInit {
       .select()
       .single();
 
-    if (error && this.isSchemaMismatchError(error)) {
-      const legacyPayload = this.normalizeServicePayload(body, {
-        providerId: normalizedProviderId,
-        requireCoreFields: true,
-        legacyOnly: true,
-      });
-      ({ data, error } = await this.supabase
-        .schema('provider_catalog')
-        .from('provider_services')
-        .insert([legacyPayload])
-        .select()
-        .single());
-    }
-
     if (error) throw new BadRequestException(error.message);
     return { service: data };
   }
@@ -1186,21 +1113,6 @@ export class ProviderService implements OnModuleInit {
       .eq('provider_id', normalizedProviderId)
       .select()
       .single();
-
-    if (error && this.isSchemaMismatchError(error)) {
-      const legacyPayload = this.normalizeServicePayload(body, {
-        requireCoreFields: true,
-        legacyOnly: true,
-      });
-      ({ data, error } = await this.supabase
-        .schema('provider_catalog')
-        .from('provider_services')
-        .update(legacyPayload)
-        .eq('id', normalizedServiceId)
-        .eq('provider_id', normalizedProviderId)
-        .select()
-        .single());
-    }
 
     if (error) throw new BadRequestException(error.message);
     return { service: data };

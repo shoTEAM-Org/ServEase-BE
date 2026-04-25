@@ -5,7 +5,12 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
-import { AUTH_PATTERNS, BOOKING_PATTERNS, sendKafkaRpcRequest } from '@app/common';
+import {
+  AUTH_PATTERNS,
+  BOOKING_PATTERNS,
+  connectKafkaClientWithRetry,
+  sendKafkaRpcRequest,
+} from '@app/common';
 
 @Injectable()
 export class CustomerService implements OnModuleInit {
@@ -14,7 +19,9 @@ export class CustomerService implements OnModuleInit {
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_CUSTOMER_PROFILE);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: CustomerService.name,
+    });
   }
 
   private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
@@ -49,7 +56,7 @@ export class CustomerService implements OnModuleInit {
   }
 
   private pickUserProfileUpdates(source: Record<string, any>) {
-    const allowed = ['full_name', 'contact_number', 'date_of_birth'];
+    const allowed = ['full_name', 'contact_number'];
     const filtered: Record<string, any> = {};
     for (const key of allowed) {
       if (source[key] !== undefined) filtered[key] = source[key];
@@ -60,6 +67,7 @@ export class CustomerService implements OnModuleInit {
   private pickCustomerProfileUpdates(source: Record<string, any>) {
     const allowed = [
       'address',
+      'date_of_birth',
       'city',
       'province',
       'region',

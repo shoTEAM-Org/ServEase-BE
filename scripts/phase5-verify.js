@@ -1,18 +1,10 @@
 #!/usr/bin/env node
 /**
- * Phase 5 verification — exercises notifications, chat, and disputes.
- * Tests that services emit notifications on booking state changes, disputes, and reviews.
+ * Phase 5 verification - notifications DB contract.
  *
- * Tests:
- *   1. Create customer and provider
- *   2. Create booking → verify notification emitted
- *   3. Update booking status → verify notifications
- *   4. Create dispute → verify notification
- *   5. Create review → verify notification
- *   6. Send/retrieve chat messages → verify chat works
- *   7. Cleanup
- *
- * Exits non-zero on any failure.
+ * This checks the canonical notification_and_support.notifications shape used
+ * by notifications-service. It intentionally stays at the schema boundary:
+ * event emission is exercised by the later gateway/Kafka golden-path script.
  */
 const fs = require('fs');
 const path = require('path');
@@ -58,215 +50,252 @@ async function req(method, schema, tableAndQuery, body) {
 
 function ok(label, cond, detail) {
   const mark = cond ? 'PASS' : 'FAIL';
-  console.log(`[${mark}] ${label}${detail ? ' — ' + detail : ''}`);
+  console.log(`[${mark}] ${label}${detail ? ' - ' + detail : ''}`);
   if (!cond) process.exitCode = 1;
   return cond;
 }
 
-async function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 (async () => {
+  const stamp = Date.now();
   const customerId = randomUUID();
   const providerId = randomUUID();
-  let serviceId = null;
-  let bookingId = null;
+  const categoryId = randomUUID();
+  const bookingId = randomUUID();
 
-  const email1 = `phase5_customer_${Date.now()}@test.local`;
-  const email2 = `phase5_provider_${Date.now()}@test.local`;
+  console.log('--- Phase 5 notifications DB verification ---');
 
-  console.log('--- Phase 5 notifications verification ---');
-
-  // 1. Create customer
-  const cust = await req('POST', 'identity_and_user', 'users', [
+  await req('POST', 'identity_and_user', 'users', [
     {
       id: customerId,
-      email: email1,
-      full_name: 'Phase5 Customer',
-      contact_number: '09170000005',
+      email: `ph5_customer_${stamp}@test.local`,
+      full_name: 'P5 Customer',
+      contact_number: '09170000051',
       role: 'customer',
       status: 'active',
       is_verified: true,
     },
-  ]);
-  ok('create customer user', cust.status === 201);
-
-  const custProfile = await req('POST', 'identity_and_user', 'customer_profiles', [
-    { user_id: customerId },
-  ]);
-  ok('create customer profile', custProfile.status === 201);
-
-  // 2. Create provider
-  const prov = await req('POST', 'identity_and_user', 'users', [
     {
       id: providerId,
-      email: email2,
-      full_name: 'Phase5 Provider',
-      contact_number: '09170000006',
+      email: `ph5_provider_${stamp}@test.local`,
+      full_name: 'P5 Provider',
+      contact_number: '09170000052',
       role: 'provider',
       status: 'active',
       is_verified: true,
     },
   ]);
-  ok('create provider user', prov.status === 201);
-
-  const provProfile = await req('POST', 'provider_catalog', 'provider_profiles', [
+  await req('POST', 'identity_and_user', 'customer_profiles', [
+    { user_id: customerId },
+  ]);
+  await req('POST', 'provider_catalog', 'provider_profiles', [
     {
       user_id: providerId,
-      business_name: 'Phase5 Service Co',
-      date_of_birth: '1990-01-01',
+      business_name: 'P5 Provider Co',
+      verification_status: 'approved',
     },
   ]);
-  ok(
-    'create provider profile',
-    provProfile.status === 201,
-    `status=${provProfile.status} err=${JSON.stringify(provProfile.body).slice(0, 100)}`,
-  );
-
-  // 3. Create service category
-  const category = await req('POST', 'provider_catalog', 'service_categories', [
+  await req('POST', 'provider_catalog', 'service_categories', [
     {
-      name: `Test Service ${Date.now()}`,
-      slug: `test-service-${Date.now()}`,
+      id: categoryId,
+      name: `P5 Category ${stamp}`,
+      slug: `ph5-category-${stamp}`,
+      display_order: 5,
     },
   ]);
-  const categoryId = Array.isArray(category.body) ? category.body[0]?.id : null;
-  ok(
-    'create service category',
-    category.status === 201 && !!categoryId,
-    `status=${category.status} categoryId=${categoryId}`,
-  );
-
-  // 4. Create provider service
-  const service = await req('POST', 'provider_catalog', 'provider_services', [
+  await req('POST', 'booking', 'bookings', [
     {
-      provider_id: providerId,
-      service_id: categoryId,
-      title: 'Test Service',
-      price: 50,
-      pricing_mode: 'flat',
-      duration_minutes: 120,
-    },
-  ]);
-  serviceId = Array.isArray(service.body) ? service.body[0]?.id : null;
-  ok(
-    'create provider service',
-    service.status === 201 && !!serviceId,
-    `status=${service.status} serviceId=${serviceId}`,
-  );
-
-  // 5. Create booking
-  const booking = await req('POST', 'booking', 'bookings', [
-    {
-      booking_reference: `BOOK-${Date.now()}`,
+      id: bookingId,
+      booking_reference: `PH5-${stamp}`,
       customer_id: customerId,
       provider_id: providerId,
-      service_id: serviceId,
-      service_description: 'Test booking',
-      service_address: 'Test Address',
+      service_id: categoryId,
+      service_title: 'P5 Service',
+      service_name: 'P5 Service',
+      service_description: 'Notification verification booking',
+      service_address: 'Phase 5 Test Address',
       service_location_type: 'mobile',
       scheduled_at: new Date(Date.now() + 86400000).toISOString(),
-      hours_required: 2,
-      service_amount: 100,
-      total_amount: 100,
+      hours_required: 1,
+      service_amount: 250,
+      total_amount: 250,
       payment_method: 'cash_on_service',
       status: 'pending',
     },
   ]);
-  bookingId = Array.isArray(booking.body) ? booking.body[0]?.id : null;
-  ok(
-    'create booking',
-    booking.status === 201 && !!bookingId,
-    `status=${booking.status} bookingId=${bookingId} err=${JSON.stringify(booking.body).slice(0, 150)}`,
-  );
 
-  // Small delay to allow notification emission
-  await delay(500);
-
-  // 5. Check notifications for customer
-  const custNotif = await req('GET', 'notification_and_support', 'notifications?user_id=eq.' + customerId);
-  ok(
-    'customer notifications retrieved',
-    custNotif.status === 200,
-    `status=${custNotif.status} count=${Array.isArray(custNotif.body) ? custNotif.body.length : 0}`,
-  );
-
-  // 6. Update booking to confirmed
-  const confirmBooking = await req('PATCH', 'booking', `bookings?id=eq.${bookingId}`, {
-    status: 'confirmed',
-  });
-  ok(
-    'confirm booking',
-    confirmBooking.status === 200,
-    `status=${confirmBooking.status}`,
-  );
-
-  await delay(500);
-
-  // 7. Check notifications again
-  const custNotif2 = await req('GET', 'notification_and_support', 'notifications?user_id=eq.' + customerId);
-  const notifCount2 = Array.isArray(custNotif2.body) ? custNotif2.body.length : 0;
-  ok(
-    'notifications updated on status change',
-    notifCount2 >= 0,
-    `count=${notifCount2}`,
-  );
-
-  // 8. Create dispute
-  const dispute = await req('POST', 'notification_and_support', 'disputes', [
+  const eventRows = [
     {
+      user_id: providerId,
+      actor_id: customerId,
       booking_id: bookingId,
-      customer_id: customerId,
-      reason: 'Provider no-show',
-      status: 'open',
+      type: 'booking.created',
+      title: 'New booking request',
+      body: 'A customer created a booking.',
+      data: { status: 'pending' },
+    },
+    {
+      user_id: customerId,
+      actor_id: providerId,
+      booking_id: bookingId,
+      type: 'booking.confirmed',
+      title: 'Booking confirmed',
+      body: 'Your provider confirmed the booking.',
+      data: { status: 'confirmed' },
+    },
+    {
+      user_id: customerId,
+      actor_id: providerId,
+      booking_id: bookingId,
+      type: 'booking.in_progress',
+      title: 'Service started',
+      body: 'The provider started the service.',
+      data: { status: 'in_progress' },
+    },
+    {
+      user_id: customerId,
+      actor_id: providerId,
+      booking_id: bookingId,
+      type: 'booking.completed',
+      title: 'Service completed',
+      body: 'The provider completed the service.',
+      data: { status: 'completed' },
+    },
+    {
+      user_id: providerId,
+      actor_id: customerId,
+      booking_id: bookingId,
+      type: 'booking.cancelled',
+      title: 'Booking cancelled',
+      body: 'The booking was cancelled.',
+      data: { status: 'cancelled' },
+    },
+    {
+      user_id: providerId,
+      actor_id: customerId,
+      booking_id: bookingId,
+      type: 'review.created',
+      title: 'New review',
+      body: 'A customer reviewed your service.',
+      data: { rating: 5 },
+    },
+    {
+      user_id: providerId,
+      actor_id: customerId,
+      booking_id: bookingId,
+      type: 'dispute.created',
+      title: 'Dispute opened',
+      body: 'A dispute was opened for this booking.',
+      data: { reason: 'test' },
+    },
+  ];
+
+  const n1 = await req('POST', 'notification_and_support', 'notifications', eventRows);
+  ok(
+    'insert notification rows for booking/dispute/review events',
+    n1.status === 201 && Array.isArray(n1.body) && n1.body.length === eventRows.length,
+    `status=${n1.status} count=${Array.isArray(n1.body) ? n1.body.length : 'n/a'}`,
+  );
+
+  const defaultUnread = Array.isArray(n1.body)
+    ? n1.body.every((row) => row.is_read === false)
+    : false;
+  ok('notifications default to is_read=false', defaultUnread);
+
+  const providerUnread = await req(
+    'GET',
+    'notification_and_support',
+    `notifications?user_id=eq.${providerId}&is_read=eq.false&select=id,type,is_read&order=created_at.desc`,
+  );
+  const providerUnreadRows = Array.isArray(providerUnread.body)
+    ? providerUnread.body
+    : [];
+  ok(
+    'fetch unread notifications by user using is_read',
+    providerUnread.status === 200 && providerUnreadRows.length === 4,
+    `status=${providerUnread.status} count=${providerUnreadRows.length}`,
+  );
+
+  const firstProviderNotificationId = providerUnreadRows[0]?.id;
+  const markOne = await req(
+    'PATCH',
+    'notification_and_support',
+    `notifications?id=eq.${firstProviderNotificationId}`,
+    { is_read: true },
+  );
+  ok('mark one notification read via is_read', markOne.status === 200);
+
+  const afterOneRead = await req(
+    'GET',
+    'notification_and_support',
+    `notifications?user_id=eq.${providerId}&is_read=eq.false&select=id`,
+  );
+  ok(
+    'unread count decreases after mark-read',
+    afterOneRead.status === 200 &&
+      Array.isArray(afterOneRead.body) &&
+      afterOneRead.body.length === 3,
+    `status=${afterOneRead.status} count=${Array.isArray(afterOneRead.body) ? afterOneRead.body.length : 'n/a'}`,
+  );
+
+  const markAll = await req(
+    'PATCH',
+    'notification_and_support',
+    `notifications?user_id=eq.${providerId}&is_read=eq.false`,
+    { is_read: true },
+  );
+  ok('mark all unread notifications read', markAll.status === 200);
+
+  const afterAllRead = await req(
+    'GET',
+    'notification_and_support',
+    `notifications?user_id=eq.${providerId}&is_read=eq.false&select=id`,
+  );
+  ok(
+    'unread-count query returns zero after read-all',
+    afterAllRead.status === 200 &&
+      Array.isArray(afterAllRead.body) &&
+      afterAllRead.body.length === 0,
+    `status=${afterAllRead.status} count=${Array.isArray(afterAllRead.body) ? afterAllRead.body.length : 'n/a'}`,
+  );
+
+  const badInsert = await req('POST', 'notification_and_support', 'notifications', [
+    {
+      user_id: customerId,
+      type: 'bad.read_at',
+      title: 'Bad column',
+      body: 'This should fail.',
+      read_at: new Date().toISOString(),
     },
   ]);
   ok(
-    'create dispute',
-    dispute.status === 201,
-    `status=${dispute.status} err=${JSON.stringify(dispute.body).slice(0, 100)}`,
+    'regression: bogus read_at column is rejected',
+    badInsert.status >= 400,
+    `status=${badInsert.status}`,
   );
 
-  await delay(500);
-
-  // 9. Create review
-  const review = await req('POST', 'trust_and_reputation', 'reviews', [
-    {
-      booking_id: bookingId,
-      reviewer_id: customerId,
-      reviewee_id: providerId,
-      rating: 4,
-      review_text: 'Good service',
-    },
-  ]);
-  ok('create review', review.status === 201);
-
-  await delay(500);
-
-  // 10. Check chat functionality
-  const chatMsg = await req('POST', 'messages', 'conversations', [
-    {
-      booking_id: bookingId,
-      customer_id: customerId,
-      provider_id: providerId,
-    },
-  ]);
-  ok(
-    'chat conversation created',
-    chatMsg.status === 201 || chatMsg.status === 400, // 400 if already exists
-    `status=${chatMsg.status}`,
+  console.log('--- cleanup ---');
+  await req(
+    'DELETE',
+    'notification_and_support',
+    `notifications?booking_id=eq.${bookingId}`,
   );
-
-  // 11. Cleanup — delete bookings, disputes, reviews, users
-  console.log('\n--- Cleanup ---');
-
-  await req('DELETE', 'notification_and_support', `disputes?booking_id=eq.${bookingId}`);
-  await req('DELETE', 'trust_and_reputation', `reviews?booking_id=eq.${bookingId}`);
   await req('DELETE', 'booking', `bookings?id=eq.${bookingId}`);
+  await req(
+    'DELETE',
+    'provider_catalog',
+    `service_categories?id=eq.${categoryId}`,
+  );
+  await req(
+    'DELETE',
+    'provider_catalog',
+    `provider_profiles?user_id=eq.${providerId}`,
+  );
+  await req(
+    'DELETE',
+    'identity_and_user',
+    `customer_profiles?user_id=eq.${customerId}`,
+  );
   await req('DELETE', 'identity_and_user', `users?id=eq.${customerId}`);
   await req('DELETE', 'identity_and_user', `users?id=eq.${providerId}`);
-
-  ok('cleanup complete', true);
-  console.log('\n✓ Phase 5 verification complete');
+  console.log('--- done ---');
 })();

@@ -1,14 +1,18 @@
 import {
   BadRequestException,
+  HttpStatus,
   Injectable,
   InternalServerErrorException,
   NotFoundException,
   Inject,
   OnModuleInit,
 } from '@nestjs/common';
-import { ClientKafka } from '@nestjs/microservices';
+import { ClientKafka, RpcException } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { NOTIFICATION_PATTERNS } from '@app/common';
+import {
+  NOTIFICATION_PATTERNS,
+  connectKafkaClientWithRetry,
+} from '@app/common';
 
 @Injectable()
 export class TrustService implements OnModuleInit {
@@ -20,7 +24,9 @@ export class TrustService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: TrustService.name,
+    });
   }
 
   private toTrimmedString(value: unknown) {
@@ -54,6 +60,18 @@ export class TrustService implements OnModuleInit {
     );
   }
 
+  private isUniqueViolationError(error: any) {
+    const code = this.toTrimmedString(error?.code).toUpperCase();
+    return code === '23505';
+  }
+
+  private reviewConflict(message = 'A review already exists for this booking') {
+    return new RpcException({
+      statusCode: HttpStatus.CONFLICT,
+      message,
+    });
+  }
+
   private buildDateFilter(query: any, from?: string, to?: string, column = 'created_at') {
     if (from) query = query.gte(column, from);
     if (to) query = query.lte(column, to);
@@ -80,6 +98,12 @@ export class TrustService implements OnModuleInit {
 
       lastError = result.error;
       if (!this.isMissingRelationError(result.error)) {
+        if (this.isUniqueViolationError(result.error)) {
+          throw this.reviewConflict(
+            this.toTrimmedString(result.error.message) ||
+              'A matching trust record already exists',
+          );
+        }
         throw new InternalServerErrorException(result.error.message);
       }
     }
@@ -121,6 +145,21 @@ export class TrustService implements OnModuleInit {
     if (!revieweeId) throw new BadRequestException('reviewee_id is required');
     if (!Number.isFinite(rating) || rating < 1 || rating > 5) {
       throw new BadRequestException('rating must be a number between 1 and 5');
+    }
+
+    const { data: existingReviews } = await this.runTrustQuery<any[]>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('reviews')
+          .select('id')
+          .eq('booking_id', bookingId)
+          .eq('reviewer_id', reviewerId)
+          .limit(1),
+      'Failed to check existing review',
+    );
+    if (Array.isArray(existingReviews) && existingReviews.length > 0) {
+      throw this.reviewConflict();
     }
 
     const { data: review } = await this.runTrustQuery<any>(
@@ -194,11 +233,12 @@ export class TrustService implements OnModuleInit {
           .from('provider_profile_reports')
           .insert([
             {
-              reported_provider_id: providerId,
+              booking_id: this.toTrimmedString(payload?.booking_id) || null,
               reporter_id: reporterId,
+              provider_id: providerId,
               reason,
-              description: details,
-              status: 'pending',
+              details,
+              status: 'open',
             },
           ])
           .select()

@@ -1,287 +1,309 @@
 #!/usr/bin/env node
-
 /**
- * Phase 7 Verification: Reviews & Compliance
- * 
- * Tests:
- * 1. Complete a booking to enable reviews
- * 2. Create review from customer
- * 3. Create review from provider
- * 4. Get provider reviews and ratings
- * 5. Test review validation (rating 1-5 stars)
- * 6. Get provider performance report
- * 7. Test compliance report generation
- * 8. Create provider report (for trust & safety)
- * 9. Verify notifications on review creation
- * 10. Test review filtering and sorting
+ * Phase 7 verification - support, disputes, reviews, and provider reports.
  */
+const fs = require('fs');
+const path = require('path');
+const { randomUUID } = require('crypto');
 
-const BASE_URL = 'http://localhost:3000';
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://your-project.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
+const envPath = path.resolve(__dirname, '..', '.env');
+const env = Object.fromEntries(
+  fs
+    .readFileSync(envPath, 'utf8')
+    .split('\n')
+    .filter((l) => l && !l.startsWith('#') && l.includes('='))
+    .map((l) => {
+      const i = l.indexOf('=');
+      return [l.slice(0, i).trim(), l.slice(i + 1).trim()];
+    }),
+);
 
-const headers = {
-  'Content-Type': 'application/json',
-  Authorization: `Bearer ${SUPABASE_KEY}`,
-};
+const URL = env.SUPABASE_URL;
+const KEY = env.SUPABASE_SECRET_KEY;
 
-let testResults = {
-  total: 0,
-  passed: 0,
-  failed: 0,
-  errors: [],
-};
-
-async function request(method, endpoint, body = null) {
-  const url = `${BASE_URL}${endpoint}`;
-  const options = {
+async function req(method, schema, tableAndQuery, body) {
+  const res = await fetch(`${URL}/rest/v1/${tableAndQuery}`, {
     method,
-    headers,
-    ...(body && { body: JSON.stringify(body) }),
-  };
-
-  const response = await fetch(url, options);
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(`${response.status}: ${JSON.stringify(data)}`);
-  }
-
-  return data;
-}
-
-async function test(name, fn) {
-  testResults.total++;
+    headers: {
+      apikey: KEY,
+      Authorization: `Bearer ${KEY}`,
+      'Accept-Profile': schema,
+      'Content-Profile': schema,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let parsed = null;
   try {
-    await fn();
-    testResults.passed++;
-    console.log(`✅ ${name}`);
-  } catch (error) {
-    testResults.failed++;
-    testResults.errors.push({ test: name, error: error.message });
-    console.error(`❌ ${name}: ${error.message}`);
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = text;
   }
+  return { status: res.status, body: parsed };
 }
 
-async function runPhase7Tests() {
-  console.log('\n📋 Phase 7: Reviews & Compliance\n');
+function ok(label, cond, detail) {
+  const mark = cond ? 'PASS' : 'FAIL';
+  console.log(`[${mark}] ${label}${detail ? ' - ' + detail : ''}`);
+  if (!cond) process.exitCode = 1;
+  return cond;
+}
 
-  let customerId, providerId, bookingId, serviceId, reviewId;
+(async () => {
+  const stamp = Date.now();
+  const customerId = randomUUID();
+  const providerId = randomUUID();
+  const categoryId = randomUUID();
+  const bookingId = randomUUID();
+  let ticketId = null;
+  let disputeId = null;
+  let reportId = null;
 
-  // Setup: Create test users and booking
-  await test('Setup: Create test customer', async () => {
-    const customer = await request('POST', '/auth/customer-register', {
-      email: `review-test-customer-${Date.now()}@test.com`,
-      password: 'Test@123456',
-      first_name: 'Review',
-      last_name: 'Customer',
-      phone_number: '+1234567890',
-    });
-    customerId = customer.user?.id;
-    if (!customerId) throw new Error('No customer ID returned');
-  });
+  console.log('--- Phase 7 support/trust DB verification ---');
 
-  await test('Setup: Create test provider', async () => {
-    const provider = await request('POST', '/auth/provider-register', {
-      email: `review-test-provider-${Date.now()}@test.com`,
-      password: 'Test@123456',
-      first_name: 'Review',
-      last_name: 'Provider',
-      phone_number: '+1234567891',
-      business_name: 'Review Test Business',
-      date_of_birth: '1990-01-01',
-    });
-    providerId = provider.user?.id;
-    if (!providerId) throw new Error('No provider ID returned');
-  });
-
-  await test('Setup: Create provider profile', async () => {
-    await request('POST', '/provider/create-profile', {
+  await req('POST', 'identity_and_user', 'users', [
+    {
+      id: customerId,
+      email: `ph7_customer_${stamp}@test.local`,
+      full_name: 'P7 Customer',
+      role: 'customer',
+      status: 'active',
+      is_verified: true,
+    },
+    {
+      id: providerId,
+      email: `ph7_provider_${stamp}@test.local`,
+      full_name: 'P7 Provider',
+      role: 'provider',
+      status: 'active',
+      is_verified: true,
+    },
+  ]);
+  await req('POST', 'identity_and_user', 'customer_profiles', [
+    { user_id: customerId },
+  ]);
+  await req('POST', 'provider_catalog', 'provider_profiles', [
+    {
       user_id: providerId,
-      business_name: 'Review Test Business',
-      business_description: 'Test business for reviews',
-      phone_number: '+1234567891',
-    });
-  });
-
-  await test('Setup: Create provider service', async () => {
-    const response = await request('POST', '/provider/create-service', {
-      provider_id: providerId,
-      name: 'Review Test Service',
-      description: 'Service for review testing',
-      base_price: 75.00,
-      estimated_duration_minutes: 90,
-      category: 'Test Category',
-    });
-    serviceId = response.service?.id || response.id;
-  });
-
-  await test('Setup: Create and complete booking', async () => {
-    const bookingResponse = await request('POST', '/booking/create', {
+      business_name: 'P7 Provider Co',
+      verification_status: 'approved',
+    },
+  ]);
+  await req('POST', 'provider_catalog', 'service_categories', [
+    {
+      id: categoryId,
+      name: `P7 Category ${stamp}`,
+      slug: `ph7-category-${stamp}`,
+    },
+  ]);
+  await req('POST', 'booking', 'bookings', [
+    {
+      id: bookingId,
+      booking_reference: `PH7-${stamp}`,
       customer_id: customerId,
       provider_id: providerId,
-      service_id: serviceId,
-      booking_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
-      booking_time: '10:00',
-      address: '123 Test Street, City',
-    });
-    bookingId = bookingResponse.booking?.id || bookingResponse.id;
-
-    // Confirm booking
-    await request('POST', `/booking/${bookingId}/update-status`, {
-      status: 'confirmed',
-      provider_id: providerId,
-    });
-
-    // Mark as in progress
-    await request('POST', `/booking/${bookingId}/update-status`, {
-      status: 'in_progress',
-      provider_id: providerId,
-    });
-
-    // Mark as completed
-    await request('POST', `/booking/${bookingId}/update-status`, {
+      service_id: categoryId,
+      service_title: 'P7 Service',
+      service_name: 'P7 Service',
+      service_description: 'Support and trust verification booking',
+      service_address: 'Phase 7 Test Address',
+      service_location_type: 'mobile',
+      scheduled_at: new Date(Date.now() + 86400000).toISOString(),
+      hours_required: 1,
+      service_amount: 450,
+      total_amount: 450,
+      payment_method: 'cash_on_service',
       status: 'completed',
-      provider_id: providerId,
-    });
-  });
+      started_at: new Date(Date.now() - 3600000).toISOString(),
+      completed_at: new Date().toISOString(),
+    },
+  ]);
 
-  // Test 1: Create customer review for provider
-  await test('Create customer review for provider', async () => {
-    const response = await request('POST', '/trust/create-review', {
+  const t1 = await req('POST', 'notification_and_support', 'support_tickets', [
+    {
+      user_id: customerId,
+      subject: 'Need help with booking',
+      message: 'The booking needs support verification.',
+    },
+  ]);
+  ticketId = t1.body?.[0]?.ticket_id || null;
+  ok(
+    "support ticket defaults to status='open' and priority='normal'",
+    t1.status === 201 &&
+      t1.body?.[0]?.status === 'open' &&
+      t1.body?.[0]?.priority === 'normal',
+    `status=${t1.status} body=${JSON.stringify(t1.body)}`,
+  );
+
+  const badTicket = await req('POST', 'notification_and_support', 'support_tickets', [
+    {
+      user_id: customerId,
+      subject: 'Bad status',
+      message: 'This should fail.',
+      status: 'pending',
+    },
+  ]);
+  ok(
+    'regression: invalid support ticket status rejected',
+    badTicket.status >= 400,
+    `status=${badTicket.status}`,
+  );
+
+  const d1 = await req('POST', 'notification_and_support', 'disputes', [
+    {
+      booking_id: bookingId,
+      customer_id: customerId,
+      provider_id: providerId,
+      reason: 'Service quality',
+      description: 'Phase 7 dispute verification.',
+    },
+  ]);
+  disputeId = d1.body?.[0]?.id || null;
+  ok(
+    "dispute defaults to status='open'",
+    d1.status === 201 && d1.body?.[0]?.status === 'open',
+    `status=${d1.status}`,
+  );
+
+  const d2 = await req(
+    'PATCH',
+    'notification_and_support',
+    `disputes?id=eq.${disputeId}`,
+    { status: 'under_review' },
+  );
+  ok(
+    'dispute can move to under_review enum value',
+    d2.status === 200 && d2.body?.[0]?.status === 'under_review',
+    `status=${d2.status}`,
+  );
+
+  const badDispute = await req(
+    'PATCH',
+    'notification_and_support',
+    `disputes?id=eq.${disputeId}`,
+    { status: 'investigating' },
+  );
+  ok(
+    'regression: invalid dispute status rejected',
+    badDispute.status >= 400,
+    `status=${badDispute.status}`,
+  );
+
+  const r1 = await req('POST', 'trust_and_reputation', 'reviews', [
+    {
       booking_id: bookingId,
       reviewer_id: customerId,
       reviewee_id: providerId,
       rating: 5,
-      review_text: 'Excellent service! Very professional and timely.',
-      review_type: 'customer_to_provider',
-    });
-    reviewId = response.review?.id || response.id;
-    if (!reviewId) throw new Error('No review ID returned');
-  });
+      review_text: 'Excellent phase 7 service.',
+    },
+  ]);
+  ok(
+    'review inserts with rating between 1 and 5',
+    r1.status === 201 && r1.body?.[0]?.rating === 5,
+    `status=${r1.status}`,
+  );
 
-  // Test 2: Create provider review for customer
-  await test('Create provider review for customer', async () => {
-    const response = await request('POST', '/trust/create-review', {
+  const duplicateReview = await req('POST', 'trust_and_reputation', 'reviews', [
+    {
+      booking_id: bookingId,
+      reviewer_id: customerId,
+      reviewee_id: providerId,
+      rating: 4,
+      review_text: 'Duplicate should fail.',
+    },
+  ]);
+  ok(
+    'regression: duplicate review for booking/reviewer rejected',
+    duplicateReview.status >= 400,
+    `status=${duplicateReview.status}`,
+  );
+
+  const badRating = await req('POST', 'trust_and_reputation', 'reviews', [
+    {
       booking_id: bookingId,
       reviewer_id: providerId,
       reviewee_id: customerId,
-      rating: 4,
-      review_text: 'Good customer. Easy to communicate with.',
-      review_type: 'provider_to_customer',
-    });
-    if (!response.review && !response.id) throw new Error('Failed to create provider review');
-  });
+      rating: 6,
+      review_text: 'Invalid rating should fail.',
+    },
+  ]);
+  ok(
+    'regression: rating outside 1..5 rejected',
+    badRating.status >= 400,
+    `status=${badRating.status}`,
+  );
 
-  // Test 3: Get provider reviews
-  await test('Get provider reviews and ratings', async () => {
-    const response = await request('GET', `/trust/provider-reviews/${providerId}`);
-    if (!response.reviews || !Array.isArray(response.reviews)) {
-      throw new Error('No reviews returned');
-    }
-    if (response.reviews.length < 1) throw new Error('Expected at least 1 review');
-  });
-
-  // Test 4: Get provider performance report
-  await test('Get provider performance report', async () => {
-    const response = await request('GET', `/trust/performance-report/${providerId}`);
-    if (!response.report) {
-      throw new Error('No performance report returned');
-    }
-    // Report should include average rating, total reviews, completion rate, etc.
-  });
-
-  // Test 5: Validate review rating (1-5 scale)
-  await test('Validate review rating validation', async () => {
-    // This test verifies that invalid ratings are rejected
-    try {
-      await request('POST', '/trust/create-review', {
-        booking_id: bookingId,
-        reviewer_id: customerId,
-        reviewee_id: providerId,
-        rating: 10, // Invalid rating
-        review_text: 'This should fail',
-      });
-      throw new Error('Invalid rating was accepted');
-    } catch (error) {
-      if (error.message.includes('Invalid rating')) {
-        // Expected behavior
-        return;
-      }
-      // If it didn't reject invalid rating, the test fails
-      if (!error.message.includes('was accepted')) {
-        throw error;
-      }
-    }
-  });
-
-  // Test 6: Create provider report (safety/compliance)
-  await test('Create provider report for compliance', async () => {
-    const response = await request('POST', '/trust/create-provider-report', {
-      reported_provider_id: providerId,
+  const p1 = await req('POST', 'trust_and_reputation', 'provider_profile_reports', [
+    {
+      booking_id: bookingId,
       reporter_id: customerId,
-      reason: 'Policy violation',
-      description: 'Provider did not follow service guidelines',
-      report_type: 'compliance',
-    });
-    if (!response.report && !response.id) {
-      throw new Error('Failed to create provider report');
-    }
-  });
+      provider_id: providerId,
+      reason: 'Safety concern',
+      details: 'Phase 7 report verification.',
+    },
+  ]);
+  reportId = p1.body?.[0]?.id || null;
+  ok(
+    "provider profile report defaults to status='open'",
+    p1.status === 201 && p1.body?.[0]?.status === 'open',
+    `status=${p1.status}`,
+  );
 
-  // Test 7: Get compliance report data
-  await test('Get compliance report data', async () => {
-    const response = await request('GET', `/trust/compliance-reports?provider_id=${providerId}`);
-    // Response may be empty if no strict compliance issues
-    if (!response.reports) {
-      throw new Error('No compliance data returned');
-    }
-  });
+  const badReport = await req(
+    'PATCH',
+    'trust_and_reputation',
+    `provider_profile_reports?id=eq.${reportId}`,
+    { status: 'investigating' },
+  );
+  ok(
+    'regression: invalid provider report status rejected',
+    badReport.status >= 400,
+    `status=${badReport.status}`,
+  );
 
-  // Test 8: Check review notification sent
-  await test('Verify review notification created', async () => {
-    const response = await request('GET', `/notifications?user_id=${providerId}`);
-    if (!response.notifications || !Array.isArray(response.notifications)) {
-      throw new Error('No notifications returned for reviewed party');
-    }
-    // Should have notification about being reviewed
-  });
-
-  // Test 9: Get reviews with filtering
-  await test('Get reviews with filtering and sorting', async () => {
-    const response = await request('GET', `/trust/provider-reviews/${providerId}?rating=5&sort=recent`);
-    if (!response.reviews || !Array.isArray(response.reviews)) {
-      throw new Error('No filtered reviews returned');
-    }
-  });
-
-  // Test 10: Get provider rating statistics
-  await test('Get provider rating statistics', async () => {
-    const response = await request('GET', `/trust/provider-stats/${providerId}`);
-    if (!response.stats) {
-      throw new Error('No rating statistics returned');
-    }
-    // Stats should include: average_rating, total_reviews, 5_star_count, etc.
-  });
-
-  // Print results
-  console.log('\n' + '='.repeat(50));
-  console.log(`📊 Phase 7 Results: ${testResults.passed}/${testResults.total} passed`);
-  console.log('='.repeat(50));
-
-  if (testResults.failed > 0) {
-    console.log('\n❌ Failed tests:');
-    testResults.errors.forEach((err) => {
-      console.log(`  - ${err.test}: ${err.error}`);
-    });
-    process.exit(1);
-  } else {
-    console.log('\n✅ All Phase 7 tests passed!');
-    process.exit(0);
+  console.log('--- cleanup ---');
+  if (reportId) {
+    await req(
+      'DELETE',
+      'trust_and_reputation',
+      `provider_profile_reports?id=eq.${reportId}`,
+    );
   }
-}
-
-runPhase7Tests().catch((error) => {
-  console.error('Fatal error:', error);
-  process.exit(1);
-});
+  await req('DELETE', 'trust_and_reputation', `reviews?booking_id=eq.${bookingId}`);
+  if (disputeId) {
+    await req(
+      'DELETE',
+      'notification_and_support',
+      `disputes?id=eq.${disputeId}`,
+    );
+  }
+  if (ticketId) {
+    await req(
+      'DELETE',
+      'notification_and_support',
+      `support_tickets?ticket_id=eq.${ticketId}`,
+    );
+  }
+  await req('DELETE', 'booking', `bookings?id=eq.${bookingId}`);
+  await req(
+    'DELETE',
+    'provider_catalog',
+    `service_categories?id=eq.${categoryId}`,
+  );
+  await req(
+    'DELETE',
+    'provider_catalog',
+    `provider_profiles?user_id=eq.${providerId}`,
+  );
+  await req(
+    'DELETE',
+    'identity_and_user',
+    `customer_profiles?user_id=eq.${customerId}`,
+  );
+  await req('DELETE', 'identity_and_user', `users?id=eq.${customerId}`);
+  await req('DELETE', 'identity_and_user', `users?id=eq.${providerId}`);
+  console.log('--- done ---');
+})();

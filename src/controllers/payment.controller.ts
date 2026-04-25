@@ -30,8 +30,10 @@ export class PaymentController implements OnModuleInit {
       PAYMENT_PATTERNS.GET_PROVIDER_HISTORY,
       PAYMENT_PATTERNS.GET_EARNINGS_SUMMARY,
       PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT,
+      PAYMENT_PATTERNS.MARK_PAID,
+      PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT,
+      PAYMENT_PATTERNS.UPDATE_AMOUNT,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Post('v1/create')
@@ -106,16 +108,16 @@ export class PaymentController implements OnModuleInit {
   @UseGuards(AdminRoleGuard)
   @HttpCode(202)
   async markPaid(@Body() body: any) {
-    this.kafka.emit(PAYMENT_PATTERNS.MARK_PAID, body);
-    return { status: 'accepted' };
+    return sendWithTimeout(this.kafka.send(PAYMENT_PATTERNS.MARK_PAID, body));
   }
 
   @Patch('v1/booking/:bookingId/cancel')
   @UseGuards(AdminRoleGuard)
   @HttpCode(202)
   async cancelPayment(@Param('bookingId') bookingId: string) {
-    this.kafka.emit(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT, { bookingId });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT, { bookingId }),
+    );
   }
 
   @Patch('v1/booking/:bookingId/amount')
@@ -125,10 +127,11 @@ export class PaymentController implements OnModuleInit {
     @Param('bookingId') bookingId: string,
     @Body() body: { amount: number },
   ) {
-    this.kafka.emit(PAYMENT_PATTERNS.UPDATE_AMOUNT, {
-      bookingId,
-      amount: body.amount,
-    });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(PAYMENT_PATTERNS.UPDATE_AMOUNT, {
+        bookingId,
+        amount: body.amount,
+      }),
+    );
   }
 }

@@ -57,8 +57,15 @@ npm run start:gateway:dev
 If you need all services:
 
 ```bash
-npm run build
+docker compose up -d kafka
+npm install
 npm run start:dev:all
+```
+
+In a second terminal, run the gateway/Kafka smoke:
+
+```bash
+npm run test:golden
 ```
 
 ## Admin integration endpoints (recently wired)
@@ -81,7 +88,7 @@ After pulling backend route/pattern updates, restart gateway and admin-service s
 
 ```bash
 npm run test
-npm run test:e2e
+npm run test:golden
 ```
 
 ## Microservice Isolation Guards

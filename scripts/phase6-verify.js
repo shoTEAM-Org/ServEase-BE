@@ -1,304 +1,249 @@
 #!/usr/bin/env node
-
 /**
- * Phase 6 Verification: Chat Support System & Dispute Management
- * 
- * Tests:
- * 1. Create test users (customer & provider)
- * 2. Create test booking and service
- * 3. Test chat conversation flow (create, message, mark read)
- * 4. Test dispute creation and status updates
- * 5. Test ticket creation and lifecycle
- * 6. Test notification delivery for support events
- * 7. Validate message persistence in Supabase
- * 8. Validate dispute tracking and escalation
+ * Phase 6 verification - chat DB contract.
+ *
+ * Verifies booking-scoped conversations and messages in the messages schema.
  */
+const fs = require('fs');
+const path = require('path');
+const { randomUUID } = require('crypto');
 
-const BASE_URL = 'http://localhost:3000';
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://your-project.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
+const envPath = path.resolve(__dirname, '..', '.env');
+const env = Object.fromEntries(
+  fs
+    .readFileSync(envPath, 'utf8')
+    .split('\n')
+    .filter((l) => l && !l.startsWith('#') && l.includes('='))
+    .map((l) => {
+      const i = l.indexOf('=');
+      return [l.slice(0, i).trim(), l.slice(i + 1).trim()];
+    }),
+);
 
-const headers = {
-  'Content-Type': 'application/json',
-  Authorization: `Bearer ${SUPABASE_KEY}`,
-};
+const URL = env.SUPABASE_URL;
+const KEY = env.SUPABASE_SECRET_KEY;
 
-let testResults = {
-  total: 0,
-  passed: 0,
-  failed: 0,
-  errors: [],
-};
-
-async function request(method, endpoint, body = null) {
-  const url = `${BASE_URL}${endpoint}`;
-  const options = {
+async function req(method, schema, tableAndQuery, body) {
+  const res = await fetch(`${URL}/rest/v1/${tableAndQuery}`, {
     method,
-    headers,
-    ...(body && { body: JSON.stringify(body) }),
-  };
-
-  const response = await fetch(url, options);
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(`${response.status}: ${JSON.stringify(data)}`);
-  }
-
-  return data;
-}
-
-async function test(name, fn) {
-  testResults.total++;
+    headers: {
+      apikey: KEY,
+      Authorization: `Bearer ${KEY}`,
+      'Accept-Profile': schema,
+      'Content-Profile': schema,
+      'Content-Type': 'application/json',
+      Prefer: 'return=representation',
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await res.text();
+  let parsed = null;
   try {
-    await fn();
-    testResults.passed++;
-    console.log(`✅ ${name}`);
-  } catch (error) {
-    testResults.failed++;
-    testResults.errors.push({ test: name, error: error.message });
-    console.error(`❌ ${name}: ${error.message}`);
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = text;
   }
+  return { status: res.status, body: parsed };
 }
 
-async function runPhase6Tests() {
-  console.log('\n📋 Phase 6: Chat Support System & Dispute Management\n');
+function ok(label, cond, detail) {
+  const mark = cond ? 'PASS' : 'FAIL';
+  console.log(`[${mark}] ${label}${detail ? ' - ' + detail : ''}`);
+  if (!cond) process.exitCode = 1;
+  return cond;
+}
 
-  let customerId, providerId, bookingId, serviceId, conversationId, ticketId, disputeId;
+(async () => {
+  const stamp = Date.now();
+  const customerId = randomUUID();
+  const providerId = randomUUID();
+  const categoryId = randomUUID();
+  const bookingId = randomUUID();
+  let conversationId = null;
 
-  // Test 1: Create test customer
-  await test('Create test customer', async () => {
-    const customer = await request('POST', '/auth/customer-register', {
-      email: `chat-test-customer-${Date.now()}@test.com`,
-      password: 'Test@123456',
-      first_name: 'Chat',
-      last_name: 'Customer',
-      phone_number: '+1234567890',
-    });
-    customerId = customer.user?.id;
-    if (!customerId) throw new Error('No customer ID returned');
-  });
+  console.log('--- Phase 6 chat DB verification ---');
 
-  // Test 2: Create test provider
-  await test('Create test provider', async () => {
-    const provider = await request('POST', '/auth/provider-register', {
-      email: `chat-test-provider-${Date.now()}@test.com`,
-      password: 'Test@123456',
-      first_name: 'Chat',
-      last_name: 'Provider',
-      phone_number: '+1234567891',
-      business_name: 'Chat Test Business',
-      date_of_birth: '1990-01-01',
-    });
-    providerId = provider.user?.id;
-    if (!providerId) throw new Error('No provider ID returned');
-  });
-
-  // Test 3: Create provider profile
-  await test('Create provider profile', async () => {
-    const response = await request('POST', '/provider/create-profile', {
+  await req('POST', 'identity_and_user', 'users', [
+    {
+      id: customerId,
+      email: `ph6_customer_${stamp}@test.local`,
+      full_name: 'P6 Customer',
+      role: 'customer',
+      status: 'active',
+      is_verified: true,
+    },
+    {
+      id: providerId,
+      email: `ph6_provider_${stamp}@test.local`,
+      full_name: 'P6 Provider',
+      role: 'provider',
+      status: 'active',
+      is_verified: true,
+    },
+  ]);
+  await req('POST', 'identity_and_user', 'customer_profiles', [
+    { user_id: customerId },
+  ]);
+  await req('POST', 'provider_catalog', 'provider_profiles', [
+    {
       user_id: providerId,
-      business_name: 'Chat Test Business',
-      business_description: 'Test business for chat',
-      phone_number: '+1234567891',
-    });
-    if (!response.ok) throw new Error('Failed to create provider profile');
-  });
-
-  // Test 4: Create service category (prerequisite)
-  await test('Create service category', async () => {
-    const response = await request('POST', '/catalog/create-category', {
-      name: 'Chat Test Service',
-      description: 'Category for chat tests',
-      base_price: 50.00,
-      estimated_duration_minutes: 60,
-    });
-    // Note: This may succeed or fail based on whether endpoint exists
-  });
-
-  // Test 5: Create provider service
-  await test('Create provider service', async () => {
-    const response = await request('POST', '/provider/create-service', {
-      provider_id: providerId,
-      name: 'Chat Test Service',
-      description: 'Service for chat testing',
-      base_price: 50.00,
-      estimated_duration_minutes: 60,
-      category: 'Chat Test Service',
-    });
-    serviceId = response.service?.id || response.id;
-    if (!serviceId) throw new Error('No service ID returned');
-  });
-
-  // Test 6: Create booking
-  await test('Create booking for chat tests', async () => {
-    const response = await request('POST', '/booking/create', {
+      business_name: 'P6 Provider Co',
+      verification_status: 'approved',
+    },
+  ]);
+  await req('POST', 'provider_catalog', 'service_categories', [
+    {
+      id: categoryId,
+      name: `P6 Category ${stamp}`,
+      slug: `ph6-category-${stamp}`,
+    },
+  ]);
+  await req('POST', 'booking', 'bookings', [
+    {
+      id: bookingId,
+      booking_reference: `PH6-${stamp}`,
       customer_id: customerId,
       provider_id: providerId,
-      service_id: serviceId,
-      booking_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
-      booking_time: '10:00',
-      address: '123 Test Street, City',
-      special_instructions: 'Test booking for chat verification',
-    });
-    bookingId = response.booking?.id || response.id;
-    if (!bookingId) throw new Error('No booking ID returned');
-  });
-
-  // Test 7: Confirm booking
-  await test('Confirm booking', async () => {
-    const response = await request('POST', `/booking/${bookingId}/update-status`, {
+      service_id: categoryId,
+      service_title: 'P6 Service',
+      service_name: 'P6 Service',
+      service_description: 'Chat verification booking',
+      service_address: 'Phase 6 Test Address',
+      service_location_type: 'mobile',
+      scheduled_at: new Date(Date.now() + 86400000).toISOString(),
+      hours_required: 1,
+      service_amount: 350,
+      total_amount: 350,
+      payment_method: 'cash_on_service',
       status: 'confirmed',
-      provider_id: providerId,
-    });
-    if (!response.ok && !response.booking) throw new Error('Failed to confirm booking');
-  });
+    },
+  ]);
 
-  // Test 8: Create chat conversation
-  await test('Create chat conversation', async () => {
-    const response = await request('POST', '/chat/create-conversation', {
+  const c1 = await req('POST', 'messages', 'conversations', [
+    {
+      context_type: 'booking',
+      context_id: bookingId,
+      status: 'active',
+    },
+  ]);
+  conversationId = c1.body?.[0]?.id || null;
+  ok(
+    "create booking conversation with context_type='booking'",
+    c1.status === 201 && !!conversationId,
+    `status=${c1.status} id=${conversationId}`,
+  );
+
+  const cDup = await req('POST', 'messages', 'conversations', [
+    {
+      context_type: 'booking',
+      context_id: bookingId,
+      status: 'active',
+    },
+  ]);
+  ok(
+    'regression: duplicate conversation rejected by UNIQUE(context_type, context_id)',
+    cDup.status >= 400,
+    `status=${cDup.status}`,
+  );
+
+  const cBad = await req('POST', 'messages', 'conversations', [
+    {
       booking_id: bookingId,
       customer_id: customerId,
       provider_id: providerId,
-    });
-    conversationId = response.conversation?.id || response.id;
-    if (!conversationId) throw new Error('No conversation ID returned');
-  });
+    },
+  ]);
+  ok(
+    'regression: old booking_id/customer_id/provider_id columns are rejected',
+    cBad.status >= 400,
+    `status=${cBad.status}`,
+  );
 
-  // Test 9: Send chat message from customer
-  await test('Send chat message from customer', async () => {
-    const response = await request('POST', `/chat/conversations/${bookingId}/messages`, {
+  const m1 = await req('POST', 'messages', 'messages', [
+    {
+      conversation_id: conversationId,
       sender_id: customerId,
-      message: 'Hello, can you confirm the booking details?',
       message_type: 'text',
-    });
-    if (!response.ok && !response.message) throw new Error('Failed to send message');
-  });
-
-  // Test 10: Send chat message from provider
-  await test('Send chat message from provider', async () => {
-    const response = await request('POST', `/chat/conversations/${bookingId}/messages`, {
+      body: 'Hello from the customer.',
+      delivery_status: 'sent',
+    },
+    {
+      conversation_id: conversationId,
       sender_id: providerId,
-      message: 'Yes, I confirm. See you on the scheduled date.',
       message_type: 'text',
-    });
-    if (!response.ok && !response.message) throw new Error('Failed to send message');
-  });
+      body: 'Hello from the provider.',
+      delivery_status: 'sent',
+    },
+  ]);
+  ok(
+    'insert messages with conversation_id/sender_id/body/delivery_status',
+    m1.status === 201 && Array.isArray(m1.body) && m1.body.length === 2,
+    `status=${m1.status}`,
+  );
 
-  // Test 11: Get chat messages
-  await test('Retrieve chat messages', async () => {
-    const response = await request('GET', `/chat/conversations/${bookingId}/messages`);
-    if (!response.messages || !Array.isArray(response.messages)) {
-      throw new Error('No messages returned');
-    }
-    if (response.messages.length < 2) throw new Error('Expected at least 2 messages');
-  });
+  const badStatus = await req('POST', 'messages', 'messages', [
+    {
+      conversation_id: conversationId,
+      sender_id: customerId,
+      message_type: 'text',
+      body: 'Bad delivery status should fail.',
+      delivery_status: 'opened',
+    },
+  ]);
+  ok(
+    'regression: invalid delivery_status rejected',
+    badStatus.status >= 400,
+    `status=${badStatus.status}`,
+  );
 
-  // Test 12: Mark chat conversation as read
-  await test('Mark chat conversation as read', async () => {
-    const response = await request('PATCH', `/chat/conversations/${bookingId}/read`, {
-      user_id: customerId,
-    });
-    if (!response.ok && !response.success) throw new Error('Failed to mark as read');
-  });
+  const markRead = await req(
+    'PATCH',
+    'messages',
+    `messages?conversation_id=eq.${conversationId}&sender_id=neq.${customerId}&delivery_status=neq.read`,
+    { delivery_status: 'read' },
+  );
+  ok('mark-read updates only other party messages', markRead.status === 200);
 
-  // Test 13: Create support ticket
-  await test('Create support ticket', async () => {
-    const response = await request('POST', '/support/create-ticket', {
-      user_id: customerId,
-      subject: 'Chat not working properly',
-      description: 'I cannot send messages in the chat',
-      category: 'technical_issue',
-      booking_id: bookingId,
-    });
-    ticketId = response.ticket?.id || response.id;
-    if (!ticketId) throw new Error('No ticket ID returned');
-  });
+  const messages = await req(
+    'GET',
+    'messages',
+    `messages?conversation_id=eq.${conversationId}&select=sender_id,delivery_status&order=created_at.asc`,
+  );
+  const rows = Array.isArray(messages.body) ? messages.body : [];
+  const customerRowsRemainSent = rows
+    .filter((row) => row.sender_id === customerId)
+    .every((row) => row.delivery_status === 'sent');
+  const providerRowsAreRead = rows
+    .filter((row) => row.sender_id === providerId)
+    .every((row) => row.delivery_status === 'read');
+  ok(
+    'mark-read leaves reader messages alone and reads sender messages',
+    messages.status === 200 && customerRowsRemainSent && providerRowsAreRead,
+    `status=${messages.status} rows=${JSON.stringify(rows)}`,
+  );
 
-  // Test 14: Create dispute
-  await test('Create dispute', async () => {
-    // Update booking to completed first
-    await request('POST', `/booking/${bookingId}/update-status`, {
-      status: 'in_progress',
-      provider_id: providerId,
-    });
-
-    const response = await request('POST', '/support/create-dispute', {
-      booking_id: bookingId,
-      customer_id: customerId,
-      provider_id: providerId,
-      reason: 'Service quality below expectations',
-      description: 'The service was not completed as described',
-    });
-    disputeId = response.dispute?.id || response.id;
-    if (!disputeId) throw new Error('No dispute ID returned');
-  });
-
-  // Test 15: Get disputes
-  await test('Retrieve disputes', async () => {
-    const response = await request('GET', `/support/disputes?booking_id=${bookingId}`);
-    if (!response.disputes || !Array.isArray(response.disputes)) {
-      throw new Error('No disputes returned');
-    }
-    if (response.disputes.length < 1) throw new Error('Expected at least 1 dispute');
-  });
-
-  // Test 16: Update dispute status
-  await test('Update dispute status', async () => {
-    const response = await request('PATCH', `/support/disputes/${disputeId}`, {
-      status: 'under_review',
-      notes: 'Reviewing the dispute',
-    });
-    if (!response.ok && !response.dispute) throw new Error('Failed to update dispute');
-  });
-
-  // Test 17: Get notifications for chat message
-  await test('Retrieve notifications', async () => {
-    const response = await request('GET', `/notifications?user_id=${providerId}`);
-    if (!response.notifications || !Array.isArray(response.notifications)) {
-      throw new Error('No notifications returned');
-    }
-  });
-
-  // Test 18: Mark notification as read
-  await test('Mark notification as read', async () => {
-    const response = await request('GET', `/notifications?user_id=${customerId}`);
-    if (response.notifications && response.notifications.length > 0) {
-      const notificationId = response.notifications[0].id;
-      const markResponse = await request('PATCH', `/notifications/${notificationId}/mark-read`, {});
-      if (!markResponse.ok && !markResponse.success) {
-        throw new Error('Failed to mark notification as read');
-      }
-    }
-  });
-
-  // Cleanup
-  console.log('\n🧹 Cleaning up test data...');
-  try {
-    // Delete data via direct Supabase if needed
-    console.log('✅ Cleanup complete');
-  } catch (error) {
-    console.log(`⚠️  Cleanup error: ${error.message}`);
+  console.log('--- cleanup ---');
+  if (conversationId) {
+    await req('DELETE', 'messages', `messages?conversation_id=eq.${conversationId}`);
+    await req('DELETE', 'messages', `conversations?id=eq.${conversationId}`);
   }
-
-  // Print results
-  console.log('\n' + '='.repeat(50));
-  console.log(`📊 Phase 6 Results: ${testResults.passed}/${testResults.total} passed`);
-  console.log('='.repeat(50));
-
-  if (testResults.failed > 0) {
-    console.log('\n❌ Failed tests:');
-    testResults.errors.forEach((err) => {
-      console.log(`  - ${err.test}: ${err.error}`);
-    });
-    process.exit(1);
-  } else {
-    console.log('\n✅ All Phase 6 tests passed!');
-    process.exit(0);
-  }
-}
-
-runPhase6Tests().catch((error) => {
-  console.error('Fatal error:', error);
-  process.exit(1);
-});
+  await req('DELETE', 'booking', `bookings?id=eq.${bookingId}`);
+  await req(
+    'DELETE',
+    'provider_catalog',
+    `service_categories?id=eq.${categoryId}`,
+  );
+  await req(
+    'DELETE',
+    'provider_catalog',
+    `provider_profiles?user_id=eq.${providerId}`,
+  );
+  await req(
+    'DELETE',
+    'identity_and_user',
+    `customer_profiles?user_id=eq.${customerId}`,
+  );
+  await req('DELETE', 'identity_and_user', `users?id=eq.${customerId}`);
+  await req('DELETE', 'identity_and_user', `users?id=eq.${providerId}`);
+  console.log('--- done ---');
+})();

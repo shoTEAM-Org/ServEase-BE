@@ -145,7 +145,7 @@ export class BookingKafkaController {
     return this.bookingService.reviewAdditionalCharges(data);
   }
 
-  @EventPattern(BOOKING_PATTERNS.UPDATE_STATUS)
+  @MessagePattern(BOOKING_PATTERNS.UPDATE_STATUS)
   async updateStatus(@Payload() data: any) {
     return this.bookingService.updateStatus(
       data.id,
@@ -154,7 +154,7 @@ export class BookingKafkaController {
     );
   }
 
-  @EventPattern(BOOKING_PATTERNS.CANCEL)
+  @MessagePattern(BOOKING_PATTERNS.CANCEL)
   async cancelBooking(@Payload() data: any) {
     return this.bookingService.cancelBooking(
       data.id,

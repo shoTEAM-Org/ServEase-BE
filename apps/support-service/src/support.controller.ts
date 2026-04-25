@@ -18,6 +18,7 @@ export class SupportKafkaController {
       data.bookingId,
       data.userId,
       data.reason,
+      data.description,
     );
   }
 

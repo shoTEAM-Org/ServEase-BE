@@ -13,6 +13,7 @@ import {
   BOOKING_PATTERNS,
   KafkaRpcRequestOptions,
   PROVIDER_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 import { SupabaseClient } from '@supabase/supabase-js';
@@ -54,7 +55,10 @@ export class ChatService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_CHAT_BOOKINGS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_CHAT_BOOKING_CONTEXT);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_SERVICES_BY_IDS);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: ChatService.name,
+      logger: this.logger,
+    });
   }
 
   private toTrimmedString(value: unknown) {

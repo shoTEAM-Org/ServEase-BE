@@ -64,7 +64,6 @@ export class ChatController implements OnModuleInit {
       CHAT_PATTERNS.GET_MESSAGES,
       CHAT_PATTERNS.SEND_MESSAGE,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Get('v1/conversations')

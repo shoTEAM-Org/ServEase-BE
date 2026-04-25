@@ -8,7 +8,11 @@ import {
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
-import { PROVIDER_PATTERNS, sendKafkaRpcRequest } from '@app/common';
+import {
+  PROVIDER_PATTERNS,
+  connectKafkaClientWithRetry,
+  sendKafkaRpcRequest,
+} from '@app/common';
 
 @Injectable()
 export class ServicesService implements OnModuleInit {
@@ -27,7 +31,9 @@ export class ServicesService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_ADMIN_SERVICES);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.UPDATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.DELETE_ADMIN_SERVICE);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: ServicesService.name,
+    });
   }
 
   private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
@@ -82,7 +88,7 @@ export class ServicesService implements OnModuleInit {
   async getAllServices() {
     const services = await this.searchProviderServices('');
 
-    const categoryIds = [...new Set((services || []).map((s: any) => s.category_id))];
+    const categoryIds = [...new Set((services || []).map((s: any) => s.service_id))];
 
     const { data: categories } = categoryIds.length
       ? await this.supabase
@@ -102,7 +108,7 @@ export class ServicesService implements OnModuleInit {
       )
       .map((s: any) => ({
         ...s,
-        service_categories: categoryMap[s.category_id] || null,
+        service_categories: categoryMap[s.service_id] || null,
         provider_profiles: s.provider_profiles || null,
       }));
 
@@ -112,7 +118,7 @@ export class ServicesService implements OnModuleInit {
   async searchServices(keyword?: string) {
     const services = await this.searchProviderServices('');
 
-    const categoryIds = [...new Set((services || []).map((s: any) => s.category_id))];
+    const categoryIds = [...new Set((services || []).map((s: any) => s.service_id))];
 
     const { data: categories } = categoryIds.length
       ? await this.supabase
@@ -132,7 +138,7 @@ export class ServicesService implements OnModuleInit {
       )
       .map((s: any) => ({
         ...s,
-        service_categories: categoryMap[s.category_id] || null,
+        service_categories: categoryMap[s.service_id] || null,
         provider_profiles: s.provider_profiles || null,
       }));
 
@@ -155,9 +161,9 @@ export class ServicesService implements OnModuleInit {
     const { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('service_categories')
-      .select('id, name, slug')
+      .select('id, name, slug, display_order, is_active')
       .eq('is_active', true)
-      .order('name', { ascending: true });
+      .order('display_order', { ascending: true });
     if (error) throw new InternalServerErrorException(error.message);
     return { categories: data || [] };
   }

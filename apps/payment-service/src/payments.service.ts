@@ -13,6 +13,7 @@ import {
   AUTH_PATTERNS,
   BOOKING_PATTERNS,
   PROVIDER_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 
@@ -29,7 +30,10 @@ export class PaymentService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_ID);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: PaymentService.name,
+      logger: this.logger,
+    });
   }
 
   private toTrimmedString(value: unknown) {

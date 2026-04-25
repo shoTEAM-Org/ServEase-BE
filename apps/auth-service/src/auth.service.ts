@@ -12,6 +12,7 @@ import {
   RegisterProviderDto,
   LoginUserDto,
   PROVIDER_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 import 'multer';
@@ -25,7 +26,10 @@ export class AuthService implements OnModuleInit {
 
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.CREATE_PROVIDER_APPLICATION);
-    await this.kafka.connect();
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: AuthService.name,
+    });
   }
 
   private async createProviderApplication(payload: {
@@ -78,14 +82,20 @@ export class AuthService implements OnModuleInit {
     if (!userId) return null;
 
     try {
-      const { data: providerProfile } = await this.supabase
-        .schema('provider_catalog')
-        .from('provider_profiles')
-        .select('verification_status')
-        .eq('user_id', userId)
-        .maybeSingle();
+      const response = await sendKafkaRpcRequest<{ profiles?: any[] }>(
+        () =>
+          this.kafka.send(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS, {
+            userIds: [userId],
+          }),
+        { context: PROVIDER_PATTERNS.GET_PROFILES_BY_IDS },
+      );
+      const profile = Array.isArray(response?.profiles)
+        ? response.profiles.find(
+            (row: any) => String(row?.user_id || '').trim() === userId,
+          ) || response.profiles[0]
+        : null;
 
-      return providerProfile?.verification_status || 'pending';
+      return profile?.verification_status || 'pending';
     } catch {
       return null;
     }
@@ -355,6 +365,7 @@ export class AuthService implements OnModuleInit {
       .limit(1)
       .maybeSingle();
     if (error) throw new InternalServerErrorException('Failed to fetch user: ' + error.message);
+    if (!data) throw new UnauthorizedException('User profile not found.');
 
     await this.assertAccountIsActive(data);
 

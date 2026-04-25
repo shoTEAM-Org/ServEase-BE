@@ -32,7 +32,6 @@ export class AuthController implements OnModuleInit {
       AUTH_PATTERNS.REFRESH,
       AUTH_PATTERNS.GET_ME,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Post('v1/register/customer')

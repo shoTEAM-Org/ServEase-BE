@@ -14,7 +14,6 @@ export class LocationsController implements OnModuleInit {
       CATALOG_PATTERNS.GET_CITIES,
       CATALOG_PATTERNS.GET_BARANGAYS,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Get('v1')

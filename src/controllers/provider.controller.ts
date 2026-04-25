@@ -50,11 +50,14 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.GET_AVAILABILITY,
       PROVIDER_PATTERNS.GET_RESERVED_SLOTS,
       PROVIDER_PATTERNS.CHECK_AVAILABILITY,
+      PROVIDER_PATTERNS.SAVE_AVAILABILITY,
+      PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS,
       PROVIDER_PATTERNS.GET_MY_SERVICES,
       PROVIDER_PATTERNS.GET_PROFILE_DRAFT,
       PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES,
+      PROVIDER_PATTERNS.SUBMIT_REVIEW,
+      PROVIDER_PATTERNS.SUBMIT_REPORT,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   // ========== STATIC ROUTES ==========
@@ -104,24 +107,26 @@ export class ProviderController implements OnModuleInit {
     @Request() req: any,
     @Body('status') status: string,
   ) {
-    this.kafka.emit(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS, {
-      bookingId: id,
-      providerId: req['user'].id,
-      status,
-    });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS, {
+        bookingId: id,
+        providerId: req['user'].id,
+        status,
+      }),
+    );
   }
 
   @Put('v1/availability')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
   async saveAvailability(@Request() req: any, @Body() body: any) {
-    this.kafka.emit(PROVIDER_PATTERNS.SAVE_AVAILABILITY, {
-      ...body,
-      userId: req['user'].id,
-      accessToken: this.extractAccessToken(req),
-    });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.SAVE_AVAILABILITY, {
+        ...body,
+        userId: req['user'].id,
+        accessToken: this.extractAccessToken(req),
+      }),
+    );
   }
 
   @Get('v1/my-services')
@@ -215,7 +220,8 @@ export class ProviderController implements OnModuleInit {
   async reviewAdditionalCharges(@Request() req: any, @Body() body: any) {
     this.kafka.emit(PROVIDER_PATTERNS.REVIEW_ADDITIONAL_CHARGES, {
       ...body,
-      providerId: req['user'].id,
+      requesterId: req['user'].id,
+      requesterRole: req['user'].role,
     });
     return { status: 'accepted' };
   }
@@ -224,22 +230,24 @@ export class ProviderController implements OnModuleInit {
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
   async submitReview(@Request() req: any, @Body() body: any) {
-    this.kafka.emit(PROVIDER_PATTERNS.SUBMIT_REVIEW, {
-      ...body,
-      reviewer_id: req['user'].id,
-    });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.SUBMIT_REVIEW, {
+        ...body,
+        reviewer_id: req['user'].id,
+      }),
+    );
   }
 
   @Post('v1/reports')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
   async submitReport(@Request() req: any, @Body() body: any) {
-    this.kafka.emit(PROVIDER_PATTERNS.SUBMIT_REPORT, {
-      ...body,
-      reporter_id: req['user'].id,
-    });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.SUBMIT_REPORT, {
+        ...body,
+        reporter_id: req['user'].id,
+      }),
+    );
   }
 
   @Patch('v1/kyc/reupload')
