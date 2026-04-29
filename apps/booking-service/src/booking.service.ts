@@ -276,7 +276,7 @@ export class BookingService implements OnModuleInit {
     const scheduleParts = this.getManilaScheduleParts(scheduledAt);
     if (!scheduleParts) throw new BadRequestException('scheduled_at is invalid');
 
-    const { weeklySchedule, daysOff } = await this.getProviderAvailabilityWithClient(
+    const { weeklySchedule, availabilityWindows, daysOff } = await this.getProviderAvailabilityWithClient(
       this.supabase,
       providerId,
     );
@@ -285,6 +285,23 @@ export class BookingService implements OnModuleInit {
       (day: any) => this.normalizeOffDate(day?.off_date) === scheduleParts.date,
     );
     if (isDayOff) return 'Provider is unavailable on this date.';
+
+    const requestedStart = scheduleParts.minutes;
+    const requestedEnd = requestedStart + hoursRequired * 60;
+    const activeWindows = (availabilityWindows || []).filter(
+      (window: any) =>
+        this.normalizeWeekdayKey(window?.day_of_week) === scheduleParts.weekday &&
+        this.toBoolean(window?.is_active, true),
+    );
+
+    if (activeWindows.length) {
+      const fitsWindow = activeWindows.some((window: any) => {
+        const startTime = this.timeStringToMinutes(window?.start_time);
+        const endTime = this.timeStringToMinutes(window?.end_time);
+        return startTime !== null && endTime !== null && requestedStart >= startTime && requestedEnd <= endTime;
+      });
+      return fitsWindow ? null : 'Selected time is outside the provider schedule.';
+    }
 
     if (!weeklySchedule?.length) return null;
 
@@ -302,8 +319,6 @@ export class BookingService implements OnModuleInit {
       return 'Provider schedule is incomplete for this day.';
     }
 
-    const requestedStart = scheduleParts.minutes;
-    const requestedEnd = requestedStart + hoursRequired * 60;
     if (requestedStart < startTime || requestedEnd > endTime) {
       return 'Selected time is outside the provider schedule.';
     }
@@ -497,6 +512,56 @@ export class BookingService implements OnModuleInit {
       .filter(Boolean) as Record<string, any>[];
   }
 
+  private normalizeAvailabilityWindowRows(userId: string, source: unknown) {
+    if (!Array.isArray(source)) return [] as Record<string, any>[];
+
+    return source.flatMap((row: any, dayIndex) => {
+      const dayOfWeek = this.normalizeWeekdayKey(row?.day_of_week ?? row?.dayOfWeek);
+      const isActive = this.toBoolean(row?.is_active ?? row?.isActive, true);
+      const windows = Array.isArray(row?.windows) ? row.windows : [];
+      if (!dayOfWeek || !isActive) return [];
+
+      return windows
+        .map((window: any, windowIndex: number) => ({
+          user_id: userId,
+          day_of_week: dayOfWeek,
+          start_time: this.normalizeTime(window?.start_time ?? window?.startTime),
+          end_time: this.normalizeTime(window?.end_time ?? window?.endTime),
+          is_active: this.toBoolean(window?.is_active ?? window?.isActive, true),
+          sort_order: Number.isFinite(Number(window?.sort_order ?? window?.sortOrder))
+            ? Number(window?.sort_order ?? window?.sortOrder)
+            : dayIndex * 10 + windowIndex,
+        }))
+        .filter((window: Record<string, any>) => window.start_time && window.end_time);
+    });
+  }
+
+  private buildWindowsFromLegacySchedule(weeklySchedule: any[]) {
+    return (weeklySchedule || []).flatMap((day: any) => {
+      const dayOfWeek = this.normalizeWeekdayKey(day?.day_of_week);
+      if (!dayOfWeek || !this.toBoolean(day?.is_active, false)) return [];
+
+      const startTime = this.normalizeTime(day?.start_time);
+      const endTime = this.normalizeTime(day?.end_time);
+      const breakStart = this.normalizeTime(day?.break_start_time);
+      const breakEnd = this.normalizeTime(day?.break_end_time);
+      if (!startTime || !endTime) return [];
+
+      if (breakStart && breakEnd) {
+        return [
+          { day_of_week: dayOfWeek, start_time: startTime, end_time: breakStart, is_active: true, sort_order: 0 },
+          { day_of_week: dayOfWeek, start_time: breakEnd, end_time: endTime, is_active: true, sort_order: 1 },
+        ].filter((window) => {
+          const start = this.timeStringToMinutes(window.start_time);
+          const end = this.timeStringToMinutes(window.end_time);
+          return start !== null && end !== null && end > start;
+        });
+      }
+
+      return [{ day_of_week: dayOfWeek, start_time: startTime, end_time: endTime, is_active: true, sort_order: 0 }];
+    });
+  }
+
   private async getProviderAvailabilityWithClient(
     client: SupabaseClient,
     userId: string,
@@ -504,7 +569,7 @@ export class BookingService implements OnModuleInit {
     let lastError: any = null;
 
     for (const schemaName of this.availabilitySchemas) {
-      const [weeklyResult, daysOffResult] = await Promise.all([
+      const [weeklyResult, windowsResult, daysOffResult] = await Promise.all([
         client
           .schema(schemaName)
           .from('provider_availability')
@@ -512,20 +577,32 @@ export class BookingService implements OnModuleInit {
           .eq('user_id', userId),
         client
           .schema(schemaName)
+          .from('provider_availability_windows')
+          .select('*')
+          .eq('user_id', userId)
+          .order('sort_order', { ascending: true })
+          .order('start_time', { ascending: true }),
+        client
+          .schema(schemaName)
           .from('provider_days_off')
           .select('*')
           .eq('user_id', userId),
       ]);
+      const windowsMissing = Boolean(windowsResult.error && this.isMissingRelationError(windowsResult.error));
 
-      if (!weeklyResult.error && !daysOffResult.error) {
+      if (!weeklyResult.error && !daysOffResult.error && (!windowsResult.error || windowsMissing)) {
         const normalizedDaysOff = (daysOffResult.data || []).map((row: any) => ({
           ...row,
           off_date: this.normalizeOffDate(row?.off_date) || row?.off_date,
         }));
-        return { weeklySchedule: weeklyResult.data || [], daysOff: normalizedDaysOff };
+        const weeklySchedule = weeklyResult.data || [];
+        const availabilityWindows = windowsMissing || !windowsResult.data?.length
+          ? this.buildWindowsFromLegacySchedule(weeklySchedule)
+          : windowsResult.data || [];
+        return { weeklySchedule, availabilityWindows, daysOff: normalizedDaysOff };
       }
 
-      const combinedErrors = [weeklyResult.error, daysOffResult.error].filter(Boolean);
+      const combinedErrors = [weeklyResult.error, windowsMissing ? null : windowsResult.error, daysOffResult.error].filter(Boolean);
       const permissionError = combinedErrors.find((error) =>
         this.isPermissionDeniedError(error),
       );
@@ -548,6 +625,7 @@ export class BookingService implements OnModuleInit {
     body: any,
   ) {
     const weeklyRows = this.normalizeWeeklyScheduleRows(userId, body?.weeklySchedule);
+    const windowRows = this.normalizeAvailabilityWindowRows(userId, body?.weeklySchedule);
     const daysOffRows = this.normalizeDaysOffRows(userId, body?.daysOff);
     const includesWeeklySchedule = body?.weeklySchedule !== undefined;
     const includesDaysOff = body?.daysOff !== undefined;
@@ -558,6 +636,40 @@ export class BookingService implements OnModuleInit {
       let operationError: any = null;
 
       if (includesWeeklySchedule) {
+        const existingWindowsResult = await client
+          .schema(schemaName)
+          .from('provider_availability_windows')
+          .select('id')
+          .eq('user_id', userId);
+
+        if (existingWindowsResult.error && !this.isMissingRelationError(existingWindowsResult.error)) {
+          operationError = existingWindowsResult.error;
+        }
+
+        if (!operationError && !existingWindowsResult.error) {
+          const existingWindowIds = (existingWindowsResult.data || [])
+            .map((row: any) => this.toTrimmedString(row?.id))
+            .filter(Boolean);
+
+          if (existingWindowIds.length) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_availability_windows')
+              .delete()
+              .in('id', existingWindowIds)
+              .eq('user_id', userId);
+            if (error) operationError = error;
+          }
+
+          if (!operationError && windowRows.length) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_availability_windows')
+              .insert(windowRows);
+            if (error) operationError = error;
+          }
+        }
+
         const existingAvailabilityResult = await client
           .schema(schemaName)
           .from('provider_availability')

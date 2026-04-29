@@ -701,12 +701,19 @@ export class ProviderController implements OnModuleInit {
     const providerId = String(id || '').trim();
     if (!providerId) throw new BadRequestException('Provider id is required');
 
-    const [weeklyResult, daysOffResult] = await Promise.all([
+    const [weeklyResult, windowsResult, daysOffResult] = await Promise.all([
       this.supabase
         .schema('booking')
         .from('provider_availability')
         .select('*')
         .eq('user_id', providerId),
+      this.supabase
+        .schema('booking')
+        .from('provider_availability_windows')
+        .select('*')
+        .eq('user_id', providerId)
+        .order('sort_order', { ascending: true })
+        .order('start_time', { ascending: true }),
       this.supabase
         .schema('booking')
         .from('provider_days_off')
@@ -717,12 +724,16 @@ export class ProviderController implements OnModuleInit {
     if (weeklyResult.error) {
       throw new InternalServerErrorException(weeklyResult.error.message);
     }
+    if (windowsResult.error) {
+      throw new InternalServerErrorException(windowsResult.error.message);
+    }
     if (daysOffResult.error) {
       throw new InternalServerErrorException(daysOffResult.error.message);
     }
 
     return {
       weeklySchedule: weeklyResult.data || [],
+      availabilityWindows: windowsResult.data || [],
       daysOff: daysOffResult.data || [],
     };
   }
