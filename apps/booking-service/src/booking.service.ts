@@ -7,11 +7,14 @@ import {
   Logger,
   OnModuleInit,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ClientKafka } from '@nestjs/microservices';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_PATTERNS,
   PROVIDER_PATTERNS,
+  PAYMENT_PATTERNS,
+  PricingEngine,
   SUPPORT_PATTERNS,
   sendKafkaRpcRequest,
 } from '@app/common';
@@ -30,6 +33,7 @@ export class BookingService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
     await this.kafka.connect();
   }
@@ -886,6 +890,33 @@ export class BookingService implements OnModuleInit {
     throw new BadRequestException('Failed to create booking');
   }
 
+  private async ensurePaymentForBooking(booking: Record<string, any>) {
+    const bookingId = this.toTrimmedString(booking?.id);
+    if (!bookingId) return null;
+
+    try {
+      return await sendKafkaRpcRequest<any>(
+        () =>
+          this.kafka.send(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT, {
+            bookingId,
+            customerId: booking.customer_id,
+            provider_id: booking.provider_id,
+            amount: booking.total_amount,
+            method: booking.payment_method,
+            skipBookingLookup: true,
+          }),
+        { context: PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT },
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `booking.create payment ensure failed for ${bookingId}: ${
+          this.toTrimmedString(error?.message) || 'unknown error'
+        }`,
+      );
+      return null;
+    }
+  }
+
   async createBooking(dto: any, customerId: string) {
     const normalizedProviderId = this.toTrimmedString(dto?.provider_id);
     const normalizedCustomerId = this.toTrimmedString(customerId);
@@ -899,23 +930,7 @@ export class BookingService implements OnModuleInit {
     );
     await this.ensureProviderCanBeBooked(normalizedProviderId);
 
-    const normalizedPricingMode = ['hourly', 'flat'].includes(
-      this.toTrimmedString(dto?.pricing_mode).toLowerCase(),
-    )
-      ? this.toTrimmedString(dto?.pricing_mode).toLowerCase()
-      : 'flat';
-    const normalizedHoursRequired = Math.max(
-      1,
-      Number(this.toNullableNumber(dto?.hours_required) || 1),
-    );
-    const hourlyRate = this.toNullableNumber(dto?.hourly_rate);
-    const flatRate = this.toNullableNumber(dto?.flat_rate);
-    const totalAmountCandidate = this.toNullableNumber(dto?.total_amount);
-    const computedAmount =
-      normalizedPricingMode === 'hourly'
-        ? (hourlyRate || 0) * normalizedHoursRequired
-        : flatRate || hourlyRate || 0;
-    const totalAmount = totalAmountCandidate ?? computedAmount;
+    const pricingQuote = PricingEngine.quote(dto || {});
     const normalizedServiceLocationType =
       this.toTrimmedString(dto?.service_location_type).toLowerCase() ===
       'in_shop'
@@ -928,9 +943,10 @@ export class BookingService implements OnModuleInit {
       this.toTrimmedString(
         dto?.service_description || dto?.service_name || dto?.service_title,
       ) || null;
-    const bookingRef = `BKG-${Math.floor(100000 + Math.random() * 900000)}`;
+    const bookingRef = `BKG-${randomUUID().slice(0, 8).toUpperCase()}`;
 
     const baseInsertPayload: Record<string, any> = {
+      id: randomUUID(),
       booking_reference: bookingRef,
       customer_id: normalizedCustomerId,
       provider_id: normalizedProviderId,
@@ -939,11 +955,11 @@ export class BookingService implements OnModuleInit {
       service_address: this.toTrimmedString(dto?.service_address),
       service_location_type: normalizedServiceLocationType,
       scheduled_at: normalizedScheduledAt,
-      pricing_mode: normalizedPricingMode,
-      hourly_rate: hourlyRate,
-      flat_rate: flatRate,
-      hours_required: normalizedHoursRequired,
-      total_amount: totalAmount,
+      pricing_mode: pricingQuote.pricing_mode,
+      hourly_rate: pricingQuote.hourly_rate,
+      flat_rate: pricingQuote.flat_rate,
+      hours_required: pricingQuote.hours_required,
+      total_amount: pricingQuote.total_amount,
       payment_method: normalizedPaymentMethod,
       customer_notes: this.toNullableString(dto?.customer_notes),
       status: 'pending',
@@ -952,8 +968,14 @@ export class BookingService implements OnModuleInit {
     const newBooking = await this.insertBookingWithSchemaFallback(
       baseInsertPayload,
     );
+    const paymentResult = await this.ensurePaymentForBooking(newBooking);
 
-    return { message: 'Booking successfully created!', booking: newBooking };
+    return {
+      message: 'Booking successfully created!',
+      booking: newBooking,
+      pricing: pricingQuote,
+      payment: paymentResult?.payment || null,
+    };
   }
 
   async getCustomerBookings(customerId: string) {

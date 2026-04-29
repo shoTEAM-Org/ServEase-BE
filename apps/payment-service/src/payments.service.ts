@@ -7,11 +7,13 @@ import {
   OnModuleInit,
   Logger,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ClientKafka } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_PATTERNS,
   BOOKING_PATTERNS,
+  PricingEngine,
   PROVIDER_PATTERNS,
   sendKafkaRpcRequest,
 } from '@app/common';
@@ -96,11 +98,19 @@ export class PaymentService implements OnModuleInit {
     return rows[0] || null;
   }
 
-  private normalizeEnsurePaymentInput(body: any) {
+  private normalizeEnsurePaymentInput(body: any, booking?: any) {
     const bookingId = this.toTrimmedString(body?.bookingId);
-    const customerId = this.toTrimmedString(body?.customerId);
-    const providerId = this.toTrimmedString(body?.provider_id);
-    const amount = this.toPositiveAmount(body?.amount);
+    const customerId = this.toTrimmedString(
+      body?.customerId || booking?.customer_id,
+    );
+    const providerId = this.toTrimmedString(
+      body?.provider_id || booking?.provider_id,
+    );
+    const quote = PricingEngine.quote({
+      ...(booking || {}),
+      amount: body?.amount ?? booking?.total_amount,
+    });
+    const amount = this.toPositiveAmount(quote.total_amount);
     const method = this.normalizePaymentMethod(body?.method) || 'cash_on_service';
 
     if (!bookingId) throw new BadRequestException('bookingId is required');
@@ -116,7 +126,23 @@ export class PaymentService implements OnModuleInit {
       providerId,
       amount,
       method,
+      quote,
     };
+  }
+
+  private async getBookingForPricing(bookingId: string) {
+    try {
+      const response = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
+        id: bookingId,
+      });
+      return response?.booking || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private buildPaymentReference() {
+    return `PAY-${randomUUID().slice(0, 12).toUpperCase()}`;
   }
 
   private async getUsersByIds(userIds: string[]) {
@@ -167,15 +193,30 @@ export class PaymentService implements OnModuleInit {
 
   async createPayment(dto: any) {
     const normalizedMethod = this.normalizePaymentMethod(dto?.method) || 'cash_on_service';
+    const bookingId = this.toTrimmedString(dto?.booking_id || dto?.bookingId);
+    const booking = bookingId ? await this.getBookingForPricing(bookingId) : null;
+    const quote = PricingEngine.quote({
+      ...(booking || {}),
+      amount: dto?.amount ?? booking?.total_amount,
+    });
+    const amount = this.toPositiveAmount(quote.total_amount);
+    if (amount === null) {
+      throw new BadRequestException('amount must be a number greater than 0');
+    }
     const payload = {
-      booking_id: dto.booking_id, customer_id: dto.customer_id, provider_id: dto.provider_id,
-      amount: dto.amount, method: normalizedMethod, status: dto.status || 'pending',
+      id: randomUUID(),
+      booking_id: bookingId,
+      customer_id: dto.customer_id || booking?.customer_id,
+      provider_id: dto.provider_id || booking?.provider_id,
+      amount,
+      method: normalizedMethod,
+      status: dto.status || 'pending',
       paid_at: dto.status === 'completed' ? new Date().toISOString() : null,
-      transaction_reference: dto.transaction_reference || null,
+      transaction_reference: dto.transaction_reference || this.buildPaymentReference(),
     };
     const { data, error } = await this.supabase.schema('payment').from('payments').insert([payload]).select().single();
     if (error) throw new InternalServerErrorException(`Failed to process payment: ${error.message}`);
-    return { status: 'success', message: 'Payment processed successfully', data };
+    return { status: 'success', message: 'Payment processed successfully', data, pricing: quote };
   }
 
   async getEarnings(providerId: string) {
@@ -239,8 +280,12 @@ export class PaymentService implements OnModuleInit {
   }
 
   async ensureBookingPayment(body: any) {
-    const { bookingId, customerId, providerId, amount, method } =
-      this.normalizeEnsurePaymentInput(body);
+    const bookingIdCandidate = this.toTrimmedString(body?.bookingId);
+    const booking = body?.skipBookingLookup
+      ? null
+      : await this.getBookingForPricing(bookingIdCandidate);
+    const { bookingId, customerId, providerId, amount, method, quote } =
+      this.normalizeEnsurePaymentInput(body, booking);
 
     const existing = await this.getLatestPaymentByBookingId(bookingId);
     if (existing) {
@@ -254,9 +299,9 @@ export class PaymentService implements OnModuleInit {
         if (error) throw new InternalServerErrorException(error.message);
 
         const updatedRows = Array.isArray(data) ? data : [];
-        return { payment: updatedRows[0] || { ...existing, amount } };
+        return { payment: updatedRows[0] || { ...existing, amount }, pricing: quote };
       }
-      return { payment: existing };
+      return { payment: existing, pricing: quote };
     }
 
     const { data, error } = await this.supabase
@@ -264,12 +309,14 @@ export class PaymentService implements OnModuleInit {
       .from('payments')
       .insert([
         {
+          id: randomUUID(),
           booking_id: bookingId,
           customer_id: customerId,
           provider_id: providerId,
           amount,
           method,
           status: 'pending',
+          transaction_reference: this.buildPaymentReference(),
         },
       ])
       .select();
@@ -279,7 +326,7 @@ export class PaymentService implements OnModuleInit {
     if (!insertedRows.length) {
       throw new InternalServerErrorException('Failed to ensure booking payment');
     }
-    return { payment: insertedRows[0] };
+    return { payment: insertedRows[0], pricing: quote };
   }
 
   async markBookingPaymentPaid(body: any) {
@@ -290,7 +337,12 @@ export class PaymentService implements OnModuleInit {
     if (!existing) return { payment: null };
 
     const updates: any = { status: 'completed', paid_at: new Date().toISOString() };
-    const amount = this.toPositiveAmount(body?.amount);
+    const booking = await this.getBookingForPricing(bookingId);
+    const quote = PricingEngine.quote({
+      ...(booking || {}),
+      amount: body?.amount ?? existing.amount,
+    });
+    const amount = this.toPositiveAmount(quote.total_amount);
     if (amount !== null) updates.amount = amount;
 
     const method = this.normalizePaymentMethod(body?.method);
@@ -305,7 +357,7 @@ export class PaymentService implements OnModuleInit {
     if (error) throw new InternalServerErrorException(error.message);
 
     const updatedRows = Array.isArray(data) ? data : [];
-    return { payment: updatedRows[0] || { ...existing, ...updates } };
+    return { payment: updatedRows[0] || { ...existing, ...updates }, pricing: quote };
   }
 
   async cancelBookingPayment(bookingId: string) {
@@ -328,7 +380,12 @@ export class PaymentService implements OnModuleInit {
     const existing = await this.getLatestPaymentByBookingId(bookingId);
     if (!existing) return { payment: null };
 
-    const normalizedAmount = this.toPositiveAmount(amount);
+    const booking = await this.getBookingForPricing(bookingId);
+    const quote = PricingEngine.quote({
+      ...(booking || {}),
+      amount: amount ?? existing.amount,
+    });
+    const normalizedAmount = this.toPositiveAmount(quote.total_amount);
     if (normalizedAmount === null) {
       throw new BadRequestException('amount must be a number greater than 0');
     }
@@ -342,7 +399,10 @@ export class PaymentService implements OnModuleInit {
     if (error) throw new InternalServerErrorException(error.message);
 
     const updatedRows = Array.isArray(data) ? data : [];
-    return { payment: updatedRows[0] || { ...existing, amount: normalizedAmount } };
+    return {
+      payment: updatedRows[0] || { ...existing, amount: normalizedAmount },
+      pricing: quote,
+    };
   }
 
   async getAdminTransactions(page = 1, limit = 20) {
