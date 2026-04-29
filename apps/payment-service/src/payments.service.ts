@@ -3,6 +3,7 @@ import {
   Injectable,
   InternalServerErrorException,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   OnModuleInit,
   Logger,
@@ -265,11 +266,13 @@ export class PaymentService implements OnModuleInit {
     const { bookingId, customerId, providerId, amount, method } =
       this.normalizeEnsurePaymentInput(body);
 
-    const bookingResponse = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
-      id: bookingId,
-      requesterId: this.toTrimmedString(requesterId),
-    });
-    const booking = bookingResponse?.booking;
+    const { data: booking, error: bookingError } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('id, customer_id, provider_id')
+      .eq('id', bookingId)
+      .maybeSingle();
+    if (bookingError) throw new InternalServerErrorException(bookingError.message);
     if (!booking) throw new NotFoundException('Booking not found');
     if (this.toTrimmedString(booking.customer_id) !== customerId) {
       throw new NotFoundException('Booking not found');
@@ -321,6 +324,7 @@ export class PaymentService implements OnModuleInit {
   async markBookingPaymentPaid(body: any) {
     const bookingId = this.toTrimmedString(body?.bookingId);
     if (!bookingId) throw new BadRequestException('bookingId is required');
+    await this.assertCanMarkBookingPaid(bookingId, body);
 
     const existing = await this.getLatestPaymentByBookingId(bookingId);
     if (!existing) return { payment: null };
@@ -342,6 +346,28 @@ export class PaymentService implements OnModuleInit {
 
     const updatedRows = Array.isArray(data) ? data : [];
     return { payment: updatedRows[0] || { ...existing, ...updates } };
+  }
+
+  private async assertCanMarkBookingPaid(bookingId: string, body: any) {
+    const requesterRole = this.toTrimmedString(body?.requesterRole);
+    const requesterId = this.toTrimmedString(body?.requesterId);
+
+    if (requesterRole === 'admin') return;
+    if (requesterRole !== 'provider' || !requesterId) {
+      throw new ForbiddenException('Only the assigned provider can mark this booking paid');
+    }
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('id, provider_id')
+      .eq('id', bookingId)
+      .maybeSingle();
+
+    if (error) throw new InternalServerErrorException(error.message);
+    if (!data || this.toTrimmedString((data as any).provider_id) !== requesterId) {
+      throw new ForbiddenException('Only the assigned provider can mark this booking paid');
+    }
   }
 
   async cancelBookingPayment(bookingId: string) {

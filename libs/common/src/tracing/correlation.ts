@@ -81,7 +81,9 @@ function getMetadataRecord(payload: unknown): Record<string, unknown> | null {
   return metadata as Record<string, unknown>;
 }
 
-export function extractCorrelationIdFromPayload(payload: unknown): string | null {
+export function extractCorrelationIdFromPayload(
+  payload: unknown,
+): string | null {
   const metadata = getMetadataRecord(payload);
   const candidateFromMetadata = metadata?.correlationId;
   if (candidateFromMetadata !== undefined) {

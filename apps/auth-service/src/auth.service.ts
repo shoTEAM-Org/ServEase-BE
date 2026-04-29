@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
   InternalServerErrorException,
   BadRequestException,
+  ConflictException,
   OnModuleInit,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
@@ -87,7 +88,11 @@ export class AuthService implements OnModuleInit {
           this.kafka.send(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS, {
             userIds: [userId],
           }),
-        { context: PROVIDER_PATTERNS.GET_PROFILES_BY_IDS },
+        {
+          context: PROVIDER_PATTERNS.GET_PROFILES_BY_IDS,
+          timeoutMs: 2000,
+          retries: 0,
+        },
       );
       const profile = Array.isArray(response?.profiles)
         ? response.profiles.find(
@@ -141,10 +146,21 @@ export class AuthService implements OnModuleInit {
 
   async register(dto: any) {
     try {
+      const requestedRole = String(dto?.role || 'customer').trim().toLowerCase();
+      if (!['customer', 'admin'].includes(requestedRole)) {
+        throw new BadRequestException('role must be either customer or admin');
+      }
+
       const authClient = this.createAuthClient();
       const { data: authData, error: authError } = await authClient.auth.signUp({
         email: dto.email,
         password: dto.password,
+        options: {
+          data: {
+            full_name: dto.full_name,
+            role: requestedRole,
+          },
+        },
       });
       if (authError) throw new Error(`Auth Error: ${authError.message}`);
       const userId = authData.user!.id;
@@ -152,9 +168,10 @@ export class AuthService implements OnModuleInit {
       const { error: userTableError } = await this.supabase.schema('identity_and_user').from('users')
         .insert([{
           id: userId,
-          role: 'customer',
+          role: requestedRole,
           status: 'active',
           is_verified: true,
+          verification_status: requestedRole === 'admin' ? 'verified' : 'unverified',
           full_name: dto.full_name,
           email: dto.email,
           contact_number: dto.contact_number,
@@ -164,24 +181,35 @@ export class AuthService implements OnModuleInit {
         throw new Error(`Users Table Error: ${userTableError.message}`);
       }
 
-      const { error: profileError } = await this.supabase.schema('identity_and_user').from('customer_profiles')
-        .insert([{ user_id: userId }]);
-      if (profileError) {
-        await this.supabase.schema('identity_and_user').from('users').delete().eq('id', userId);
-        await this.supabase.auth.admin.deleteUser(userId);
-        throw new Error(`Profile Table Error: ${profileError.message}`);
+      if (requestedRole === 'customer') {
+        const { error: profileError } = await this.supabase.schema('identity_and_user').from('customer_profiles')
+          .insert([{ user_id: userId }]);
+        if (profileError) {
+          await this.supabase.schema('identity_and_user').from('users').delete().eq('id', userId);
+          await this.supabase.auth.admin.deleteUser(userId);
+          throw new Error(`Profile Table Error: ${profileError.message}`);
+        }
       }
 
       const { data: signInData } = await authClient.auth.signInWithPassword({ email: dto.email, password: dto.password });
+      if (!signInData?.session?.access_token) {
+        throw new Error('Account created but session could not be created. Please log in.');
+      }
 
       return {
         session: {
-          access_token: signInData?.session?.access_token || null,
-          refresh_token: signInData?.session?.refresh_token || null,
-          user: { id: userId, email: dto.email, full_name: dto.full_name, role: 'customer' },
+          access_token: signInData.session.access_token,
+          refresh_token: signInData.session.refresh_token,
+          user: {
+            id: userId,
+            email: dto.email,
+            full_name: dto.full_name,
+            role: requestedRole,
+          },
         },
       };
     } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
       console.error('Registration Crash:', err.message);
       throw new InternalServerErrorException(err.message);
     }
@@ -259,21 +287,48 @@ export class AuthService implements OnModuleInit {
     if (!file) throw new BadRequestException('document_file image is required');
     const authClient = this.createAuthClient();
     const { full_name, email, contact_number, password, business_name, document_type, date_of_birth } = dto;
+    const normalizedEmail = String(email || '').trim().toLowerCase();
 
-    const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,128}$/;
-    if (!passwordRegex.test(password)) {
-      throw new BadRequestException('Password must be 8-128 characters long and contain at least one uppercase letter, one lowercase letter, one number, and one special character.');
+    if (!normalizedEmail) {
+      throw new BadRequestException('email is required');
     }
 
-    const { data: authData, error: authError } = await authClient.auth.signUp({ email, password } as any);
-    if (authError) throw new BadRequestException(`Auth Registration Error: ${authError.message}`);
+    const { data: existingUser, error: existingUserError } = await this.supabase
+      .schema('identity_and_user')
+      .from('users')
+      .select('id')
+      .eq('email', normalizedEmail)
+      .maybeSingle();
+    if (existingUserError) {
+      throw new InternalServerErrorException(
+        `Failed to check existing provider account: ${existingUserError.message}`,
+      );
+    }
+    if (existingUser) {
+      throw new ConflictException('An account with this email already exists. Please log in instead.');
+    }
+
+    const { data: authData, error: authError } = await authClient.auth.signUp({ email: normalizedEmail, password } as any);
+    if (authError) {
+      const message = authError.message || 'Provider account could not be created';
+      if (/already (registered|exists)|duplicate/i.test(message)) {
+        throw new ConflictException('An account with this email already exists. Please log in instead.');
+      }
+      throw new BadRequestException(`Auth Registration Error: ${message}`);
+    }
 
     const newUserId = authData.user?.id;
     if (!newUserId) throw new BadRequestException('Could not retrieve user ID from Supabase');
 
     const { error: userError } = await this.supabase.schema('identity_and_user').from('users')
-      .insert([{ id: newUserId, full_name, email, contact_number, role: 'provider', status: 'active', is_verified: false }]);
-    if (userError) { await this.supabase.auth.admin.deleteUser(newUserId); throw new BadRequestException(`User Profile Error: ${userError.message}`); }
+      .insert([{ id: newUserId, full_name, email: normalizedEmail, contact_number, role: 'provider', status: 'active', is_verified: false }]);
+    if (userError) {
+      await this.supabase.auth.admin.deleteUser(newUserId);
+      if (userError.code === '23505') {
+        throw new ConflictException('An account with this email already exists. Please log in instead.');
+      }
+      throw new BadRequestException(`User Profile Error: ${userError.message}`);
+    }
 
     const filePath = `kyc/${newUserId}/${Date.now()}_${file.originalname}`;
     const { error: uploadError } = await this.supabase.storage.from('verification-docs')
@@ -285,19 +340,13 @@ export class AuthService implements OnModuleInit {
     }
 
     try {
-      const providerApplication = await this.createProviderApplication({
+      await this.createProviderApplication({
         userId: newUserId,
         businessName: business_name,
         documentType: document_type,
         filePath,
         dateOfBirth: date_of_birth || null,
       });
-
-      return {
-        status: 'success',
-        message: 'Provider application submitted. Pending approval.',
-        data: providerApplication,
-      };
     } catch (error: any) {
       await this.supabase.storage
         .from('verification-docs')
@@ -313,6 +362,25 @@ export class AuthService implements OnModuleInit {
         `Provider Profile Error: ${error?.message || 'Failed to create provider application'}`,
       );
     }
+
+    const { data: signInData } = await authClient.auth.signInWithPassword({ email: normalizedEmail, password });
+    if (!signInData?.session?.access_token) {
+      throw new InternalServerErrorException('Provider registered but session could not be created. Please log in.');
+    }
+
+    return {
+      session: {
+        access_token: signInData.session.access_token,
+        refresh_token: signInData.session.refresh_token,
+        user: {
+          id: newUserId,
+          email: normalizedEmail,
+          full_name,
+          role: 'provider',
+          user_metadata: { verification_status: 'pending' },
+        },
+      },
+    };
   }
 
   async refreshSession(refreshToken: string) {

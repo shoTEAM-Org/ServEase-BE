@@ -60,13 +60,13 @@ export class AdminController implements OnModuleInit {
 
   // ── Existing ──────────────────────────────────────────────
   @Patch('v2/documents/status/:id')
-  @HttpCode(202)
-  updateDocumentStatus(@Param('id') id: string, @Body() dto: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS, {
-      ...dto,
-      documentId: id,
-    });
-    return { status: 'accepted' };
+  async updateDocumentStatus(@Param('id') id: string, @Body() dto: any) {
+    return await sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS, {
+        ...dto,
+        documentId: id,
+      }),
+    );
   }
 
   // ── USER MANAGEMENT ───────────────────────────────────────
@@ -181,6 +181,11 @@ export class AdminController implements OnModuleInit {
         userId: req['user'].id,
       }),
     );
+  }
+
+  @Get('v1/account/activity-log')
+  getActivityLog(@Query('page') page = '1', @Query('limit') limit = '50') {
+    return { logs: [], total: 0, page: +page, limit: +limit };
   }
 
   @Patch('v1/account/profile')

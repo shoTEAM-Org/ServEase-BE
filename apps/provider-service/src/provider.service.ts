@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   InternalServerErrorException,
   Logger,
@@ -13,6 +14,7 @@ import {
   AUTH_PATTERNS,
   BOOKING_PATTERNS,
   KafkaRpcRequestOptions,
+  NOTIFICATION_PATTERNS,
   PAYMENT_PATTERNS,
   TRUST_PATTERNS,
   connectKafkaClientWithRetry,
@@ -30,6 +32,7 @@ export class ProviderService implements OnModuleInit {
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_ROLE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.UPDATE_USER_STATUS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID);
@@ -130,6 +133,87 @@ export class ProviderService implements OnModuleInit {
     return Array.isArray(users) ? users : [];
   }
 
+  private async getAdminUsersFromAuth() {
+    const response = await this.request<any>(AUTH_PATTERNS.GET_USERS_BY_ROLE, {
+      role: 'admin',
+      page: 1,
+      limit: 100,
+    });
+    const users =
+      response && typeof response === 'object' && 'users' in response
+        ? response.users
+        : [];
+    return Array.isArray(users) ? users : [];
+  }
+
+  private sanitizeStorageName(value: unknown) {
+    const raw = this.toTrimmedString(value) || 'document';
+    return raw.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
+  }
+
+  private normalizeDocumentType(value: unknown) {
+    return this.toTrimmedString(value).toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+  }
+
+  private async toVerificationSignedUrl(path: unknown) {
+    const normalizedPath = this.toTrimmedString(path);
+    if (!normalizedPath) return null;
+    const { data } = await this.supabase.storage
+      .from('verification-docs')
+      .createSignedUrl(normalizedPath, 60 * 60);
+    return data?.signedUrl || null;
+  }
+
+  private async mapProviderDocument(doc: any) {
+    const filePath = doc.document_file_path || '';
+    const fileName = filePath.split('/').pop() || undefined;
+    return {
+      document_id: doc.document_id,
+      id: doc.document_id,
+      provider_id: doc.provider_id,
+      document_type: doc.document_type,
+      document_file_path: doc.document_file_path,
+      file_name: fileName,
+      status: doc.status || 'pending',
+      reject_reason: doc.reject_reason || null,
+      uploaded_at: doc.uploaded_at || null,
+      reviewed_at: doc.reviewed_at || null,
+      reviewed_by: doc.reviewed_by || null,
+      signed_url: await this.toVerificationSignedUrl(doc.document_file_path),
+    };
+  }
+
+  private async emitProviderNotification(
+    pattern: string,
+    userId: string,
+    metadata: Record<string, unknown> = {},
+  ) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) return;
+    this.kafka.emit(pattern, {
+      userId: normalizedUserId,
+      type: pattern,
+      metadata,
+    });
+  }
+
+  private async emitAdminProviderApplicationSubmitted(providerId: string) {
+    try {
+      const admins = await this.getAdminUsersFromAuth();
+      for (const admin of admins) {
+        await this.emitProviderNotification(
+          NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_SUBMITTED,
+          admin?.id,
+          { providerId },
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to notify admins about provider application ${providerId}: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+    }
+  }
+
   private toTrimmedString(value: unknown) {
     if (typeof value === 'string') return value.trim();
     if (typeof value === 'number' || typeof value === 'boolean') {
@@ -182,7 +266,12 @@ export class ProviderService implements OnModuleInit {
   }
 
   private mapVerificationStatusToUserStatus(status: string) {
-    if (status === 'approved' || status === 'pending' || status === 'rejected') {
+    if (
+      status === 'approved' ||
+      status === 'pending' ||
+      status === 'under_review' ||
+      status === 'rejected'
+    ) {
       return 'active';
     }
     return 'inactive';
@@ -257,6 +346,170 @@ export class ProviderService implements OnModuleInit {
     return payload;
   }
 
+  // === Provider Status ===
+  async getProviderStatus(providerId: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) {
+      throw new BadRequestException('providerId is required');
+    }
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_status')
+      .select('provider_id, status, last_updated')
+      .eq('provider_id', normalizedProviderId)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      throw new InternalServerErrorException(error.message);
+    }
+
+    // If no status record exists, return default status
+    if (!data) {
+      return {
+        status: 'success',
+        data: {
+          provider_id: normalizedProviderId,
+          status: 'offline',
+          updated_at: new Date().toISOString()
+        }
+      };
+    }
+
+    return {
+      status: 'success',
+      data: {
+        provider_id: data.provider_id,
+        status: data.status,
+        updated_at: data.last_updated || new Date().toISOString()
+      }
+    };
+  }
+
+  async updateProviderStatus(providerId: string, status: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+    
+    if (!normalizedProviderId) {
+      throw new BadRequestException('providerId is required');
+    }
+    
+    if (!['online', 'on_the_way', 'arrived', 'busy', 'offline'].includes(normalizedStatus)) {
+      throw new BadRequestException('status must be one of: online, on_the_way, arrived, busy, offline');
+    }
+
+    // First try to update
+    const { data: updateData, error: updateError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_status')
+      .update({
+        status: normalizedStatus,
+        last_updated: new Date().toISOString()
+      })
+      .eq('provider_id', normalizedProviderId)
+      .select()
+      .single();
+
+    // If no rows were updated (PGRST116), insert instead
+    if (updateError && updateError.code === 'PGRST116') {
+      const { data: insertData, error: insertError } = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_status')
+        .insert({
+          provider_id: normalizedProviderId,
+          status: normalizedStatus,
+          last_updated: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        throw new InternalServerErrorException(insertError.message);
+      }
+
+      // Create timeline events for active bookings (fire and forget)
+      this.addTimelineEventsForProviderStatus(normalizedProviderId, normalizedStatus).catch(() => {
+        // Silently ignore timeline errors
+      });
+
+      return {
+        status: 'success',
+        data: {
+          provider_id: insertData.provider_id,
+          status: insertData.status,
+          updated_at: insertData.last_updated || new Date().toISOString()
+        }
+      };
+    }
+
+    if (updateError) {
+      throw new InternalServerErrorException(updateError.message);
+    }
+
+    // Create timeline events for active bookings (fire and forget)
+    this.addTimelineEventsForProviderStatus(normalizedProviderId, normalizedStatus).catch(() => {
+      // Silently ignore timeline errors
+    });
+
+    return {
+      status: 'success',
+      data: {
+        provider_id: updateData.provider_id,
+        status: updateData.status,
+        updated_at: updateData.last_updated || new Date().toISOString()
+      }
+    };
+  }
+
+  private async addTimelineEventsForProviderStatus(providerId: string, status: string) {
+    try {
+      // Get active bookings for this provider
+      const { data: bookings, error: bookingsError } = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .select('id')
+        .eq('provider_id', providerId)
+        .in('status', ['confirmed', 'in_progress']);
+
+      if (bookingsError || !bookings || bookings.length === 0) {
+        return;
+      }
+
+      // Map status to label
+      const statusLabels: Record<string, string> = {
+        'online': 'Provider is online',
+        'on_the_way': 'Provider is on the way',
+        'arrived': 'Provider has arrived',
+        'busy': 'Provider started your service',
+        'offline': 'Provider is offline'
+      };
+
+      const label = statusLabels[status] || `Provider status: ${status}`;
+
+      // Insert timeline events for all active bookings
+      const timelineEvents = bookings.map(booking => ({
+        booking_id: booking.id,
+        event_type: 'provider-status',
+        label,
+        icon: status
+      }));
+
+      // Use upsert to avoid conflicts and set timeout
+      const { error: insertError } = await this.supabase
+        .schema('booking')
+        .from('booking_timeline_events')
+        .insert(timelineEvents);
+
+      if (insertError) {
+        // Log error but don't throw - timeline events are non-critical
+        console.warn('Failed to create timeline events:', insertError.message);
+      }
+    } catch (error) {
+      // Log error but don't throw - timeline events are non-critical
+      console.warn('Failed to create timeline events:', error);
+    }
+  }
+
   // === Existing: Provider Discovery ===
   async getProvidersByService(serviceId: string) {
     const { data: services, error } = await this.supabase
@@ -319,7 +572,7 @@ export class ProviderService implements OnModuleInit {
       .schema('provider_catalog')
       .from('provider_profiles')
       .select(
-        'user_id, business_name, service_description, verification_status, average_rating, total_reviews, trust_score',
+        'user_id, business_name, service_description, verification_status, average_rating, total_reviews, trust_score, home_latitude, home_longitude, verification_submitted_at, verification_decided_at, reject_reason',
       )
       .eq('user_id', userId)
       .single();
@@ -329,16 +582,11 @@ export class ProviderService implements OnModuleInit {
     const { data: documents } = await this.supabase
       .schema('provider_catalog')
       .from('provider_documents')
-      .select('document_id, document_type, document_file_path, status')
+      .select('document_id, provider_id, document_type, document_file_path, status, reject_reason, uploaded_at, reviewed_at, reviewed_by')
       .eq('provider_id', userId);
 
     const documentsWithUrls = await Promise.all(
-      (documents || []).map(async (doc: any) => {
-        const { data: urlData } = await this.supabase.storage
-          .from('verification-docs')
-          .createSignedUrl(doc.document_file_path, 60);
-        return { ...doc, view_url: urlData?.signedUrl || null };
-      }),
+      (documents || []).map((doc: any) => this.mapProviderDocument(doc)),
     );
     return {
       status: 'success',
@@ -414,11 +662,15 @@ export class ProviderService implements OnModuleInit {
     );
     if (!normalizedIds.length) return { profiles: [] };
 
-    const { data, error } = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_profiles')
-      .select('user_id, business_name, average_rating, verification_status')
-      .in('user_id', normalizedIds);
+    const { data, error } = await this.withQueryTimeout(
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .select('user_id, business_name, average_rating, verification_status, home_latitude, home_longitude')
+        .in('user_id', normalizedIds),
+      3000,
+      'provider.get-profiles-by-ids query',
+    );
     if (error) throw new InternalServerErrorException(error.message);
     return { profiles: data || [] };
   }
@@ -551,14 +803,21 @@ export class ProviderService implements OnModuleInit {
     }
 
     const profile = profileResult.data;
-    const documents = (docsResult.data || []).map((doc: any) => ({
+    const mappedDocuments = await Promise.all(
+      (docsResult.data || []).map((doc: any) => this.mapProviderDocument(doc)),
+    );
+    const documents = mappedDocuments.map((doc: any) => ({
       id: doc.document_id,
+      document_id: doc.document_id,
       name: doc.document_type || 'Document',
+      document_type: doc.document_type,
       file: doc.document_file_path || '',
       status: doc.status || 'pending',
       reject_reason: doc.reject_reason || null,
       uploaded_at: doc.uploaded_at || null,
       reviewed_at: doc.reviewed_at || null,
+      signed_url: doc.signed_url || null,
+      view_url: doc.signed_url || null,
     }));
 
     const status = profile.verification_status || user.status || 'pending';
@@ -593,9 +852,9 @@ export class ProviderService implements OnModuleInit {
     const normalizedId = this.toTrimmedString(id);
     const normalizedStatus = this.toTrimmedString(status).toLowerCase();
     if (!normalizedId) throw new BadRequestException('id is required');
-    if (!['approved', 'rejected', 'pending'].includes(normalizedStatus)) {
+    if (!['approved', 'rejected', 'pending', 'under_review'].includes(normalizedStatus)) {
       throw new BadRequestException(
-        'status must be one of: approved, rejected, pending',
+        'status must be one of: approved, rejected, pending, under_review',
       );
     }
     if (
@@ -619,7 +878,16 @@ export class ProviderService implements OnModuleInit {
     const profileUpdate = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
-      .update({ verification_status: normalizedStatus })
+      .update({
+        verification_status: normalizedStatus,
+        verification_decided_at: ['approved', 'rejected'].includes(normalizedStatus)
+          ? new Date().toISOString()
+          : null,
+        reject_reason:
+          normalizedStatus === 'rejected'
+            ? this.toTrimmedString(rejectReason)
+            : null,
+      })
       .eq('user_id', normalizedId);
     if (profileUpdate.error) {
       throw new BadRequestException(profileUpdate.error.message);
@@ -635,11 +903,13 @@ export class ProviderService implements OnModuleInit {
 
     const documentIds = (docsResult.data || []).map((doc: any) => doc.document_id);
     if (documentIds.length > 0) {
+      const documentStatus =
+        normalizedStatus === 'under_review' ? 'pending' : normalizedStatus;
       const docUpdate = await this.supabase
         .schema('provider_catalog')
         .from('provider_documents')
         .update({
-          status: normalizedStatus,
+          status: documentStatus,
           reject_reason:
             normalizedStatus === 'rejected'
               ? this.toTrimmedString(rejectReason)
@@ -650,6 +920,20 @@ export class ProviderService implements OnModuleInit {
       if (docUpdate.error) {
         throw new BadRequestException(docUpdate.error.message);
       }
+    }
+
+    if (normalizedStatus === 'approved') {
+      await this.emitProviderNotification(
+        NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_APPROVED,
+        normalizedId,
+      );
+    }
+    if (normalizedStatus === 'rejected') {
+      await this.emitProviderNotification(
+        NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_REJECTED,
+        normalizedId,
+        { reason: this.toTrimmedString(rejectReason) },
+      );
     }
 
     return { ok: true };
@@ -713,22 +997,25 @@ export class ProviderService implements OnModuleInit {
       );
     }
 
-    const profileUpdate = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_profiles')
-      .update({ verification_status: normalizedStatus })
-      .eq('user_id', providerId);
-    if (profileUpdate.error) {
-      throw new InternalServerErrorException(profileUpdate.error.message);
+    if (normalizedStatus === 'rejected') {
+      const profileUpdate = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .update({
+          verification_status: 'rejected',
+          reject_reason: this.toTrimmedString(dto?.reject_reason),
+          verification_decided_at: new Date().toISOString(),
+        })
+        .eq('user_id', providerId);
+      if (profileUpdate.error) {
+        throw new InternalServerErrorException(profileUpdate.error.message);
+      }
+      await this.emitProviderNotification(
+        NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_REJECTED,
+        providerId,
+        { reason: this.toTrimmedString(dto?.reject_reason) },
+      );
     }
-
-    const mappedUserStatus = this.mapVerificationStatusToUserStatus(
-      normalizedStatus,
-    );
-    await this.request(AUTH_PATTERNS.UPDATE_USER_STATUS, {
-      userId: providerId,
-      status: mappedUserStatus,
-    });
 
     return {
       status: 'success',
@@ -740,6 +1027,237 @@ export class ProviderService implements OnModuleInit {
         reviewed_at: docUpdate.data.reviewed_at,
       },
     };
+  }
+
+  async getRequiredDocumentTypes() {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('required_document_types')
+      .select('*')
+      .order('sort_order', { ascending: true });
+    if (error) throw new InternalServerErrorException(error.message);
+    return { documentTypes: data || [] };
+  }
+
+  async getMyDocuments(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .select(
+        'document_id, provider_id, document_type, document_file_path, status, reject_reason, uploaded_at, reviewed_at, reviewed_by',
+      )
+      .eq('provider_id', normalizedUserId)
+      .order('uploaded_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+
+    return {
+      documents: await Promise.all(
+        (data || []).map((doc: any) => this.mapProviderDocument(doc)),
+      ),
+    };
+  }
+
+  async getMyVerification(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const [profileResult, required, documents] = await Promise.all([
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .select(
+          'user_id, business_name, service_description, verification_status, verification_submitted_at, verification_decided_at, reject_reason, home_latitude, home_longitude',
+        )
+        .eq('user_id', normalizedUserId)
+        .maybeSingle(),
+      this.getRequiredDocumentTypes(),
+      this.getMyDocuments(normalizedUserId),
+    ]);
+
+    if (profileResult.error) {
+      throw new InternalServerErrorException(profileResult.error.message);
+    }
+
+    return {
+      profile: profileResult.data || null,
+      verification_status:
+        profileResult.data?.verification_status || 'pending',
+      required_document_types: required.documentTypes,
+      documents: documents.documents,
+    };
+  }
+
+  async uploadDocument(
+    userId: string,
+    documentType: string,
+    file: Express.Multer.File,
+  ) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const normalizedDocumentType = this.normalizeDocumentType(documentType);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+    if (!normalizedDocumentType) {
+      throw new BadRequestException('document_type is required');
+    }
+    if (!file) throw new BadRequestException('A document file is required');
+
+    const { data: profile, error: profileError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('verification_status')
+      .eq('user_id', normalizedUserId)
+      .maybeSingle();
+    if (profileError) throw new InternalServerErrorException(profileError.message);
+    if (!profile) throw new NotFoundException('Provider profile not found');
+    if (this.toTrimmedString(profile.verification_status) === 'approved') {
+      throw new BadRequestException('Approved providers cannot replace verification documents');
+    }
+
+    const storagePath = `providers/${normalizedUserId}/${normalizedDocumentType}/${Date.now()}_${this.sanitizeStorageName(file.originalname)}`;
+    const { error: uploadError } = await this.supabase.storage
+      .from('verification-docs')
+      .upload(storagePath, file.buffer, {
+        contentType: file.mimetype,
+        upsert: false,
+      });
+    if (uploadError) throw new BadRequestException(uploadError.message);
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .insert([
+        {
+          provider_id: normalizedUserId,
+          document_type: normalizedDocumentType,
+          document_file_path: storagePath,
+          status: 'pending',
+        },
+      ])
+      .select()
+      .single();
+    if (error) throw new InternalServerErrorException(error.message);
+
+    return {
+      document: await this.mapProviderDocument(data),
+      status: 'pending',
+    };
+  }
+
+  async deleteMyDocument(userId: string, documentId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const normalizedDocumentId = this.toTrimmedString(documentId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+    if (!normalizedDocumentId) throw new BadRequestException('documentId is required');
+
+    const { data: doc, error: fetchError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .select('document_id, provider_id, document_file_path, status')
+      .eq('document_id', normalizedDocumentId)
+      .eq('provider_id', normalizedUserId)
+      .maybeSingle();
+    if (fetchError) throw new InternalServerErrorException(fetchError.message);
+    if (!doc) throw new NotFoundException('Document not found');
+
+    const status = this.toTrimmedString(doc.status);
+    if (!['pending', 'rejected'].includes(status)) {
+      throw new BadRequestException('Only pending or rejected documents can be deleted');
+    }
+
+    const { error: deleteError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .delete()
+      .eq('document_id', normalizedDocumentId)
+      .eq('provider_id', normalizedUserId);
+    if (deleteError) throw new InternalServerErrorException(deleteError.message);
+
+    const storagePath = this.toTrimmedString(doc.document_file_path);
+    if (storagePath) {
+      await this.supabase.storage.from('verification-docs').remove([storagePath]);
+    }
+
+    return { ok: true };
+  }
+
+  async submitForReview(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const [profileResult, requiredResult, docsResult] = await Promise.all([
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .select('verification_status')
+        .eq('user_id', normalizedUserId)
+        .maybeSingle(),
+      this.supabase
+        .schema('provider_catalog')
+        .from('required_document_types')
+        .select('code')
+        .eq('is_required', true),
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_documents')
+        .select('document_type, status')
+        .eq('provider_id', normalizedUserId),
+    ]);
+
+    if (profileResult.error) {
+      throw new InternalServerErrorException(profileResult.error.message);
+    }
+    if (!profileResult.data) throw new NotFoundException('Provider profile not found');
+    if (requiredResult.error) {
+      throw new InternalServerErrorException(requiredResult.error.message);
+    }
+    if (docsResult.error) {
+      throw new InternalServerErrorException(docsResult.error.message);
+    }
+
+    const currentStatus = this.toTrimmedString(
+      profileResult.data.verification_status,
+    );
+    if (!['pending', 'rejected'].includes(currentStatus)) {
+      throw new BadRequestException(
+        'Only pending or rejected applications can be submitted for review',
+      );
+    }
+
+    const acceptableDocs = new Set(
+      (docsResult.data || [])
+        .filter((doc: any) => this.toTrimmedString(doc.status) !== 'rejected')
+        .map((doc: any) => this.normalizeDocumentType(doc.document_type)),
+    );
+    const missing = (requiredResult.data || [])
+      .map((row: any) => this.normalizeDocumentType(row.code))
+      .filter((code: string) => !acceptableDocs.has(code));
+    if (missing.length) {
+      throw new BadRequestException(
+        `Missing required documents: ${missing.join(', ')}`,
+      );
+    }
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .update({
+        verification_status: 'under_review',
+        verification_submitted_at: new Date().toISOString(),
+        verification_decided_at: null,
+        reject_reason: null,
+      })
+      .eq('user_id', normalizedUserId)
+      .select(
+        'user_id, business_name, verification_status, verification_submitted_at',
+      )
+      .single();
+    if (error) throw new InternalServerErrorException(error.message);
+
+    await this.emitAdminProviderApplicationSubmitted(normalizedUserId);
+
+    return { profile: data, status: 'under_review' };
   }
 
   async getProviderDashboard(providerId: string) {
@@ -945,9 +1463,18 @@ export class ProviderService implements OnModuleInit {
     const normalizedProviderId = this.toTrimmedString(providerId);
     if (!normalizedProviderId) return { bookings: [] };
 
-    return await this.request<any>(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS, {
-      providerId: normalizedProviderId,
-    });
+    try {
+      return await this.request<any>(
+        BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS,
+        { providerId: normalizedProviderId },
+        { timeoutMs: 5000, retries: 0 },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `provider.get-bookings degraded: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      return { bookings: [] };
+    }
   }
 
   async getProviderBookingById(bookingId: string, providerId?: string) {
@@ -962,9 +1489,10 @@ export class ProviderService implements OnModuleInit {
     status: string,
     providerId?: string,
   ) {
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase();
     return await this.request(BOOKING_PATTERNS.UPDATE_STATUS, {
       id: bookingId,
-      status,
+      status: normalizedStatus || status,
       providerId,
     });
   }
@@ -1009,12 +1537,21 @@ export class ProviderService implements OnModuleInit {
     const normalizedProviderId = this.toTrimmedString(providerId);
     if (!normalizedProviderId) return { services: [] };
 
-    const { data, error } = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_services')
-      .select('*')
-      .eq('provider_id', normalizedProviderId);
-    if (error) throw new InternalServerErrorException(error.message);
+    const { data, error } = await this.withQueryTimeout(
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_services')
+        .select('*')
+        .eq('provider_id', normalizedProviderId),
+      3000,
+      'provider.get-my-services query',
+    );
+    if (error) {
+      this.logger.warn(
+        `provider.get-my-services degraded: ${this.toTrimmedString(error.message)}`,
+      );
+      return { services: [] };
+    }
     return { services: data || [] };
   }
 
@@ -1078,9 +1615,33 @@ export class ProviderService implements OnModuleInit {
     return { ok: true };
   }
 
+  private async checkProviderVerificationStatus(providerId: string): Promise<void> {
+    const { data: profile, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('verification_status')
+      .eq('user_id', providerId)
+      .single();
+
+    if (error) {
+      throw new InternalServerErrorException('Failed to verify provider status');
+    }
+
+    const verificationStatus = this.toTrimmedString(profile?.verification_status);
+    if (verificationStatus !== 'approved') {
+      throw new ForbiddenException(
+        'You must complete the screening process and be fully verified before adding services. ' +
+        'Please complete your verification in the Provider Verification section.'
+      );
+    }
+  }
+
   async createMyService(providerId: string, body: any) {
     const normalizedProviderId = this.toTrimmedString(providerId);
     if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+
+    // Check if provider is verified before allowing service creation
+    await this.checkProviderVerificationStatus(normalizedProviderId);
 
     const payload = this.normalizeServicePayload(body, {
       providerId: normalizedProviderId,
@@ -1104,6 +1665,9 @@ export class ProviderService implements OnModuleInit {
     if (!normalizedServiceId) throw new BadRequestException('serviceId is required');
     if (!normalizedProviderId) throw new BadRequestException('providerId is required');
 
+    // Check if provider is verified before allowing service update
+    await this.checkProviderVerificationStatus(normalizedProviderId);
+
     const payload = this.normalizeServicePayload(body, { requireCoreFields: true });
     let { data, error } = await this.supabase
       .schema('provider_catalog')
@@ -1119,6 +1683,12 @@ export class ProviderService implements OnModuleInit {
   }
 
   async deleteMyService(serviceId: string, providerId: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+
+    // Check if provider is verified before allowing service deletion
+    await this.checkProviderVerificationStatus(normalizedProviderId);
+
     const { error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
@@ -1135,7 +1705,7 @@ export class ProviderService implements OnModuleInit {
       .schema('provider_catalog')
       .from('provider_profiles')
       .select(
-        'user_id, business_name, service_description, trust_score, verification_status',
+        'user_id, business_name, service_description, trust_score, verification_status, home_latitude, home_longitude, service_radius_km',
       )
       .eq('user_id', userId)
       .single();
@@ -1148,21 +1718,40 @@ export class ProviderService implements OnModuleInit {
     const allowed = [
       'business_name',
       'service_description',
+      'home_latitude',
+      'home_longitude',
+      'service_radius_km',
     ];
     const updates: any = {};
     for (const key of allowed) {
       if (body[key] !== undefined) updates[key] = body[key];
     }
 
-    const { data, error } = await this.supabase
+    const baseQuery = this.supabase
       .schema('provider_catalog')
-      .from('provider_profiles')
+      .from('provider_profiles');
+
+    // If the provider profile row doesn't exist yet, PostgREST returns 0 rows
+    // and `.single()` produces an error. Treat that case as "create on first edit".
+    const { data, error } = await baseQuery
       .update(updates)
       .eq('user_id', userId)
       .select()
       .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    return { draft: data };
+
+    if (!error) return { draft: data };
+
+    // PGRST116: "The result contains 0 rows" (common when update matched nothing).
+    if ((error as any)?.code === 'PGRST116') {
+      const { data: inserted, error: insertError } = await baseQuery
+        .insert({ user_id: userId, ...updates })
+        .select()
+        .single();
+      if (insertError) throw new InternalServerErrorException(insertError.message);
+      return { draft: inserted };
+    }
+
+    throw new InternalServerErrorException(error.message);
   }
 
   // === Additional Charges ===
@@ -1209,5 +1798,18 @@ export class ProviderService implements OnModuleInit {
 
   async submitReport(body: any) {
     return await this.request<any>(TRUST_PATTERNS.CREATE_PROVIDER_REPORT, body);
+  }
+
+  // === Review Responses ===
+  async createReviewResponse(body: any) {
+    return await this.request<any>(TRUST_PATTERNS.CREATE_REVIEW_RESPONSE, body);
+  }
+
+  async updateReviewResponse(body: any) {
+    return await this.request<any>(TRUST_PATTERNS.UPDATE_REVIEW_RESPONSE, body);
+  }
+
+  async getReviewWithResponse(body: any) {
+    return await this.request<any>(TRUST_PATTERNS.GET_REVIEW_WITH_RESPONSE, body);
   }
 }

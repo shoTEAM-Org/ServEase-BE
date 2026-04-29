@@ -99,4 +99,25 @@ export class NotificationsKafkaController {
       metadata: data.metadata,
     });
   }
+
+  @EventPattern(NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_SUBMITTED)
+  async handleProviderApplicationSubmitted(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_APPROVED)
+  async handleProviderApplicationApproved(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_REJECTED)
+  async handleProviderApplicationRejected(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      metadata: data.metadata,
+    });
+  }
 }

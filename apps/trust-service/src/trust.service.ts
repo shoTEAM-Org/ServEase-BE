@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   HttpStatus,
   Injectable,
   InternalServerErrorException,
@@ -11,6 +12,7 @@ import { ClientKafka, RpcException } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
 import {
   NOTIFICATION_PATTERNS,
+  TRUST_PATTERNS,
   connectKafkaClientWithRetry,
 } from '@app/common';
 
@@ -328,6 +330,213 @@ export class TrustService implements OnModuleInit {
     );
 
     return { provider_reports: data || [] };
+  }
+
+  // ==================== Review Responses ====================
+
+  private emitReviewResponseNotification(
+    reviewerId: string,
+    metadata: any = {},
+    eventType: string,
+  ) {
+    try {
+      this.kafka.emit(eventType, {
+        userId: reviewerId,
+        type: eventType,
+        metadata,
+      });
+    } catch (error) {
+      // Silently fail, notifications are non-critical
+    }
+  }
+
+  async createReviewResponse(payload: any) {
+    const reviewId = this.toTrimmedString(payload?.review_id);
+    const responderId = this.toTrimmedString(payload?.responder_id);
+    const responseText = this.toTrimmedString(payload?.response_text);
+
+    if (!reviewId) throw new BadRequestException('review_id is required');
+    if (!responderId) throw new BadRequestException('responder_id is required');
+    if (!responseText) throw new BadRequestException('response_text is required');
+    if (responseText.length > 1000) {
+      throw new BadRequestException('response_text must be 1000 characters or less');
+    }
+
+    // Verify the review exists and get reviewee_id to check authorization
+    const { data: review } = await this.runTrustQuery<any>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('reviews')
+          .select('id, reviewee_id, reviewer_id')
+          .eq('id', reviewId)
+          .single(),
+      'Failed to fetch review',
+    );
+
+    if (!review) {
+      throw new NotFoundException(`Review ${reviewId} not found`);
+    }
+
+    // Only the reviewee (provider) can respond to a review
+    if (review.reviewee_id !== responderId) {
+      throw new ForbiddenException('Only the reviewee can respond to this review');
+    }
+
+    // Check if response already exists
+    const { data: existingResponse } = await this.runTrustQuery<any[]>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('review_responses')
+          .select('id')
+          .eq('review_id', reviewId)
+          .limit(1),
+      'Failed to check existing response',
+    );
+
+    if (Array.isArray(existingResponse) && existingResponse.length > 0) {
+      throw new RpcException({
+        statusCode: HttpStatus.CONFLICT,
+        message: 'A response already exists for this review',
+      });
+    }
+
+    // Create the response
+    const { data: response } = await this.runTrustQuery<any>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('review_responses')
+          .insert([
+            {
+              review_id: reviewId,
+              responder_id: responderId,
+              response_text: responseText,
+            },
+          ])
+          .select()
+          .single(),
+      'Failed to create review response',
+    );
+
+    // Notify the reviewer
+    this.emitReviewResponseNotification(review.reviewer_id, {
+      reviewId,
+      responseId: response?.id,
+      responderId,
+    }, NOTIFICATION_PATTERNS.REVIEW_RESPONSE_CREATED);
+
+    return { response };
+  }
+
+  async updateReviewResponse(payload: any) {
+    const reviewId = this.toTrimmedString(payload?.review_id);
+    const responderId = this.toTrimmedString(payload?.responder_id);
+    const responseText = this.toTrimmedString(payload?.response_text);
+
+    if (!reviewId) throw new BadRequestException('review_id is required');
+    if (!responderId) throw new BadRequestException('responder_id is required');
+    if (!responseText) throw new BadRequestException('response_text is required');
+    if (responseText.length > 1000) {
+      throw new BadRequestException('response_text must be 1000 characters or less');
+    }
+
+    // Get existing response
+    const { data: existingResponse } = await this.runTrustQuery<any>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('review_responses')
+          .select('id, responder_id, review_id')
+          .eq('review_id', reviewId)
+          .single(),
+      'Failed to fetch existing response',
+    );
+
+    if (!existingResponse) {
+      throw new NotFoundException('Response not found for this review');
+    }
+
+    // Only the original responder can update
+    if (existingResponse.responder_id !== responderId) {
+      throw new ForbiddenException('Only the original responder can update this response');
+    }
+
+    // Update the response
+    const { data: response } = await this.runTrustQuery<any>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('review_responses')
+          .update({ response_text: responseText })
+          .eq('id', existingResponse.id)
+          .select()
+          .single(),
+      'Failed to update review response',
+    );
+
+    // Get reviewer_id for notification
+    const { data: review } = await this.runTrustQuery<any>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('reviews')
+          .select('reviewer_id')
+          .eq('id', reviewId)
+          .single(),
+      'Failed to fetch review',
+    );
+
+    // Notify the reviewer
+    if (review?.reviewer_id) {
+      this.emitReviewResponseNotification(review.reviewer_id, {
+        reviewId,
+        responseId: response?.id,
+      }, NOTIFICATION_PATTERNS.REVIEW_RESPONSE_UPDATED);
+    }
+
+    return { response };
+  }
+
+  async getReviewWithResponse(reviewId: string) {
+    const normalizedReviewId = this.toTrimmedString(reviewId);
+    if (!normalizedReviewId) {
+      throw new BadRequestException('reviewId is required');
+    }
+
+    // Get the review
+    const { data: review } = await this.runTrustQuery<any>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('reviews')
+          .select('id, booking_id, reviewer_id, reviewee_id, rating, review_text, created_at')
+          .eq('id', normalizedReviewId)
+          .single(),
+      'Failed to fetch review',
+    );
+
+    if (!review) {
+      throw new NotFoundException(`Review ${normalizedReviewId} not found`);
+    }
+
+    // Get the response if it exists
+    const { data: response } = await this.runTrustQuery<any>(
+      (schemaName) =>
+        this.supabase
+          .schema(schemaName)
+          .from('review_responses')
+          .select('id, responder_id, response_text, created_at, updated_at')
+          .eq('review_id', normalizedReviewId)
+          .maybeSingle(),
+      'Failed to fetch response',
+    );
+
+    return {
+      ...review,
+      response: response || null,
+    };
   }
 }
 

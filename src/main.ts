@@ -10,7 +10,28 @@ async function bootstrap() {
   process.env.SERVICE_NAME = process.env.SERVICE_NAME || 'gateway';
   const app = await NestFactory.create(GatewayModule);
   enableGatewayTracing(app, 'gateway');
-  app.enableCors();
+  app.enableCors({
+    origin(origin, callback) {
+      const allowedOrigins = new Set([
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'http://localhost:8081',
+        'http://localhost:8082',
+        'http://localhost:19006',
+      ]);
+      if (
+        !origin ||
+        allowedOrigins.has(origin) ||
+        origin.startsWith('exp://') ||
+        /^http:\/\/192\.168\.\d{1,3}\.\d{1,3}(:\d+)?$/.test(origin)
+      ) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+    credentials: true,
+  });
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
   app.useGlobalInterceptors(new TimeoutInterceptor());
   const port = process.env.PORT || 5000;

@@ -37,7 +37,9 @@ export class SupabaseAuthGuard implements CanActivate {
       throw new UnauthorizedException('User account not found');
     }
 
-    const normalizedStatus = String(userRecord.status || '').trim().toLowerCase();
+    const normalizedStatus = String(userRecord.status || '')
+      .trim()
+      .toLowerCase();
     if (normalizedStatus === 'suspended' || normalizedStatus === 'inactive') {
       throw new UnauthorizedException({
         message: 'Access Denied: Account is not active.',

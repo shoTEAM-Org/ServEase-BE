@@ -119,6 +119,9 @@ export class NotificationsService {
       'notification.dispute-created': 'Dispute Raised',
       'notification.dispute-status-changed': 'Dispute Updated',
       'notification.review-created': 'You Have a New Review',
+      'notification.provider-application-submitted': 'Provider Application Submitted',
+      'notification.provider-application-approved': 'Verification Approved',
+      'notification.provider-application-rejected': 'Verification Needs Updates',
     };
     return typeMap[type] || 'Notification';
   }
@@ -133,6 +136,9 @@ export class NotificationsService {
       'notification.dispute-created': 'A dispute has been raised',
       'notification.dispute-status-changed': 'Your dispute status has been updated',
       'notification.review-created': 'Someone left you a review',
+      'notification.provider-application-submitted': 'A provider submitted documents for review',
+      'notification.provider-application-approved': 'Your provider verification has been approved',
+      'notification.provider-application-rejected': 'Your provider verification was rejected. Please review the reason and resubmit',
     };
     return typeMap[type] || 'You have a new notification';
   }

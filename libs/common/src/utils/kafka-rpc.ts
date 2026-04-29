@@ -109,13 +109,8 @@ export async function sendKafkaRpcRequest<T>(
   sourceFactory: () => Observable<T>,
   options: KafkaRpcRequestOptions = {},
 ): Promise<T> {
-  const {
-    timeoutMs,
-    retryDelayMs,
-    context,
-    logger,
-    maxAttempts,
-  } = resolveKafkaRpcOptions(options);
+  const { timeoutMs, retryDelayMs, context, logger, maxAttempts } =
+    resolveKafkaRpcOptions(options);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {

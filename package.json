@@ -7,6 +7,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
+    "postbuild": "node scripts/link-dist-aliases.cjs",
     "format": "prettier --write \"src/**/*.ts\" \"libs/**/*.ts\"",
     "start:gateway": "nest start",
     "start:gateway:dev": "nest start --watch --preserveWatchOutput",

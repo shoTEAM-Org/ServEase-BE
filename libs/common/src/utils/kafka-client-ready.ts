@@ -23,16 +23,17 @@ function sleep(ms: number) {
 function normalizePatterns(patterns: unknown[] = []) {
   return Array.from(
     new Set(
-      patterns
-        .map((pattern) => String(pattern || '').trim())
-        .filter(Boolean),
+      patterns.map((pattern) => String(pattern || '').trim()).filter(Boolean),
     ),
   );
 }
 
 function getReplyTopics(
   kafka: ClientKafka,
-  options: Pick<KafkaClientReadyOptions, 'requiredPatterns' | 'requiredReplyTopics'>,
+  options: Pick<
+    KafkaClientReadyOptions,
+    'requiredPatterns' | 'requiredReplyTopics'
+  >,
 ) {
   const internals = kafka as unknown as KafkaClientInternals;
 

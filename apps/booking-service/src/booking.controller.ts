@@ -14,6 +14,7 @@ export class BookingKafkaController {
     try {
       return await this.bookingService.createBooking(data, data.customerId);
     } catch (error: any) {
+      const response = typeof error?.getResponse === 'function' ? error.getResponse() : undefined;
       console.error('[booking-service.create-booking] failed', {
         customerId: data?.customerId,
         providerId: data?.provider_id,
@@ -21,7 +22,7 @@ export class BookingKafkaController {
         scheduledAt: data?.scheduled_at,
         totalAmount: data?.total_amount,
         message: error?.message,
-        details: error?.response || error,
+        details: response || error?.response || error,
       });
       throw error;
     }
@@ -99,6 +100,33 @@ export class BookingKafkaController {
       data.bookingId,
       data.userId,
       data.accessToken,
+    );
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.LOCATION_PING)
+  async saveLocationPing(@Payload() data: any) {
+    return this.bookingService.saveLocationPing(
+      data.bookingId,
+      data.providerId,
+      data.latitude,
+      data.longitude,
+    );
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.LOCATION_LATEST)
+  async getLatestLocation(@Payload() data: any) {
+    return this.bookingService.getLatestLocation(
+      data.bookingId,
+      data.requesterId,
+    );
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.LOCATION_TRAIL)
+  async getLocationTrail(@Payload() data: any) {
+    return this.bookingService.getLocationTrail(
+      data.bookingId,
+      data.requesterId,
+      data.limit,
     );
   }
 

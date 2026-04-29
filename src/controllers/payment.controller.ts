@@ -105,10 +105,15 @@ export class PaymentController implements OnModuleInit {
   }
 
   @Patch('v1/booking/mark-paid')
-  @UseGuards(AdminRoleGuard)
   @HttpCode(202)
-  async markPaid(@Body() body: any) {
-    return sendWithTimeout(this.kafka.send(PAYMENT_PATTERNS.MARK_PAID, body));
+  async markPaid(@Request() req: any, @Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(PAYMENT_PATTERNS.MARK_PAID, {
+        ...body,
+        requesterId: req['user'].id,
+        requesterRole: req['user'].role,
+      }),
+    );
   }
 
   @Patch('v1/booking/:bookingId/cancel')

@@ -17,17 +17,23 @@ import {
   HttpCode,
   BadRequestException,
   ForbiddenException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
+import { SupabaseClient } from '@supabase/supabase-js';
 import { sendWithTimeout } from '../utils/kafka-request.js';
-import { PROVIDER_PATTERNS } from '@app/common';
+import { BOOKING_PATTERNS, PROVIDER_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
+import { VerifiedProviderGuard } from '../guards/verified-provider.guard.js';
 import 'multer';
 
 @Controller('api/provider')
 export class ProviderController implements OnModuleInit {
-  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
+  constructor(
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+    private readonly supabase: SupabaseClient,
+  ) {}
 
   private extractAccessToken(req: any): string {
     const authHeader = String(req?.headers?.authorization || '').trim();
@@ -39,6 +45,8 @@ export class ProviderController implements OnModuleInit {
 
   async onModuleInit() {
     [
+      PROVIDER_PATTERNS.GET_STATUS,
+      PROVIDER_PATTERNS.UPDATE_STATUS,
       PROVIDER_PATTERNS.GET_BY_SERVICE,
       PROVIDER_PATTERNS.SEARCH,
       PROVIDER_PATTERNS.GET_PROFILE,
@@ -51,12 +59,19 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.GET_RESERVED_SLOTS,
       PROVIDER_PATTERNS.CHECK_AVAILABILITY,
       PROVIDER_PATTERNS.SAVE_AVAILABILITY,
+      BOOKING_PATTERNS.UPDATE_STATUS,
       PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS,
       PROVIDER_PATTERNS.GET_MY_SERVICES,
       PROVIDER_PATTERNS.GET_PROFILE_DRAFT,
       PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES,
       PROVIDER_PATTERNS.SUBMIT_REVIEW,
       PROVIDER_PATTERNS.SUBMIT_REPORT,
+      PROVIDER_PATTERNS.GET_REQUIRED_DOCUMENT_TYPES,
+      PROVIDER_PATTERNS.GET_MY_VERIFICATION,
+      PROVIDER_PATTERNS.UPLOAD_DOCUMENT,
+      PROVIDER_PATTERNS.GET_MY_DOCUMENTS,
+      PROVIDER_PATTERNS.DELETE_MY_DOCUMENT,
+      PROVIDER_PATTERNS.SUBMIT_FOR_REVIEW,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
   }
 
@@ -75,7 +90,215 @@ export class ProviderController implements OnModuleInit {
       return sendWithTimeout(
         this.kafka.send(PROVIDER_PATTERNS.SEARCH, { searchTerm: search }),
       );
-    return { success: true, data: [] };
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.SEARCH, { searchTerm: '' }),
+    );
+  }
+
+  @Get('v1/status')
+  @UseGuards(SupabaseAuthGuard)
+  async getStatus(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.GET_STATUS, {
+        providerId: req['user'].id,
+      }),
+    );
+  }
+
+  @Get('v1/status/direct')
+  @UseGuards(SupabaseAuthGuard)
+  async getStatusDirect(@Request() req: any) {
+    // Direct database read to bypass Kafka issues
+    const providerId = req['user'].id;
+
+    try {
+      const { data, error } = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_status')
+        .select('provider_id, status, last_updated')
+        .eq('provider_id', providerId)
+        .single();
+
+      if (error && error.code !== 'PGRST116') {
+        throw new InternalServerErrorException(error.message);
+      }
+
+      // If no status record exists, return default status
+      if (!data) {
+        return {
+          status: 'success',
+          data: {
+            provider_id: providerId,
+            status: 'offline',
+            updated_at: new Date().toISOString(),
+          },
+        };
+      }
+
+      return {
+        status: 'success',
+        data: {
+          provider_id: data.provider_id,
+          status: data.status,
+          updated_at: data.last_updated || new Date().toISOString(),
+        },
+      };
+    } catch (error) {
+      throw new InternalServerErrorException(
+        error.message || 'Failed to get status',
+      );
+    }
+  }
+
+  @Patch('v1/status')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(200)
+  async updateStatus(@Request() req: any, @Body('status') status: string) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.UPDATE_STATUS, {
+        providerId: req['user'].id,
+        status,
+      }),
+    );
+  }
+
+  @Patch('v1/status/direct')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(200)
+  async updateStatusDirect(
+    @Request() req: any,
+    @Body('status') status: string,
+  ) {
+    // Direct database update to bypass Kafka issues
+    const providerId = req['user'].id;
+    const normalizedStatus = status?.toLowerCase()?.trim();
+
+    if (
+      !['online', 'on_the_way', 'arrived', 'busy', 'offline'].includes(
+        normalizedStatus,
+      )
+    ) {
+      throw new BadRequestException('Invalid status');
+    }
+
+    try {
+      // Try to update existing record
+      const { data: updateData, error: updateError } = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_status')
+        .update({
+          status: normalizedStatus,
+          last_updated: new Date().toISOString(),
+        })
+        .eq('provider_id', providerId)
+        .select()
+        .single();
+
+      // If no rows updated, insert new record
+      if (updateError && updateError.code === 'PGRST116') {
+        const { data: insertData, error: insertError } = await this.supabase
+          .schema('provider_catalog')
+          .from('provider_status')
+          .insert({
+            provider_id: providerId,
+            status: normalizedStatus,
+            last_updated: new Date().toISOString(),
+          })
+          .select()
+          .single();
+
+        if (insertError) {
+          throw new InternalServerErrorException(insertError.message);
+        }
+
+        // Create timeline events for active bookings (fire and forget)
+        this.createTimelineEventsForProviderStatus(
+          providerId,
+          normalizedStatus,
+        ).catch(() => {
+          // Silently ignore timeline errors
+        });
+
+        return {
+          status: 'success',
+          data: {
+            provider_id: insertData.provider_id,
+            status: insertData.status,
+            updated_at: insertData.last_updated,
+          },
+        };
+      }
+
+      if (updateError) {
+        throw new InternalServerErrorException(updateError.message);
+      }
+
+      // Create timeline events for active bookings (fire and forget)
+      this.createTimelineEventsForProviderStatus(
+        providerId,
+        normalizedStatus,
+      ).catch(() => {
+        // Silently ignore timeline errors
+      });
+
+      return {
+        status: 'success',
+        data: {
+          provider_id: updateData.provider_id,
+          status: updateData.status,
+          updated_at: updateData.last_updated,
+        },
+      };
+    } catch (error) {
+      throw new InternalServerErrorException(
+        error.message || 'Failed to update status',
+      );
+    }
+  }
+
+  private async createTimelineEventsForProviderStatus(
+    providerId: string,
+    status: string,
+  ) {
+    try {
+      // Get active bookings for this provider
+      const { data: bookings, error: bookingsError } = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .select('id')
+        .eq('provider_id', providerId)
+        .in('status', ['confirmed', 'in_progress']);
+
+      if (bookingsError || !bookings || bookings.length === 0) {
+        return;
+      }
+
+      // Map status to label
+      const statusLabels: Record<string, string> = {
+        online: 'Provider is online',
+        on_the_way: 'Provider is on the way',
+        arrived: 'Provider has arrived',
+        busy: 'Provider is busy',
+        offline: 'Provider is offline',
+      };
+
+      const label = statusLabels[status] || `Provider status: ${status}`;
+
+      // Insert timeline events for all active bookings
+      const timelineEvents = bookings.map((booking) => ({
+        booking_id: booking.id,
+        event_type: 'provider-status',
+        label,
+        icon: status,
+      }));
+
+      await this.supabase
+        .schema('booking')
+        .from('booking_timeline_events')
+        .insert(timelineEvents);
+    } catch {
+      // Silently ignore timeline errors
+    }
   }
 
   @Get('v1/bookings')
@@ -91,8 +314,11 @@ export class ProviderController implements OnModuleInit {
   @Get('v1/booking/:id')
   @UseGuards(SupabaseAuthGuard)
   async getBookingById(@Param('id') id: string, @Request() req: any) {
+    if (req['user']?.role !== 'provider') {
+      throw new ForbiddenException('Only providers can use provider booking routes');
+    }
     return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_BOOKING_BY_ID, {
+      this.kafka.send(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID, {
         bookingId: id,
         providerId: req['user'].id,
       }),
@@ -107,9 +333,12 @@ export class ProviderController implements OnModuleInit {
     @Request() req: any,
     @Body('status') status: string,
   ) {
+    if (req['user']?.role !== 'provider') {
+      throw new ForbiddenException('Only providers can update provider booking status');
+    }
     return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS, {
-        bookingId: id,
+      this.kafka.send(BOOKING_PATTERNS.UPDATE_STATUS, {
+        id,
         providerId: req['user'].id,
         status,
       }),
@@ -120,11 +349,12 @@ export class ProviderController implements OnModuleInit {
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
   async saveAvailability(@Request() req: any, @Body() body: any) {
+    const accessToken = this.extractAccessToken(req) || undefined;
     return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.SAVE_AVAILABILITY, {
         ...body,
         userId: req['user'].id,
-        accessToken: this.extractAccessToken(req),
+        accessToken,
       }),
     );
   }
@@ -140,12 +370,9 @@ export class ProviderController implements OnModuleInit {
   }
 
   @Post('v1/my-services')
-  @UseGuards(SupabaseAuthGuard)
+  @UseGuards(SupabaseAuthGuard, VerifiedProviderGuard)
   @HttpCode(202)
   async createMyService(@Request() req: any, @Body() body: any) {
-    if (String(req['user']?.role || '').trim() !== 'provider') {
-      throw new ForbiddenException('Provider access required');
-    }
     this.kafka.emit(PROVIDER_PATTERNS.CREATE_MY_SERVICE, {
       ...body,
       providerId: req['user'].id,
@@ -154,16 +381,13 @@ export class ProviderController implements OnModuleInit {
   }
 
   @Patch('v1/my-services/:serviceId')
-  @UseGuards(SupabaseAuthGuard)
+  @UseGuards(SupabaseAuthGuard, VerifiedProviderGuard)
   @HttpCode(202)
   async updateMyService(
     @Param('serviceId') serviceId: string,
     @Request() req: any,
     @Body() body: any,
   ) {
-    if (String(req['user']?.role || '').trim() !== 'provider') {
-      throw new ForbiddenException('Provider access required');
-    }
     this.kafka.emit(PROVIDER_PATTERNS.UPDATE_MY_SERVICE, {
       ...body,
       serviceId,
@@ -173,15 +397,12 @@ export class ProviderController implements OnModuleInit {
   }
 
   @Delete('v1/my-services/:serviceId')
-  @UseGuards(SupabaseAuthGuard)
+  @UseGuards(SupabaseAuthGuard, VerifiedProviderGuard)
   @HttpCode(202)
   async deleteMyService(
     @Param('serviceId') serviceId: string,
     @Request() req: any,
   ) {
-    if (String(req['user']?.role || '').trim() !== 'provider') {
-      throw new ForbiddenException('Provider access required');
-    }
     this.kafka.emit(PROVIDER_PATTERNS.DELETE_MY_SERVICE, {
       serviceId,
       providerId: req['user'].id,
@@ -252,7 +473,11 @@ export class ProviderController implements OnModuleInit {
 
   @Patch('v1/kyc/reupload')
   @UseGuards(SupabaseAuthGuard)
-  @UseInterceptors(FileInterceptor('document_file'))
+  @UseInterceptors(
+    FileInterceptor('document_file', {
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
   @HttpCode(202)
   async reuploadKyc(
     @UploadedFile() file: Express.Multer.File,
@@ -272,16 +497,125 @@ export class ProviderController implements OnModuleInit {
     return { status: 'accepted' };
   }
 
+  @Get('v1/verification/document-types')
+  @UseGuards(SupabaseAuthGuard)
+  async getRequiredDocumentTypes() {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.GET_REQUIRED_DOCUMENT_TYPES, {}),
+    );
+  }
+
+  @Get('v1/me/required-documents')
+  @UseGuards(SupabaseAuthGuard)
+  async getMyRequiredDocuments() {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.GET_REQUIRED_DOCUMENT_TYPES, {}),
+    );
+  }
+
+  @Get('v1/me/verification')
+  @UseGuards(SupabaseAuthGuard)
+  async getMyVerification(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.GET_MY_VERIFICATION, {
+        userId: req['user'].id,
+      }),
+    );
+  }
+
+  @Get('v1/me/documents')
+  @UseGuards(SupabaseAuthGuard)
+  async getMyDocuments(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.GET_MY_DOCUMENTS, {
+        userId: req['user'].id,
+      }),
+    );
+  }
+
+  @Post('v1/me/documents')
+  @UseGuards(SupabaseAuthGuard)
+  @UseInterceptors(
+    FileInterceptor('document_file', {
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
+  async uploadDocument(
+    @UploadedFile() file: Express.Multer.File,
+    @Body('document_type') documentType: string,
+    @Request() req: any,
+  ) {
+    if (!file) throw new BadRequestException('A document file is required');
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.UPLOAD_DOCUMENT, {
+        userId: req['user'].id,
+        document_type: documentType,
+        file: {
+          originalname: file.originalname,
+          mimetype: file.mimetype,
+          buffer: file.buffer.toString('base64'),
+        },
+      }),
+    );
+  }
+
+  @Delete('v1/me/documents/:documentId')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(202)
+  async deleteMyDocument(
+    @Param('documentId') documentId: string,
+    @Request() req: any,
+  ) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.DELETE_MY_DOCUMENT, {
+        userId: req['user'].id,
+        documentId,
+      }),
+    );
+  }
+
+  @Post('v1/me/submit-for-review')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(202)
+  async submitForReview(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.SUBMIT_FOR_REVIEW, {
+        userId: req['user'].id,
+      }),
+    );
+  }
+
   // ========== PARAMETERIZED ROUTES ==========
 
   @Get('v1/:id/availability')
-  async getAvailability(@Param('id') id: string, @Request() req: any) {
-    return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_AVAILABILITY, {
-        userId: id,
-        accessToken: this.extractAccessToken(req),
-      }),
-    );
+  async getAvailability(@Param('id') id: string) {
+    const providerId = String(id || '').trim();
+    if (!providerId) throw new BadRequestException('Provider id is required');
+
+    const [weeklyResult, daysOffResult] = await Promise.all([
+      this.supabase
+        .schema('booking')
+        .from('provider_availability')
+        .select('*')
+        .eq('user_id', providerId),
+      this.supabase
+        .schema('booking')
+        .from('provider_days_off')
+        .select('*')
+        .eq('user_id', providerId),
+    ]);
+
+    if (weeklyResult.error) {
+      throw new InternalServerErrorException(weeklyResult.error.message);
+    }
+    if (daysOffResult.error) {
+      throw new InternalServerErrorException(daysOffResult.error.message);
+    }
+
+    return {
+      weeklySchedule: weeklyResult.data || [],
+      daysOff: daysOffResult.data || [],
+    };
   }
 
   @Get('v1/:id/reserved-slots')
@@ -325,13 +659,28 @@ export class ProviderController implements OnModuleInit {
   @Patch('v1/:id/profile-draft')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)
-  async saveProfileDraft(@Param('id') id: string, @Request() req: any, @Body() body: any) {
+  async saveProfileDraft(
+    @Param('id') id: string,
+    @Request() req: any,
+    @Body() body: any,
+  ) {
     if (String(req['user']?.id || '').trim() !== String(id || '').trim()) {
       throw new ForbiddenException('Provider profile draft access denied');
     }
     this.kafka.emit(PROVIDER_PATTERNS.SAVE_PROFILE_DRAFT, {
       ...body,
       userId: id,
+    });
+    return { status: 'accepted' };
+  }
+
+  @Patch('v1/profile')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(202)
+  async updateProviderProfile(@Request() req: any, @Body() body: any) {
+    this.kafka.emit(PROVIDER_PATTERNS.SAVE_PROFILE_DRAFT, {
+      ...body,
+      userId: req['user'].id,
     });
     return { status: 'accepted' };
   }
@@ -367,6 +716,49 @@ export class ProviderController implements OnModuleInit {
   async getReviews(@Param('id') id: string) {
     return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_REVIEWS, { providerId: id }),
+    );
+  }
+
+  // Review Response endpoints
+  @Post('v1/reviews/:reviewId/response')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(201)
+  async createReviewResponse(
+    @Request() req: any,
+    @Param('reviewId') reviewId: string,
+    @Body() body: { response_text: string },
+  ) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.CREATE_REVIEW_RESPONSE, {
+        review_id: reviewId,
+        responder_id: req['user'].id,
+        response_text: body.response_text,
+      }),
+    );
+  }
+
+  @Patch('v1/reviews/:reviewId/response')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(200)
+  async updateReviewResponse(
+    @Request() req: any,
+    @Param('reviewId') reviewId: string,
+    @Body() body: { response_text: string },
+  ) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.UPDATE_REVIEW_RESPONSE, {
+        review_id: reviewId,
+        responder_id: req['user'].id,
+        response_text: body.response_text,
+      }),
+    );
+  }
+
+  @Get('v1/reviews/:reviewId/response')
+  @UseGuards(SupabaseAuthGuard)
+  async getReviewWithResponse(@Param('reviewId') reviewId: string) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.GET_REVIEW_WITH_RESPONSE, { reviewId }),
     );
   }
 }

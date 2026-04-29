@@ -10,6 +10,16 @@ export class ProviderKafkaController {
     @Inject(ProviderService) private readonly providerService: ProviderService,
   ) {}
 
+  @MessagePattern(PROVIDER_PATTERNS.GET_STATUS)
+  async getProviderStatus(@Payload() data: any) {
+    return this.providerService.getProviderStatus(data.providerId);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.UPDATE_STATUS)
+  async updateProviderStatus(@Payload() data: any) {
+    return this.providerService.updateProviderStatus(data.providerId, data.status);
+  }
+
   @MessagePattern(PROVIDER_PATTERNS.GET_BY_SERVICE)
   async getProvidersByService(@Payload() data: any) {
     return this.providerService.getProvidersByService(data.serviceId);
@@ -66,6 +76,43 @@ export class ProviderKafkaController {
   @MessagePattern(PROVIDER_PATTERNS.UPDATE_DOCUMENT_STATUS)
   async updateDocumentStatus(@Payload() data: any) {
     return this.providerService.updateDocumentStatus(data?.documentId, data);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_REQUIRED_DOCUMENT_TYPES)
+  async getRequiredDocumentTypes() {
+    return this.providerService.getRequiredDocumentTypes();
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_MY_VERIFICATION)
+  async getMyVerification(@Payload() data: any) {
+    return this.providerService.getMyVerification(data?.userId);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.UPLOAD_DOCUMENT)
+  async uploadDocument(@Payload() data: any) {
+    const file = data.file
+      ? ({ ...data.file, buffer: Buffer.from(data.file.buffer, 'base64') } as Express.Multer.File)
+      : null;
+    return this.providerService.uploadDocument(
+      data?.userId,
+      data?.document_type,
+      file!,
+    );
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_MY_DOCUMENTS)
+  async getMyDocuments(@Payload() data: any) {
+    return this.providerService.getMyDocuments(data?.userId);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.DELETE_MY_DOCUMENT)
+  async deleteMyDocument(@Payload() data: any) {
+    return this.providerService.deleteMyDocument(data?.userId, data?.documentId);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.SUBMIT_FOR_REVIEW)
+  async submitForReview(@Payload() data: any) {
+    return this.providerService.submitForReview(data?.userId);
   }
 
   @MessagePattern(PROVIDER_PATTERNS.GET_ADMIN_SERVICES)
@@ -228,5 +275,21 @@ export class ProviderKafkaController {
   @MessagePattern(PROVIDER_PATTERNS.SUBMIT_REPORT)
   async submitReport(@Payload() data: any) {
     return this.providerService.submitReport(data);
+  }
+
+  // Review Response handlers - delegate to trust service
+  @MessagePattern(PROVIDER_PATTERNS.CREATE_REVIEW_RESPONSE)
+  async createReviewResponse(@Payload() data: any) {
+    return this.providerService.createReviewResponse(data);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.UPDATE_REVIEW_RESPONSE)
+  async updateReviewResponse(@Payload() data: any) {
+    return this.providerService.updateReviewResponse(data);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_REVIEW_WITH_RESPONSE)
+  async getReviewWithResponse(@Payload() data: any) {
+    return this.providerService.getReviewWithResponse(data);
   }
 }
