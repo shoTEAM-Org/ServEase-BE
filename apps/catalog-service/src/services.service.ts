@@ -161,11 +161,17 @@ export class ServicesService implements OnModuleInit {
     const { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('service_categories')
-      .select('id, name, slug, display_order, is_active')
+      .select('id, name, slug, display_order, is_active, provider_services(count)')
       .eq('is_active', true)
+      .eq('provider_services.is_active', true)
       .order('display_order', { ascending: true });
     if (error) throw new InternalServerErrorException(error.message);
-    return { categories: data || [] };
+
+    const categories = (data || []).map((cat: any) => ({
+      ...cat,
+      active_jobs: cat.provider_services?.[0]?.count ?? 0,
+    }));
+    return { categories };
   }
 
   async getServicesByCategory(categoryName: string) {
@@ -208,6 +214,7 @@ export class ServicesService implements OnModuleInit {
   async getProviderServices(providerId: string) {
     const response = await this.request<any>(PROVIDER_PATTERNS.GET_MY_SERVICES, {
       providerId,
+      activeOnly: true,
     });
     const services =
       response && typeof response === 'object' && 'services' in response
@@ -221,7 +228,7 @@ export class ServicesService implements OnModuleInit {
       this.request<any>(PROVIDER_PATTERNS.GET_PROFILE, { userId: providerId }).catch(
         () => null,
       ),
-      this.request<any>(PROVIDER_PATTERNS.GET_MY_SERVICES, { providerId }).catch(
+      this.request<any>(PROVIDER_PATTERNS.GET_MY_SERVICES, { providerId, activeOnly: true }).catch(
         () => ({ services: [] }),
       ),
       this.request<any>(PROVIDER_PATTERNS.GET_REVIEWS, { providerId }).catch(

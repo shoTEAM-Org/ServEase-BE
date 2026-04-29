@@ -221,28 +221,53 @@ export class PaymentService implements OnModuleInit {
       .eq('provider_id', providerId).order('created_at', { ascending: false });
     if (error) throw new InternalServerErrorException(error.message);
 
-    const payments = await Promise.all((data || []).map(async (p: any) => {
-      let booking: any = null;
-      try {
-        const bookingResponse = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
-          id: p.booking_id,
-        });
-        booking = bookingResponse?.booking || null;
-      } catch {
-        booking = null;
-      }
+    const paymentRows = data || [];
+    const bookingIds = Array.from(
+      new Set(
+        paymentRows
+          .map((payment: any) => this.toTrimmedString(payment?.booking_id))
+          .filter(Boolean),
+      ),
+    );
+    let bookingsById = new Map<string, any>();
 
+    if (bookingIds.length) {
+      const { data: bookings, error: bookingError } = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .select('id, booking_reference, service_title, service_name, scheduled_at')
+        .in('id', bookingIds);
+
+      if (bookingError) {
+        this.logger.warn(
+          `payment.provider-history booking enrichment degraded: ${this.toTrimmedString(bookingError.message)}`,
+        );
+      } else {
+        bookingsById = new Map(
+          (bookings || []).map((booking: any) => [
+            this.toTrimmedString(booking?.id),
+            booking,
+          ]),
+        );
+      }
+    }
+
+    const payments = paymentRows.map((p: any) => {
+      const booking = bookingsById.get(this.toTrimmedString(p?.booking_id));
       const platformFee = Number(p.amount) * 0.1;
       return {
         ...p,
         booking_reference: booking?.booking_reference || '',
-        customer_name: this.toTrimmedString(booking?.customer?.full_name) || '',
-        service_title: this.toTrimmedString(booking?.service_title) || '',
+        customer_name: '',
+        service_title:
+          this.toTrimmedString(booking?.service_title) ||
+          this.toTrimmedString(booking?.service_name) ||
+          '',
         scheduled_at: booking?.scheduled_at,
         platform_fee: platformFee,
         net_earnings: Number(p.amount) - platformFee,
       };
-    }));
+    });
 
     return { payments };
   }

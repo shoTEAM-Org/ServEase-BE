@@ -317,12 +317,28 @@ export class ProviderController implements OnModuleInit {
     if (req['user']?.role !== 'provider') {
       throw new ForbiddenException('Only providers can use provider booking routes');
     }
-    return sendWithTimeout(
-      this.kafka.send(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID, {
-        bookingId: id,
-        providerId: req['user'].id,
-      }),
-    );
+
+    const providerId = String(req['user'].id || '').trim();
+    const bookingId = String(id || '').trim();
+    if (!bookingId) throw new BadRequestException('Booking id is required');
+
+    const { data: booking, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select(
+        `
+        *,
+        timeline:booking_timeline_events(event_type, label, icon, created_at)
+      `,
+      )
+      .eq('id', bookingId)
+      .eq('provider_id', providerId)
+      .maybeSingle();
+
+    if (error) throw new InternalServerErrorException(error.message);
+    if (!booking) throw new ForbiddenException('Booking is not assigned to this provider');
+
+    return { booking };
   }
 
   @Patch('v1/booking/:id/status')
@@ -336,13 +352,84 @@ export class ProviderController implements OnModuleInit {
     if (req['user']?.role !== 'provider') {
       throw new ForbiddenException('Only providers can update provider booking status');
     }
-    return sendWithTimeout(
-      this.kafka.send(BOOKING_PATTERNS.UPDATE_STATUS, {
-        id,
-        providerId: req['user'].id,
-        status,
-      }),
-    );
+    return this.updateBookingStatusDirect(id, req['user'].id, status);
+  }
+
+  private async updateBookingStatusDirect(id: string, providerId: string, status: string) {
+    const bookingId = String(id || '').trim();
+    const normalizedProviderId = String(providerId || '').trim();
+    const normalizedStatus = String(status || '').trim().toLowerCase();
+    const allowedStatuses = ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled'];
+    const validTransitions: Record<string, string[]> = {
+      pending: ['confirmed', 'cancelled'],
+      confirmed: ['in_progress', 'cancelled'],
+      in_progress: ['completed', 'cancelled'],
+      completed: [],
+      cancelled: [],
+    };
+
+    if (!bookingId) throw new BadRequestException('Booking id is required');
+    if (!allowedStatuses.includes(normalizedStatus)) {
+      throw new BadRequestException('Unsupported booking status');
+    }
+
+    const { data: booking, error: bookingError } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('id, provider_id, status')
+      .eq('id', bookingId)
+      .maybeSingle();
+
+    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    if (!booking || String(booking.provider_id) !== normalizedProviderId) {
+      throw new ForbiddenException('Booking is not assigned to this provider');
+    }
+
+    const currentStatus = String(booking.status || '').trim().toLowerCase();
+    if (!(validTransitions[currentStatus] || []).includes(normalizedStatus)) {
+      throw new BadRequestException(
+        `Cannot transition booking from '${currentStatus}' to '${normalizedStatus}'`,
+      );
+    }
+
+    const now = new Date().toISOString();
+    const updates: Record<string, unknown> = {
+      status: normalizedStatus,
+      updated_at: now,
+    };
+    if (normalizedStatus === 'in_progress') updates.started_at = now;
+    if (normalizedStatus === 'completed') updates.completed_at = now;
+
+    const { data: updated, error: updateError } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .update(updates)
+      .eq('id', bookingId)
+      .select()
+      .single();
+
+    if (updateError) throw new BadRequestException(updateError.message);
+
+    const labels: Record<string, string> = {
+      pending: 'Request created',
+      confirmed: 'Provider accepted your booking',
+      in_progress: 'Provider started your service',
+      completed: 'Service completed',
+      cancelled: 'Booking cancelled',
+    };
+
+    await this.supabase
+      .schema('booking')
+      .from('booking_timeline_events')
+      .insert({
+        booking_id: bookingId,
+        event_type: 'status-change',
+        label: labels[normalizedStatus],
+        icon: normalizedStatus,
+        created_at: now,
+      });
+
+    return { message: 'Booking status updated successfully.', booking: updated };
   }
 
   @Put('v1/availability')
@@ -427,12 +514,34 @@ export class ProviderController implements OnModuleInit {
     @Param('bookingId') bookingId: string,
     @Request() req: any,
   ) {
-    return sendWithTimeout(
-      this.kafka.send(PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES, {
-        bookingId,
-        providerId: req['user'].id,
-      }),
-    );
+    const normalizedBookingId = String(bookingId || '').trim();
+    const requesterId = String(req?.['user']?.id || '').trim();
+    if (!normalizedBookingId) throw new BadRequestException('bookingId is required');
+
+    const { data: booking, error: bookingError } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('id, customer_id, provider_id')
+      .eq('id', normalizedBookingId)
+      .maybeSingle();
+
+    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    if (
+      !booking ||
+      ![booking.customer_id, booking.provider_id].map(String).includes(requesterId)
+    ) {
+      throw new ForbiddenException('Booking charges are not available to this user');
+    }
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('additional_charges')
+      .select('*')
+      .eq('booking_id', normalizedBookingId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw new InternalServerErrorException(error.message);
+    return { charges: data || [] };
   }
 
   @Patch('v1/additional-charges/review')

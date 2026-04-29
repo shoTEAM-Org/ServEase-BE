@@ -222,6 +222,10 @@ export class BookingController implements OnModuleInit {
     @Request() req: any,
     @Body('status') status: string,
   ) {
+    if (req?.['user']?.role !== 'provider') {
+      throw new ForbiddenException('Only providers can update booking progress');
+    }
+
     const providerId = String(req?.['user']?.id || '').trim();
     const bookingId = String(id || '').trim();
     const normalizedStatus = String(status || '').trim().toLowerCase();
@@ -267,7 +271,20 @@ export class BookingController implements OnModuleInit {
       );
     if (statusError) throw new BadRequestException(statusError.message);
 
-    const { data: event, error: eventError } = await this.supabase
+    const { data: existingEvent, error: existingEventError } = await this.supabase
+      .schema('booking')
+      .from('booking_timeline_events')
+      .select('event_type, label, icon, created_at')
+      .eq('booking_id', bookingId)
+      .eq('event_type', 'provider-status')
+      .eq('icon', normalizedStatus)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingEventError) throw new BadRequestException(existingEventError.message);
+
+    const event = existingEvent || (await this.supabase
       .schema('booking')
       .from('booking_timeline_events')
       .insert({
@@ -278,9 +295,11 @@ export class BookingController implements OnModuleInit {
         created_at: now,
       })
       .select('event_type, label, icon, created_at')
-      .single();
+      .single()).data;
 
-    if (eventError) throw new BadRequestException(eventError.message);
+    if (!event) {
+      throw new BadRequestException('Unable to update booking timeline');
+    }
 
     return {
       status: 'success',

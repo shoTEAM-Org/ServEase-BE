@@ -298,6 +298,35 @@ export class ProviderService implements OnModuleInit {
     );
   }
 
+  private isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  }
+
+  private async resolveServiceCategoryId(serviceId: string): Promise<string | null> {
+    const normalizedServiceId = this.toTrimmedString(serviceId);
+    if (!normalizedServiceId) return null;
+    if (this.isUuid(normalizedServiceId)) return normalizedServiceId;
+
+    const legacySlugMap: Record<string, string> = {
+      'cat-cleaning': 'home-cleaning',
+      'cat-aircon': 'aircon-services',
+      'cat-electrical': 'electrical',
+      'cat-plumbing': 'plumbing',
+    };
+    const slug = legacySlugMap[normalizedServiceId] || normalizedServiceId.replace(/^cat-/, '');
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('service_categories')
+      .select('id')
+      .or(`slug.eq.${slug},name.ilike.${slug.replace(/-/g, ' ')}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new BadRequestException(error.message);
+    return this.toTrimmedString(data?.id) || null;
+  }
+
   private normalizeServicePayload(
     body: any,
     options: {
@@ -539,7 +568,8 @@ export class ProviderService implements OnModuleInit {
     const { data: services, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .select('id, service_id, title, price, pricing_mode, duration_minutes, description, provider_id');
+      .select('id, service_id, title, price, pricing_mode, duration_minutes, description, provider_id')
+      .eq('is_active', true);
     if (error) throw new InternalServerErrorException(error.message);
 
     const providerIds = [...new Set((services || []).map((s: any) => s.provider_id))];
@@ -552,18 +582,27 @@ export class ProviderService implements OnModuleInit {
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
 
     const lower = this.toTrimmedString(searchTerm).toLowerCase();
-    const filtered = (services || [])
-      .filter((s: any) => profileMap[s.provider_id]?.verification_status === 'approved')
-      .filter(
-        (s: any) =>
-          !lower ||
-          s.title?.toLowerCase().includes(lower) ||
-          s.description?.toLowerCase().includes(lower) ||
-          profileMap[s.provider_id]?.business_name?.toLowerCase().includes(lower),
-      )
-      .map((s: any) => ({ ...s, provider_profiles: profileMap[s.provider_id] || null }));
 
-    return { success: true, data: filtered };
+    // Group active services by provider, keeping the lowest-priced as the representative
+    const providerServiceMap = new Map<string, any>();
+    for (const s of (services || [])) {
+      if (profileMap[s.provider_id]?.verification_status !== 'approved') continue;
+      const matchesSearch =
+        !lower ||
+        s.title?.toLowerCase().includes(lower) ||
+        s.description?.toLowerCase().includes(lower) ||
+        profileMap[s.provider_id]?.business_name?.toLowerCase().includes(lower);
+      if (!matchesSearch) continue;
+      const existing = providerServiceMap.get(s.provider_id);
+      if (!existing || s.price < existing.price) {
+        providerServiceMap.set(s.provider_id, {
+          ...s,
+          provider_profiles: profileMap[s.provider_id] || null,
+        });
+      }
+    }
+
+    return { success: true, data: Array.from(providerServiceMap.values()) };
   }
 
   // === Existing: Provider Profile ===
@@ -1533,16 +1572,22 @@ export class ProviderService implements OnModuleInit {
   }
 
   // === My Services (Provider Catalog) ===
-  async getMyServices(providerId: string) {
+  async getMyServices(providerId: string, activeOnly = false) {
     const normalizedProviderId = this.toTrimmedString(providerId);
     if (!normalizedProviderId) return { services: [] };
 
+    let query = this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .select('*')
+      .eq('provider_id', normalizedProviderId);
+
+    if (activeOnly) {
+      query = query.eq('is_active', true);
+    }
+
     const { data, error } = await this.withQueryTimeout(
-      this.supabase
-        .schema('provider_catalog')
-        .from('provider_services')
-        .select('*')
-        .eq('provider_id', normalizedProviderId),
+      query,
       3000,
       'provider.get-my-services query',
     );
@@ -1647,6 +1692,11 @@ export class ProviderService implements OnModuleInit {
       providerId: normalizedProviderId,
       requireCoreFields: true,
     });
+    const resolvedServiceId = await this.resolveServiceCategoryId(payload.service_id);
+    if (!resolvedServiceId) {
+      throw new BadRequestException('Service category is not recognized');
+    }
+    payload.service_id = resolvedServiceId;
 
     let { data, error } = await this.supabase
       .schema('provider_catalog')
@@ -1669,6 +1719,11 @@ export class ProviderService implements OnModuleInit {
     await this.checkProviderVerificationStatus(normalizedProviderId);
 
     const payload = this.normalizeServicePayload(body, { requireCoreFields: true });
+    const resolvedServiceId = await this.resolveServiceCategoryId(payload.service_id);
+    if (!resolvedServiceId) {
+      throw new BadRequestException('Service category is not recognized');
+    }
+    payload.service_id = resolvedServiceId;
     let { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')

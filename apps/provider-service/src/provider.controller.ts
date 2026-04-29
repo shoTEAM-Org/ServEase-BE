@@ -195,7 +195,7 @@ export class ProviderKafkaController {
 
   @MessagePattern(PROVIDER_PATTERNS.GET_MY_SERVICES)
   async getMyServices(@Payload() data: any) {
-    return this.providerService.getMyServices(data.providerId);
+    return this.providerService.getMyServices(data.providerId, data.activeOnly === true);
   }
 
   @MessagePattern(PROVIDER_PATTERNS.GET_PROFILE_DRAFT)

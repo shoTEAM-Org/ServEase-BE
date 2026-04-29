@@ -10,8 +10,12 @@ import {
   Inject,
   OnModuleInit,
   HttpCode,
+  BadRequestException,
+  ForbiddenException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import { SupabaseClient } from '@supabase/supabase-js';
 import { sendWithTimeout } from '../utils/kafka-request.js';
 import { PAYMENT_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
@@ -20,7 +24,10 @@ import { AdminRoleGuard } from '../guards/admin-role.guard.js';
 @Controller('api/payments')
 @UseGuards(SupabaseAuthGuard)
 export class PaymentController implements OnModuleInit {
-  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
+  constructor(
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+    private readonly supabase: SupabaseClient,
+  ) {}
 
   async onModuleInit() {
     [
@@ -55,12 +62,35 @@ export class PaymentController implements OnModuleInit {
     @Param('bookingId') bookingId: string,
     @Request() req: any,
   ) {
-    return sendWithTimeout(
-      this.kafka.send(PAYMENT_PATTERNS.GET_BY_BOOKING, {
-        bookingId,
-        requesterId: req['user'].id,
-      }),
-    );
+    const normalizedBookingId = String(bookingId || '').trim();
+    const requesterId = String(req?.['user']?.id || '').trim();
+    if (!normalizedBookingId) throw new BadRequestException('bookingId is required');
+
+    const { data: booking, error: bookingError } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('id, customer_id, provider_id')
+      .eq('id', normalizedBookingId)
+      .maybeSingle();
+
+    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    if (
+      !booking ||
+      ![booking.customer_id, booking.provider_id].map(String).includes(requesterId)
+    ) {
+      throw new ForbiddenException('Booking payment is not available to this user');
+    }
+
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('payments')
+      .select('*')
+      .eq('booking_id', normalizedBookingId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (error) throw new InternalServerErrorException(error.message);
+    return { payment: data?.[0] || null };
   }
 
   @Get('v1/provider/history')

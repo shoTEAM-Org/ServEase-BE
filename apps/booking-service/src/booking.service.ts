@@ -1237,11 +1237,42 @@ export class BookingService implements OnModuleInit {
       .order('created_at', { ascending: false });
     if (error) throw new InternalServerErrorException(error.message);
 
-    // Return bookings without timeline events for performance - timeline will be fetched on-demand
-    const bookings = (data || []).map((booking: any) => ({
+    const bookingRows = data || [];
+    const bookingIds = bookingRows
+      .map((booking: any) => this.toTrimmedString(booking?.id))
+      .filter(Boolean);
+    let timelineByBookingId = new Map<string, any[]>();
+
+    if (bookingIds.length) {
+      const { data: timelineRows, error: timelineError } = await this.withQueryTimeout(
+        this.supabase
+          .schema('booking')
+          .from('booking_timeline_events')
+          .select('booking_id, event_type, label, icon, created_at')
+          .in('booking_id', bookingIds)
+          .order('created_at', { ascending: true }),
+        3000,
+        'booking.get-provider timeline query',
+      );
+
+      if (timelineError) {
+        this.logger.warn(`booking.get-provider timeline degraded: ${this.toTrimmedString(timelineError.message)}`);
+      } else {
+        timelineByBookingId = (timelineRows || []).reduce((acc: Map<string, any[]>, row: any) => {
+          const rowBookingId = this.toTrimmedString(row?.booking_id);
+          if (!rowBookingId) return acc;
+          const events = acc.get(rowBookingId) || [];
+          events.push(row);
+          acc.set(rowBookingId, events);
+          return acc;
+        }, new Map<string, any[]>());
+      }
+    }
+
+    const bookings = bookingRows.map((booking: any) => ({
       ...booking,
       service_title: this.resolveServiceTitle(booking),
-      timeline: [], // Empty timeline for list view
+      timeline: timelineByBookingId.get(this.toTrimmedString(booking?.id)) || [],
     }));
 
     return { bookings };
