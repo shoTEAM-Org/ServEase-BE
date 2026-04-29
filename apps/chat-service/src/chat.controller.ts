@@ -14,11 +14,17 @@ export class ChatKafkaController {
 
   @MessagePattern(CHAT_PATTERNS.GET_MESSAGES)
   async getMessages(@Payload() data: any) {
+    if (data.contextType && data.contextId) {
+      return this.chatService.getMessagesByContext(data.contextType, data.contextId, data.userId);
+    }
     return this.chatService.getMessages(data.bookingId, data.userId);
   }
 
   @MessagePattern(CHAT_PATTERNS.SEND_MESSAGE)
   async sendMessage(@Payload() data: any) {
+    if (data.contextType && data.contextId) {
+      return this.chatService.sendMessageByContext(data.contextType, data.contextId, data.senderId, data.text);
+    }
     return this.chatService.sendMessage(data.bookingId, data.senderId, data.text);
   }
 

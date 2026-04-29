@@ -99,6 +99,26 @@ export class ChatController implements OnModuleInit {
     }
   }
 
+  @Get('v1/contexts/:contextType/:contextId/messages')
+  async getContextMessages(
+    @Param('contextType') contextType: string,
+    @Param('contextId') contextId: string,
+    @Request() req: any,
+  ) {
+    try {
+      return await sendWithTimeout(
+        this.kafka.send(CHAT_PATTERNS.GET_MESSAGES, {
+          contextType,
+          contextId: decodeURIComponent(contextId),
+          userId: req['user'].id,
+        }),
+        CHAT_REQUEST_TIMEOUT_MS,
+      );
+    } catch (error) {
+      throw this.buildChatHttpError(error, 'Unable to load chat messages.');
+    }
+  }
+
   @Post('v1/conversations/:bookingId/messages')
   async sendMessage(
     @Param('bookingId') bookingId: string,
@@ -114,6 +134,33 @@ export class ChatController implements OnModuleInit {
       return await sendWithTimeout(
         this.kafka.send(CHAT_PATTERNS.SEND_MESSAGE, {
           bookingId,
+          senderId: req['user'].id,
+          text,
+        }),
+        CHAT_REQUEST_TIMEOUT_MS,
+      );
+    } catch (error) {
+      throw this.buildChatHttpError(error, 'Unable to send message.');
+    }
+  }
+
+  @Post('v1/contexts/:contextType/:contextId/messages')
+  async sendContextMessage(
+    @Param('contextType') contextType: string,
+    @Param('contextId') contextId: string,
+    @Request() req: any,
+    @Body() body: { text?: string; message?: string; body?: string },
+  ) {
+    const text = String(body?.text || body?.message || body?.body || '').trim();
+    if (!text) {
+      throw new BadRequestException('Message text cannot be empty.');
+    }
+
+    try {
+      return await sendWithTimeout(
+        this.kafka.send(CHAT_PATTERNS.SEND_MESSAGE, {
+          contextType,
+          contextId: decodeURIComponent(contextId),
           senderId: req['user'].id,
           text,
         }),

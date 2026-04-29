@@ -350,6 +350,12 @@ export class ChatService implements OnModuleInit {
    * Returns the conversation id.
    */
   private async getOrCreateConversation(bookingId: string): Promise<string> {
+    return this.getOrCreateConversationByContext('booking', bookingId);
+  }
+
+  private async getOrCreateConversationByContext(contextType: string, contextId: string): Promise<string> {
+    const normalizedContextType = this.toTrimmedString(contextType);
+    const normalizedContextId = this.toTrimmedString(contextId);
     try {
       const { data: existing } = await this.runWithChatSchemaFallback<{ id: string } | null>(
         (schema) =>
@@ -357,8 +363,8 @@ export class ChatService implements OnModuleInit {
             .schema(schema)
             .from('conversations')
             .select('id')
-            .eq('context_type', 'booking')
-            .eq('context_id', bookingId)
+            .eq('context_type', normalizedContextType)
+            .eq('context_id', normalizedContextId)
             .maybeSingle(),
         'Unable to resolve chat conversation schema.'
       );
@@ -370,7 +376,7 @@ export class ChatService implements OnModuleInit {
           this.supabase
             .schema(schema)
             .from('conversations')
-            .insert([{ context_type: 'booking', context_id: bookingId, status: 'active' }])
+            .insert([{ context_type: normalizedContextType, context_id: normalizedContextId, status: 'active' }])
             .select('id')
             .single(),
         'Unable to create chat conversation.'
@@ -383,8 +389,25 @@ export class ChatService implements OnModuleInit {
       }
 
       this.logChatStorageFallback(error);
-      return this.getMemoryConversationId(bookingId, true) as string;
+      return this.getMemoryConversationId(`${normalizedContextType}:${normalizedContextId}`, true) as string;
     }
+  }
+
+  private parseInquiryContext(contextId: string) {
+    const [customerId, providerId] = this.toTrimmedString(contextId).split(':');
+    if (!customerId || !providerId) {
+      throw new BadRequestException('Invalid provider inquiry context.');
+    }
+    return { customerId, providerId };
+  }
+
+  private assertInquiryParticipant(contextId: string, userId: string) {
+    const { customerId, providerId } = this.parseInquiryContext(contextId);
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (normalizedUserId !== customerId && normalizedUserId !== providerId) {
+      throw new UnauthorizedException('You are not part of this provider inquiry.');
+    }
+    return { customerId, providerId, normalizedUserId };
   }
 
   async getConversations(userId: string, role?: string) {
@@ -512,7 +535,81 @@ export class ChatService implements OnModuleInit {
       }),
     );
 
-    return conversations;
+    let inquiryConversations: any[] = [];
+    try {
+      const { data: rows } = await this.runWithChatSchemaFallback<any[]>(
+        (schema) =>
+          this.supabase
+            .schema(schema)
+            .from('conversations')
+            .select('id, context_id, last_message_at')
+            .eq('context_type', 'provider_inquiry')
+            .order('last_message_at', { ascending: false, nullsFirst: false }),
+        'Unable to load provider inquiry conversations.',
+      );
+
+      const visibleRows = (rows || []).filter((row: any) => {
+        const { customerId, providerId } = this.parseInquiryContext(row.context_id);
+        return userId === customerId || userId === providerId;
+      });
+      const partyIds = visibleRows.flatMap((row: any) => {
+        const { customerId, providerId } = this.parseInquiryContext(row.context_id);
+        return [customerId, providerId];
+      });
+      const inquiryUsers = await this.getUsersByIds(partyIds);
+      const inquiryUsersById = new Map(inquiryUsers.map((row: any) => [this.toTrimmedString(row?.id), row]));
+
+      inquiryConversations = await Promise.all(visibleRows.map(async (row: any) => {
+        const { customerId, providerId } = this.parseInquiryContext(row.context_id);
+        const otherPartyId = userId === providerId ? customerId : providerId;
+        const otherUser = inquiryUsersById.get(otherPartyId);
+        const [lastMsgResult, unreadResult] = await Promise.all([
+          this.runWithChatSchemaFallback<Record<string, unknown> | null>(
+            (schema) =>
+              this.supabase
+                .schema(schema)
+                .from('messages')
+                .select('id, body, created_at, sender_id')
+                .eq('conversation_id', row.id)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .maybeSingle(),
+            'Unable to load latest provider inquiry message.',
+          ),
+          this.runWithChatSchemaFallback<any>(
+            (schema) =>
+              this.supabase
+                .schema(schema)
+                .from('messages')
+                .select('*', { count: 'exact', head: true })
+                .eq('conversation_id', row.id)
+                .neq('sender_id', userId)
+                .neq('delivery_status', 'read'),
+            'Unable to load provider inquiry unread count.',
+          ),
+        ]);
+        return {
+          id: `provider_inquiry:${row.context_id}`,
+          contextType: 'provider_inquiry',
+          contextId: row.context_id,
+          bookingId: '',
+          conversationId: row.id,
+          customerId,
+          providerId,
+          otherPartyId,
+          otherPartyName: otherUser?.full_name || 'User',
+          serviceName: 'Pre-booking inquiry',
+          lastMessage: lastMsgResult.data?.body || '',
+          lastMessageTime: lastMsgResult.data?.created_at || null,
+          unreadCount: Number(unreadResult.count || 0),
+        };
+      }));
+    } catch (error) {
+      if (!(error instanceof ChatStorageUnavailableError)) throw error;
+      this.logChatStorageFallback(error);
+    }
+
+    return [...inquiryConversations, ...conversations];
   }
 
   async getMessages(bookingId: string, userId: string) {
@@ -668,6 +765,97 @@ export class ChatService implements OnModuleInit {
       );
       return { id: memoryMessage.id, created_at: memoryMessage.created_at };
     }
+  }
+
+  async getMessagesByContext(contextType: string, contextId: string, userId: string) {
+    const normalizedContextType = this.toTrimmedString(contextType);
+    const normalizedContextId = this.toTrimmedString(contextId);
+    if (normalizedContextType !== 'provider_inquiry') {
+      return this.getMessages(normalizedContextId, userId);
+    }
+
+    const { customerId, providerId, normalizedUserId } = this.assertInquiryParticipant(normalizedContextId, userId);
+    const { data: conversation } = await this.runWithChatSchemaFallback<{ id: string } | null>(
+      (schema) =>
+        this.supabase
+          .schema(schema)
+          .from('conversations')
+          .select('id')
+          .eq('context_type', normalizedContextType)
+          .eq('context_id', normalizedContextId)
+          .maybeSingle(),
+      'Unable to load provider inquiry conversation.',
+    );
+
+    let messageList: any[] = [];
+    if (conversation) {
+      const { data: messages } = await this.runWithChatSchemaFallback<any[]>(
+        (schema) =>
+          this.supabase
+            .schema(schema)
+            .from('messages')
+            .select('id, body, created_at, sender_id, delivery_status')
+            .eq('conversation_id', conversation.id)
+            .order('created_at', { ascending: true }),
+        'Unable to load provider inquiry messages.',
+      );
+      messageList = messages || [];
+    }
+
+    const otherPartyId = normalizedUserId === providerId ? customerId : providerId;
+    const users = await this.getUsersByIds([otherPartyId]);
+    const otherUser = Array.isArray(users) && users.length ? users[0] : null;
+    return {
+      id: `${normalizedContextType}:${normalizedContextId}`,
+      contextType: normalizedContextType,
+      contextId: normalizedContextId,
+      bookingId: '',
+      customerId,
+      providerId,
+      otherPartyId,
+      otherPartyName: otherUser?.full_name || 'User',
+      serviceName: 'Pre-booking inquiry',
+      messages: messageList.map((m: any) => ({
+        id: m.id,
+        text: m.body,
+        createdAt: m.created_at,
+        sender: m.sender_id === providerId ? 'provider' : 'customer',
+        deliveryStatus: m.delivery_status || 'sent',
+      })),
+    };
+  }
+
+  async sendMessageByContext(contextType: string, contextId: string, senderId: string, text: string) {
+    if (!text?.trim()) throw new BadRequestException('Message text cannot be empty.');
+    const normalizedContextType = this.toTrimmedString(contextType);
+    const normalizedContextId = this.toTrimmedString(contextId);
+    if (normalizedContextType !== 'provider_inquiry') {
+      return this.sendMessage(normalizedContextId, senderId, text);
+    }
+
+    const { normalizedUserId } = this.assertInquiryParticipant(normalizedContextId, senderId);
+    const conversationId = await this.getOrCreateConversationByContext(normalizedContextType, normalizedContextId);
+    const normalizedText = String(text || '').trim();
+    const { data } = await this.runWithChatSchemaFallback<any>(
+      (schema) =>
+        this.supabase
+          .schema(schema)
+          .from('messages')
+          .insert([{ conversation_id: conversationId, sender_id: normalizedUserId, message_type: 'text', body: normalizedText, delivery_status: 'sent' }])
+          .select()
+          .single(),
+      'Unable to send provider inquiry message.',
+    );
+    await this.runWithChatSchemaFallback<any>(
+      (schema) =>
+        this.supabase
+          .schema(schema)
+          .from('conversations')
+          .update({ last_message_at: data.created_at })
+          .eq('id', conversationId),
+      'Unable to update provider inquiry timestamp.',
+    );
+    return { id: data.id, created_at: data.created_at };
   }
 
   async markRead(bookingId: string, userId: string) {
