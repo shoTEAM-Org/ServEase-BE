@@ -1624,11 +1624,15 @@ export class BookingService implements OnModuleInit {
     reason: string,
     explanation: string,
   ) {
+    const booking = await this.getBookingRowByIdentifier(id, 'id');
+    if (!booking?.id) throw new NotFoundException('Booking not found');
+
+    const bookingId = this.toTrimmedString(booking.id);
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
       .update({ status: 'cancelled' })
-      .eq('id', id)
+      .eq('id', bookingId)
       .select()
       .single();
     if (error) throw new BadRequestException(error.message);
@@ -1638,14 +1642,17 @@ export class BookingService implements OnModuleInit {
       .from('bookings_cancellations')
       .insert([
         {
-          booking_id: id,
+          booking_id: bookingId,
           cancelled_by: userId,
           reason,
           detailed_explanation: explanation,
         },
       ]);
-    if (cancellationError)
-      throw new BadRequestException(cancellationError.message);
+    if (cancellationError) {
+      this.logger.warn(
+        `Booking ${bookingId} was cancelled, but cancellation audit insert failed: ${cancellationError.message}`,
+      );
+    }
 
     return { booking: data };
   }

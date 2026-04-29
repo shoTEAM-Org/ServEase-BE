@@ -153,7 +153,7 @@ export class BookingKafkaController {
     return this.bookingService.updateStatus(data.id, data.status);
   }
 
-  @EventPattern(BOOKING_PATTERNS.CANCEL)
+  @MessagePattern(BOOKING_PATTERNS.CANCEL)
   async cancelBooking(@Payload() data: any) {
     return this.bookingService.cancelBooking(
       data.id,

@@ -86,7 +86,7 @@ export class AuthService implements OnModuleInit {
       }
 
       const { error: profileError } = await this.supabase.schema('identity_and_user').from('customer_profiles')
-        .insert([{ user_id: userId, full_name: dto.full_name, address: dto.address }]);
+        .insert([{ user_id: userId, full_name: dto.full_name, contact_number: dto.contact_number }]);
       if (profileError) {
         await this.supabase.schema('identity_and_user').from('users').delete().eq('id', userId);
         await this.supabase.auth.admin.deleteUser(userId);
