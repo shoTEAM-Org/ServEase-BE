@@ -56,7 +56,6 @@ export class BookingService implements OnModuleInit {
     const parsed = this.toTrimmedString(value);
     return parsed || null;
   }
-
   private toBoolean(value: unknown, fallback = false) {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'number') return value !== 0;
@@ -66,6 +65,11 @@ export class BookingService implements OnModuleInit {
       if (['false', '0', 'no', 'n'].includes(normalized)) return false;
     }
     return fallback;
+  }
+
+  private allowUnverifiedProviderBooking() {
+    return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
+      .toLowerCase() === 'true';
   }
 
   private isMissingRelationError(error: any) {
@@ -839,6 +843,14 @@ export class BookingService implements OnModuleInit {
     ).toLowerCase();
 
     if (accountStatus === 'active' && verificationStatus === 'approved') {
+      return;
+    }
+
+    if (
+      this.allowUnverifiedProviderBooking() &&
+      ['active', 'pending'].includes(accountStatus) &&
+      verificationStatus === 'pending'
+    ) {
       return;
     }
 
@@ -1803,3 +1815,4 @@ export class BookingService implements OnModuleInit {
     }
   }
 }
+

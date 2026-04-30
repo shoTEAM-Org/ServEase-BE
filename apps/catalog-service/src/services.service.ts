@@ -36,13 +36,17 @@ export class ServicesService implements OnModuleInit {
       { context: pattern },
     );
   }
-
   private toTrimmedString(value: unknown) {
     if (typeof value === 'string') return value.trim();
     if (typeof value === 'number' || typeof value === 'boolean') {
       return String(value).trim();
     }
     return '';
+  }
+
+  private allowUnverifiedProviderBooking() {
+    return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
+      .toLowerCase() === 'true';
   }
 
   private async getProviderProfilesByIds(userIds: unknown) {
@@ -97,8 +101,15 @@ export class ServicesService implements OnModuleInit {
     const data = (services || [])
       .filter(
         (s: any) =>
-          this.toTrimmedString(s?.provider_profiles?.verification_status) ===
-          'approved',
+          (() => {
+          const verificationStatus = this.toTrimmedString(
+            s?.provider_profiles?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })(),
       )
       .map((s: any) => ({
         ...s,
@@ -127,8 +138,15 @@ export class ServicesService implements OnModuleInit {
     let results = (services || [])
       .filter(
         (s: any) =>
-          this.toTrimmedString(s?.provider_profiles?.verification_status) ===
-          'approved',
+          (() => {
+          const verificationStatus = this.toTrimmedString(
+            s?.provider_profiles?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })(),
       )
       .map((s: any) => ({
         ...s,
@@ -192,8 +210,15 @@ export class ServicesService implements OnModuleInit {
       )
       .filter(
         (service: any) =>
-          this.toTrimmedString(service?.provider_profiles?.verification_status) ===
-          'approved',
+          (() => {
+          const verificationStatus = this.toTrimmedString(
+            service?.provider_profiles?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })(),
       );
 
     return { providers: data };
@@ -405,3 +430,4 @@ export class ServicesService implements OnModuleInit {
     return { ok: true };
   }
 }
+

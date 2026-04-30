@@ -147,7 +147,6 @@ export class ProviderService implements OnModuleInit {
     if (!Number.isFinite(parsed) || parsed <= 0) return null;
     return parsed;
   }
-
   private toBoolean(value: unknown, fallback = false) {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'number') return value !== 0;
@@ -157,6 +156,11 @@ export class ProviderService implements OnModuleInit {
       if (['false', '0', 'no', 'n'].includes(normalized)) return false;
     }
     return fallback;
+  }
+
+  private allowUnverifiedProviderBooking() {
+    return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
+      .toLowerCase() === 'true';
   }
 
   private normalizePricingMode(value: unknown): 'hourly' | 'flat' | null {
@@ -337,7 +341,15 @@ export class ProviderService implements OnModuleInit {
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
 
     const data = (services || [])
-      .filter((s: any) => profileMap[s.provider_id]?.verification_status === 'approved')
+      .filter((s: any) => (() => {
+          const verificationStatus = this.toTrimmedString(
+            profileMap[s.provider_id]?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })())
       .map((s: any) => ({ ...s, provider_profiles: profileMap[s.provider_id] || null }));
 
     return { success: true, data };
@@ -361,7 +373,15 @@ export class ProviderService implements OnModuleInit {
 
     const lower = this.toTrimmedString(searchTerm).toLowerCase();
     const filtered = (services || [])
-      .filter((s: any) => profileMap[s.provider_id]?.verification_status === 'approved')
+      .filter((s: any) => (() => {
+          const verificationStatus = this.toTrimmedString(
+            profileMap[s.provider_id]?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })())
       .filter(
         (s: any) =>
           !lower ||
@@ -896,20 +916,29 @@ export class ProviderService implements OnModuleInit {
       .select('average_rating, total_reviews')
       .eq('user_id', normalizedProviderId)
       .single();
-    const reviewsResponse = await this.request<any>(
-      TRUST_PATTERNS.GET_PROVIDER_REVIEWS,
-      { providerId: normalizedProviderId },
-    );
-    const reviews = Array.isArray(reviewsResponse?.reviews)
-      ? reviewsResponse.reviews
-      : [];
+
+    let reviews: any[] = [];
+    try {
+      const reviewsResponse = await this.request<any>(
+        TRUST_PATTERNS.GET_PROVIDER_REVIEWS,
+        { providerId: normalizedProviderId },
+      );
+      reviews = Array.isArray(reviewsResponse?.reviews)
+        ? reviewsResponse.reviews
+        : [];
+    } catch (error) {
+      this.logger.warn(
+        `provider.get-reviews degraded: ${this.toTrimmedString((error as { message?: unknown })?.message) || 'trust-service unavailable'}`
+      );
+      reviews = [];
+    }
 
     return {
       status: 'success',
       data: {
         provider_id: normalizedProviderId,
         average_rating: Number(profile?.average_rating) || 0,
-        total_reviews: Number(profile?.total_reviews) || 0,
+        total_reviews: Number(profile?.total_reviews) || reviews.length || 0,
         reviews,
       },
     };
@@ -1321,3 +1350,4 @@ export class ProviderService implements OnModuleInit {
     return await this.request<any>(TRUST_PATTERNS.CREATE_PROVIDER_REPORT, body);
   }
 }
+
