@@ -15,14 +15,20 @@ export class CustomerService implements OnModuleInit {
     private readonly supabase: SupabaseClient,
     @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
   ) {}
-  private readonly identitySchemas = ['identity_and_user', 'identity_svc'] as const;
+  private readonly identitySchemas = [
+    'identity_and_user',
+    'identity_svc',
+  ] as const;
 
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS);
     await this.kafka.connect();
   }
 
-  private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
+  private async request<T = any>(
+    pattern: string,
+    payload: unknown,
+  ): Promise<T> {
     return await sendKafkaRpcRequest(
       () => this.kafka.send<T, unknown>(pattern, payload),
       { context: pattern },
@@ -82,7 +88,9 @@ export class CustomerService implements OnModuleInit {
 
     return bookings
       .filter((booking: any) =>
-        ['pending', 'completed'].includes(this.toTrimmedString(booking?.status)),
+        ['pending', 'confirmed', 'in_progress', 'completed'].includes(
+          this.toTrimmedString(booking?.status),
+        ),
       )
       .map((booking: any) => ({
         id: booking.id,
@@ -119,7 +127,9 @@ export class CustomerService implements OnModuleInit {
       if (!this.isMissingRelationError(error)) break;
     }
 
-    throw new InternalServerErrorException(lastError?.message || 'Failed to fetch customer profile');
+    throw new InternalServerErrorException(
+      lastError?.message || 'Failed to fetch customer profile',
+    );
   }
 
   async updateProfile(userId: string, updates: Record<string, any>) {
@@ -130,7 +140,10 @@ export class CustomerService implements OnModuleInit {
     const userUpdates = this.pickUserProfileUpdates(source);
     const profileUpdates = this.pickCustomerProfileUpdates(source);
 
-    if (Object.keys(userUpdates).length === 0 && Object.keys(profileUpdates).length === 0) {
+    if (
+      Object.keys(userUpdates).length === 0 &&
+      Object.keys(profileUpdates).length === 0
+    ) {
       throw new BadRequestException('No valid profile fields provided');
     }
 
@@ -171,12 +184,13 @@ export class CustomerService implements OnModuleInit {
 
       if (!updateError && updatedProfile) return updatedProfile;
       if (!updateError && !updatedProfile) {
-        const { data: insertedProfile, error: insertError } = await this.supabase
-          .schema(schemaName)
-          .from('customer_profiles')
-          .insert([{ user_id: normalizedUserId, ...profileUpdates }])
-          .select()
-          .single();
+        const { data: insertedProfile, error: insertError } =
+          await this.supabase
+            .schema(schemaName)
+            .from('customer_profiles')
+            .insert([{ user_id: normalizedUserId, ...profileUpdates }])
+            .select()
+            .single();
         if (!insertError) return insertedProfile;
         lastProfileError = insertError;
         if (this.isMissingRelationError(insertError)) continue;

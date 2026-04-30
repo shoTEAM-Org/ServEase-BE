@@ -23,6 +23,23 @@ import {
 export class BookingService implements OnModuleInit {
   private readonly availabilitySchemas = ['booking', 'booking_svc'] as const;
   private readonly logger = new Logger(BookingService.name);
+  private readonly allowedBookingStatuses = new Set([
+    'pending',
+    'confirmed',
+    'in_progress',
+    'completed',
+    'cancelled',
+    'disputed',
+  ]);
+  private readonly bookingStatusTimelineLabels: Record<string, string> = {
+    pending: 'Request created',
+    confirmed: 'Provider accepted your booking',
+    in_progress: 'Provider is on the way',
+    provider_marked_done: 'Provider marked service done',
+    completed: 'Service completed',
+    cancelled: 'Booking cancelled',
+    disputed: 'Booking disputed',
+  };
 
   constructor(
     private readonly supabase: SupabaseClient,
@@ -55,6 +72,37 @@ export class BookingService implements OnModuleInit {
   private toNullableString(value: unknown): string | null {
     const parsed = this.toTrimmedString(value);
     return parsed || null;
+  }
+
+  private normalizeBookingStatus(status: unknown) {
+    return this.toTrimmedString(status).toLowerCase();
+  }
+
+  private assertValidBookingStatus(status: string) {
+    if (!this.allowedBookingStatuses.has(status)) {
+      throw new BadRequestException(
+        `Status must be one of: ${Array.from(this.allowedBookingStatuses).join(', ')}`,
+      );
+    }
+  }
+
+  private buildTimelineEntry(status: string, at = new Date().toISOString()) {
+    return {
+      status,
+      label: this.bookingStatusTimelineLabels[status] || status,
+      timestamp: at,
+    };
+  }
+
+  private appendTimelineEntry(existingTimeline: unknown, status: string) {
+    const timeline = Array.isArray(existingTimeline)
+      ? existingTimeline.filter((entry) => entry && typeof entry === 'object')
+      : [];
+    const latest = timeline[timeline.length - 1] as any;
+    if (this.normalizeBookingStatus(latest?.status) === status) {
+      return timeline;
+    }
+    return [...timeline, this.buildTimelineEntry(status)];
   }
 
   private toBoolean(value: unknown, fallback = false) {
@@ -109,8 +157,7 @@ export class BookingService implements OnModuleInit {
     if (!searchTexts.length) return null;
 
     const postgresPattern = /column\s+["']?(\w+)["']?/i;
-    const schemaCachePattern =
-      /find\s+the\s+["'](\w+)["']\s+column\s+of/i;
+    const schemaCachePattern = /find\s+the\s+["'](\w+)["']\s+column\s+of/i;
 
     for (const text of searchTexts) {
       if (text.toLowerCase().includes('does not exist')) {
@@ -313,14 +360,21 @@ export class BookingService implements OnModuleInit {
       ]);
 
       if (!weeklyResult.error && !daysOffResult.error) {
-        const normalizedDaysOff = (daysOffResult.data || []).map((row: any) => ({
-          ...row,
-          off_date: this.normalizeOffDate(row?.off_date) || row?.off_date,
-        }));
-        return { weeklySchedule: weeklyResult.data || [], daysOff: normalizedDaysOff };
+        const normalizedDaysOff = (daysOffResult.data || []).map(
+          (row: any) => ({
+            ...row,
+            off_date: this.normalizeOffDate(row?.off_date) || row?.off_date,
+          }),
+        );
+        return {
+          weeklySchedule: weeklyResult.data || [],
+          daysOff: normalizedDaysOff,
+        };
       }
 
-      const combinedErrors = [weeklyResult.error, daysOffResult.error].filter(Boolean);
+      const combinedErrors = [weeklyResult.error, daysOffResult.error].filter(
+        Boolean,
+      );
       const permissionError = combinedErrors.find((error) =>
         this.isPermissionDeniedError(error),
       );
@@ -337,12 +391,16 @@ export class BookingService implements OnModuleInit {
     return { weeklySchedule: [], daysOff: [] };
   }
 
-  private async saveProviderAvailabilityWithClient( // NOSONAR: Legacy fallback flow; refactor planned separately.
+  private async saveProviderAvailabilityWithClient(
+    // NOSONAR: Legacy fallback flow; refactor planned separately.
     client: SupabaseClient,
     userId: string,
     body: any,
   ) {
-    const weeklyRows = this.normalizeWeeklyScheduleRows(userId, body?.weeklySchedule);
+    const weeklyRows = this.normalizeWeeklyScheduleRows(
+      userId,
+      body?.weeklySchedule,
+    );
     const daysOffRows = this.normalizeDaysOffRows(userId, body?.daysOff);
     const includesWeeklySchedule = body?.weeklySchedule !== undefined;
     const includesDaysOff = body?.daysOff !== undefined;
@@ -384,7 +442,8 @@ export class BookingService implements OnModuleInit {
             });
           }
 
-          const updates: Array<{ id: string; payload: Record<string, any> }> = [];
+          const updates: Array<{ id: string; payload: Record<string, any> }> =
+            [];
           const inserts: Record<string, any>[] = [];
 
           for (const [dayKey, payload] of incomingByDay.entries()) {
@@ -594,7 +653,9 @@ export class BookingService implements OnModuleInit {
   }
 
   private isTimeoutLikeError(error: unknown) {
-    const message = this.toTrimmedString((error as { message?: unknown })?.message).toLowerCase();
+    const message = this.toTrimmedString(
+      (error as { message?: unknown })?.message,
+    ).toLowerCase();
     return message.includes('timeout') || message.includes('timed out');
   }
 
@@ -609,7 +670,8 @@ export class BookingService implements OnModuleInit {
         operation,
         new Promise<T>((_, reject) => {
           timeoutHandle = setTimeout(
-            () => reject(new Error(`${context} timed out after ${timeoutMs}ms`)),
+            () =>
+              reject(new Error(`${context} timed out after ${timeoutMs}ms`)),
             timeoutMs,
           );
         }),
@@ -817,7 +879,8 @@ export class BookingService implements OnModuleInit {
 
   private async ensureProviderCanBeBooked(providerId: string) {
     const userRecord = await this.getUserProfileFromAuth(providerId);
-    if (!userRecord) throw new NotFoundException('Provider not found in the system.');
+    if (!userRecord)
+      throw new NotFoundException('Provider not found in the system.');
 
     const providerRole = this.toTrimmedString(userRecord?.role).toLowerCase();
     if (providerRole !== 'provider') {
@@ -833,7 +896,9 @@ export class BookingService implements OnModuleInit {
       );
     }
 
-    const accountStatus = this.toTrimmedString(userRecord?.status).toLowerCase();
+    const accountStatus = this.toTrimmedString(
+      userRecord?.status,
+    ).toLowerCase();
     const verificationStatus = this.toTrimmedString(
       profileRecord?.verification_status,
     ).toLowerCase();
@@ -842,7 +907,8 @@ export class BookingService implements OnModuleInit {
       return;
     }
 
-    const accountStatusLabel = this.toTrimmedString(userRecord?.status) || 'unknown';
+    const accountStatusLabel =
+      this.toTrimmedString(userRecord?.status) || 'unknown';
     const profileVerificationLabel =
       this.toTrimmedString(profileRecord?.verification_status) || 'unknown';
     throw new BadRequestException(
@@ -875,7 +941,9 @@ export class BookingService implements OnModuleInit {
         );
       }
 
-      const missingColumn = this.extractMissingColumnFromError(insertResult.error);
+      const missingColumn = this.extractMissingColumnFromError(
+        insertResult.error,
+      );
       if (!missingColumn || !(missingColumn in insertPayload)) {
         throw new BadRequestException(
           this.toTrimmedString(insertResult.error?.message) ||
@@ -888,6 +956,48 @@ export class BookingService implements OnModuleInit {
     }
 
     throw new BadRequestException('Failed to create booking');
+  }
+
+  private async updateBookingWithSchemaFallback(
+    bookingId: string,
+    baseUpdatePayload: Record<string, any>,
+  ) {
+    let updatePayload: Record<string, any> = { ...baseUpdatePayload };
+    let schemaFallbackAttempts = 0;
+
+    while (schemaFallbackAttempts < 8) {
+      const updateResult = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .update(updatePayload)
+        .eq('id', bookingId)
+        .select()
+        .single();
+
+      if (!updateResult.error) {
+        return updateResult.data;
+      }
+
+      if (updateResult.error.code === 'PGRST116') {
+        throw new NotFoundException(`Booking with id ${bookingId} not found`);
+      }
+
+      if (!this.isSchemaMismatchError(updateResult.error)) {
+        throw new BadRequestException(updateResult.error.message);
+      }
+
+      const missingColumn = this.extractMissingColumnFromError(
+        updateResult.error,
+      );
+      if (!missingColumn || !(missingColumn in updatePayload)) {
+        throw new BadRequestException(updateResult.error.message);
+      }
+
+      delete updatePayload[missingColumn];
+      schemaFallbackAttempts += 1;
+    }
+
+    throw new BadRequestException('Failed to update booking');
   }
 
   private async ensurePaymentForBooking(booking: Record<string, any>) {
@@ -963,11 +1073,11 @@ export class BookingService implements OnModuleInit {
       payment_method: normalizedPaymentMethod,
       customer_notes: this.toNullableString(dto?.customer_notes),
       status: 'pending',
+      status_timeline: [this.buildTimelineEntry('pending')],
     };
 
-    const newBooking = await this.insertBookingWithSchemaFallback(
-      baseInsertPayload,
-    );
+    const newBooking =
+      await this.insertBookingWithSchemaFallback(baseInsertPayload);
     const paymentResult = await this.ensurePaymentForBooking(newBooking);
 
     return {
@@ -987,11 +1097,13 @@ export class BookingService implements OnModuleInit {
       .order('created_at', { ascending: false });
     if (error) throw new InternalServerErrorException(error.message);
 
-    const providerIds = [...new Set(
-      (data || [])
-        .map((booking: any) => this.toTrimmedString(booking?.provider_id))
-        .filter(Boolean),
-    )];
+    const providerIds = [
+      ...new Set(
+        (data || [])
+          .map((booking: any) => this.toTrimmedString(booking?.provider_id))
+          .filter(Boolean),
+      ),
+    ];
 
     const providerEntries = await Promise.all(
       providerIds.map(async (providerId) => {
@@ -1044,10 +1156,10 @@ export class BookingService implements OnModuleInit {
       ),
     ];
     const customerEntries = await Promise.all(
-      customerIds.map(async (customerId) => [
-        customerId,
-        await this.getUserProfileFromAuth(customerId),
-      ] as const),
+      customerIds.map(
+        async (customerId) =>
+          [customerId, await this.getUserProfileFromAuth(customerId)] as const,
+      ),
     );
     const customerById = new Map(customerEntries);
 
@@ -1093,7 +1205,8 @@ export class BookingService implements OnModuleInit {
     }
 
     const normalizedRole = this.toTrimmedString(role).toLowerCase();
-    const actorColumn = normalizedRole === 'provider' ? 'provider_id' : 'customer_id';
+    const actorColumn =
+      normalizedRole === 'provider' ? 'provider_id' : 'customer_id';
 
     const { data, error } = await this.supabase
       .schema('booking')
@@ -1116,10 +1229,7 @@ export class BookingService implements OnModuleInit {
       throw new BadRequestException('bookingId is required');
     }
 
-    const data = await this.getBookingRowByIdentifier(
-      normalizedBookingId,
-      '*',
-    );
+    const data = await this.getBookingRowByIdentifier(normalizedBookingId, '*');
     if (!data) {
       throw new NotFoundException('Booking not found');
     }
@@ -1157,7 +1267,10 @@ export class BookingService implements OnModuleInit {
     const userIds = Array.from(
       new Set(
         bookings
-          .flatMap((booking: any) => [booking?.provider_id, booking?.customer_id])
+          .flatMap((booking: any) => [
+            booking?.provider_id,
+            booking?.customer_id,
+          ])
           .map((userId: unknown) => this.toTrimmedString(userId))
           .filter(Boolean),
       ),
@@ -1180,7 +1293,8 @@ export class BookingService implements OnModuleInit {
           this.toTrimmedString(booking.booking_reference) ||
           this.toTrimmedString(booking.id),
         status: this.toTrimmedString(booking.status) || 'pending',
-        payment_status: this.toTrimmedString(booking.payment_status) || 'pending',
+        payment_status:
+          this.toTrimmedString(booking.payment_status) || 'pending',
         amount: Number(booking.amount || booking.total_amount || 0),
         scheduled_at: booking.scheduled_at || null,
         created_at: booking.created_at || null,
@@ -1222,7 +1336,10 @@ export class BookingService implements OnModuleInit {
     const userIds = Array.from(
       new Set(
         bookings
-          .flatMap((booking: any) => [booking?.provider_id, booking?.customer_id])
+          .flatMap((booking: any) => [
+            booking?.provider_id,
+            booking?.customer_id,
+          ])
           .map((userId: unknown) => this.toTrimmedString(userId))
           .filter(Boolean),
       ),
@@ -1297,11 +1414,14 @@ export class BookingService implements OnModuleInit {
     if (error) throw new InternalServerErrorException(error.message);
 
     const bookings = data || [];
-    const byStatus = bookings.reduce((acc: Record<string, number>, booking: any) => {
-      const status = this.toTrimmedString(booking?.status) || 'unknown';
-      acc[status] = (acc[status] || 0) + 1;
-      return acc;
-    }, {});
+    const byStatus = bookings.reduce(
+      (acc: Record<string, number>, booking: any) => {
+        const status = this.toTrimmedString(booking?.status) || 'unknown';
+        acc[status] = (acc[status] || 0) + 1;
+        return acc;
+      },
+      {},
+    );
     return { total: bookings.length, by_status: byStatus };
   }
 
@@ -1336,7 +1456,11 @@ export class BookingService implements OnModuleInit {
     }
   }
 
-  async saveProviderAvailability(userId: string, body: any, accessToken?: string) {
+  async saveProviderAvailability(
+    userId: string,
+    body: any,
+    accessToken?: string,
+  ) {
     const normalizedUserId = this.toTrimmedString(userId);
     if (!normalizedUserId) throw new BadRequestException('userId is required');
 
@@ -1372,7 +1496,8 @@ export class BookingService implements OnModuleInit {
   async getReservedSlots(providerId: string, date: string) {
     const normalizedProviderId = this.toTrimmedString(providerId);
     const normalizedDate = this.toTrimmedString(date);
-    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+    if (!normalizedProviderId)
+      throw new BadRequestException('providerId is required');
     if (!normalizedDate) throw new BadRequestException('date is required');
 
     const startOfDay = `${normalizedDate}T00:00:00`;
@@ -1395,7 +1520,8 @@ export class BookingService implements OnModuleInit {
     hoursRequired: string,
   ) {
     const normalizedScheduledAt = this.toTrimmedString(scheduledAt);
-    if (!normalizedScheduledAt) throw new BadRequestException('scheduledAt is required');
+    if (!normalizedScheduledAt)
+      throw new BadRequestException('scheduledAt is required');
 
     const date = normalizedScheduledAt.slice(0, 10);
     const slots = (await this.getReservedSlots(providerId, date)).reservedSlots;
@@ -1624,20 +1750,148 @@ export class BookingService implements OnModuleInit {
     };
   }
 
+  async getBookingStatus(id: string) {
+    const booking = await this.getBookingRowByIdentifier(id);
+    if (!booking) throw new NotFoundException('Booking not found');
+
+    return {
+      booking_id: booking.id,
+      status: this.normalizeBookingStatus(booking.status) || 'pending',
+      timeline: Array.isArray(booking.status_timeline)
+        ? booking.status_timeline
+        : [
+            this.buildTimelineEntry(
+              this.normalizeBookingStatus(booking.status) || 'pending',
+            ),
+          ],
+      provider_completed_at: booking.provider_completed_at || null,
+      provider_marked_done_at:
+        booking.provider_marked_done_at ||
+        booking.provider_completed_at ||
+        null,
+      customer_marked_done_at:
+        booking.customer_marked_done_at || booking.completion_time || null,
+      completion_time: booking.completion_time || null,
+      completed_at: booking.completed_at || booking.completion_time || null,
+    };
+  }
+
   async updateStatus(id: string, status: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .update({ status })
-      .eq('id', id)
-      .select()
-      .single();
-    if (error) {
-      if (error.code === 'PGRST116')
-        throw new NotFoundException(`Booking with id ${id} not found`);
-      throw new BadRequestException(error.message);
+    const normalizedStatus = this.normalizeBookingStatus(status);
+    this.assertValidBookingStatus(normalizedStatus);
+
+    const booking = await this.getBookingRowByIdentifier(id);
+    if (!booking?.id) throw new NotFoundException('Booking not found');
+
+    const updatePayload: Record<string, any> = {
+      status: normalizedStatus,
+      status_timeline: this.appendTimelineEntry(
+        booking.status_timeline,
+        normalizedStatus,
+      ),
+    };
+    if (normalizedStatus === 'completed') {
+      updatePayload.completion_time = new Date().toISOString();
+      updatePayload.completed_at = updatePayload.completion_time;
+      updatePayload.customer_marked_done_at = updatePayload.completion_time;
     }
+
+    const data = await this.updateBookingWithSchemaFallback(
+      this.toTrimmedString(booking.id),
+      updatePayload,
+    );
     return { message: 'Booking status updated successfully.', booking: data };
+  }
+
+  async markProviderDone(id: string, providerId: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) {
+      throw new BadRequestException('providerId is required');
+    }
+
+    const booking = await this.getBookingRowByIdentifier(id);
+    if (!booking?.id) throw new NotFoundException('Booking not found');
+
+    if (this.toTrimmedString(booking.provider_id) !== normalizedProviderId) {
+      throw new BadRequestException(
+        'Only the assigned provider can mark this booking as done.',
+      );
+    }
+
+    const currentStatus = this.normalizeBookingStatus(booking.status);
+    if (currentStatus !== 'in_progress') {
+      throw new BadRequestException(
+        'Provider can only mark an in_progress booking as done.',
+      );
+    }
+
+    const providerMarkedDoneAt = new Date().toISOString();
+    const data = await this.updateBookingWithSchemaFallback(
+      this.toTrimmedString(booking.id),
+      {
+        status: 'in_progress',
+        provider_marked_done_at: providerMarkedDoneAt,
+        provider_completed_at: providerMarkedDoneAt,
+        status_timeline: this.appendTimelineEntry(
+          booking.status_timeline,
+          'provider_marked_done',
+        ),
+      },
+    );
+
+    return {
+      message: 'Provider marked the service as done.',
+      booking: data,
+    };
+  }
+
+  async markCustomerDone(id: string, customerId: string) {
+    const normalizedCustomerId = this.toTrimmedString(customerId);
+    if (!normalizedCustomerId) {
+      throw new BadRequestException('customerId is required');
+    }
+
+    const booking = await this.getBookingRowByIdentifier(id);
+    if (!booking?.id) throw new NotFoundException('Booking not found');
+
+    if (this.toTrimmedString(booking.customer_id) !== normalizedCustomerId) {
+      throw new BadRequestException(
+        'Only the booking customer can complete this booking.',
+      );
+    }
+
+    const currentStatus = this.normalizeBookingStatus(booking.status);
+    if (currentStatus !== 'in_progress') {
+      throw new BadRequestException(
+        'Customer can only complete an in_progress booking.',
+      );
+    }
+
+    if (!booking.provider_marked_done_at && !booking.provider_completed_at) {
+      throw new BadRequestException(
+        'The provider must mark the service as done before the customer can complete it.',
+      );
+    }
+
+    const completionTime = new Date().toISOString();
+    const data = await this.updateBookingWithSchemaFallback(
+      this.toTrimmedString(booking.id),
+      {
+        status: 'completed',
+        customer_marked_done_at: completionTime,
+        completion_time: completionTime,
+        completed_at: completionTime,
+        status_timeline: this.appendTimelineEntry(
+          booking.status_timeline,
+          'completed',
+        ),
+      },
+    );
+
+    return {
+      message: 'Customer confirmed service completion.',
+      booking: data,
+    };
   }
 
   async cancelBooking(

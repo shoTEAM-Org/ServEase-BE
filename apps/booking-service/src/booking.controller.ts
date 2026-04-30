@@ -87,6 +87,11 @@ export class BookingKafkaController {
     return this.bookingService.getBookingById(data.id);
   }
 
+  @MessagePattern(BOOKING_PATTERNS.GET_STATUS)
+  async getBookingStatus(@Payload() data: any) {
+    return this.bookingService.getBookingStatus(data.id);
+  }
+
   @MessagePattern(BOOKING_PATTERNS.GET_ATTACHMENTS)
   async getAttachments(@Payload() data: any) {
     return this.bookingService.getAttachments(data.bookingId, data.accessToken);
@@ -94,13 +99,20 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_PROVIDER_AVAILABILITY)
   async getProviderAvailability(@Payload() data: any) {
-    return this.bookingService.getProviderAvailability(data.userId, data.accessToken);
+    return this.bookingService.getProviderAvailability(
+      data.userId,
+      data.accessToken,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.SAVE_PROVIDER_AVAILABILITY)
   async saveProviderAvailability(@Payload() data: any) {
     const { userId, accessToken, ...body } = data || {};
-    return this.bookingService.saveProviderAvailability(userId, body, accessToken);
+    return this.bookingService.saveProviderAvailability(
+      userId,
+      body,
+      accessToken,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_RESERVED_SLOTS)
@@ -151,6 +163,16 @@ export class BookingKafkaController {
   @EventPattern(BOOKING_PATTERNS.UPDATE_STATUS)
   async updateStatus(@Payload() data: any) {
     return this.bookingService.updateStatus(data.id, data.status);
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.MARK_PROVIDER_DONE)
+  async markProviderDone(@Payload() data: any) {
+    return this.bookingService.markProviderDone(data.id, data.providerId);
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.MARK_CUSTOMER_DONE)
+  async markCustomerDone(@Payload() data: any) {
+    return this.bookingService.markCustomerDone(data.id, data.customerId);
   }
 
   @MessagePattern(BOOKING_PATTERNS.CANCEL)

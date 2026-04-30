@@ -20,7 +20,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
 import { sendWithTimeout } from '../utils/kafka-request.js';
-import { PROVIDER_PATTERNS } from '@app/common';
+import { BOOKING_PATTERNS, PROVIDER_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 import 'multer';
 
@@ -46,6 +46,7 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.GET_REVIEWS,
       PROVIDER_PATTERNS.GET_BOOKINGS,
       PROVIDER_PATTERNS.GET_BOOKING_BY_ID,
+      BOOKING_PATTERNS.MARK_PROVIDER_DONE,
       PROVIDER_PATTERNS.GET_AVAILABILITY,
       PROVIDER_PATTERNS.GET_RESERVED_SLOTS,
       PROVIDER_PATTERNS.CHECK_AVAILABILITY,
@@ -99,12 +100,49 @@ export class ProviderController implements OnModuleInit {
   async updateBookingStatus(
     @Param('id') id: string,
     @Body('status') status: string,
+    @Request() req: any,
   ) {
+    if (
+      String(status || '')
+        .trim()
+        .toLowerCase() === 'provider_done'
+    ) {
+      return this.markBookingProviderDone(id, req);
+    }
+
     this.kafka.emit(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS, {
       bookingId: id,
       status,
     });
     return { status: 'accepted' };
+  }
+
+  @Patch('v1/booking/:id/done')
+  @UseGuards(SupabaseAuthGuard)
+  async markBookingDone(@Param('id') id: string, @Request() req: any) {
+    return this.markBookingProviderDone(id, req);
+  }
+
+  @Patch('v1/booking/:id/provider-done')
+  @UseGuards(SupabaseAuthGuard)
+  async markBookingProviderDone(@Param('id') id: string, @Request() req: any) {
+    try {
+      return await sendWithTimeout(
+        this.kafka.send(BOOKING_PATTERNS.MARK_PROVIDER_DONE, {
+          id,
+          providerId: req['user'].id,
+        }),
+      );
+    } catch (error: any) {
+      console.error('[gateway.provider.booking.provider-done] failed', {
+        path: `/api/provider/v1/booking/${id}/provider-done`,
+        bookingId: id,
+        providerId: req?.user?.id,
+        statusCode: error?.status || error?.response?.statusCode,
+        response: error?.response || error?.message || error,
+      });
+      throw error;
+    }
   }
 
   @Put('v1/availability')

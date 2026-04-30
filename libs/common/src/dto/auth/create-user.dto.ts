@@ -36,5 +36,41 @@ export class CreateUserDto {
   address?: string;
 
   @IsOptional()
+  @IsString()
+  street_address?: string;
+
+  @IsOptional()
+  @IsString()
+  street?: string;
+
+  @IsOptional()
+  @IsString()
+  label?: string;
+
+  @IsOptional()
+  @IsString()
+  city?: string;
+
+  @IsOptional()
+  @IsString()
+  province?: string;
+
+  @IsOptional()
+  @IsString()
+  region?: string;
+
+  @IsOptional()
+  @IsString()
+  barangay?: string;
+
+  @IsOptional()
+  @IsString()
+  zip_code?: string;
+
+  @IsOptional()
+  @IsString()
+  postal_code?: string;
+
+  @IsOptional()
   role?: 'customer' | 'provider' | 'admin';
 }
