@@ -20,6 +20,7 @@ import { ClientKafka } from '@nestjs/microservices';
 import { sendWithTimeout } from '../utils/kafka-request.js';
 import { CHAT_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
+import { ChatRealtimeGateway } from '../chat-realtime.gateway.js';
 
 const parsedChatRequestTimeoutMs = Number(
   process.env.KAFKA_CHAT_REQUEST_TIMEOUT_MS,
@@ -32,7 +33,10 @@ const CHAT_REQUEST_TIMEOUT_MS =
 @Controller('api/chat')
 @UseGuards(SupabaseAuthGuard)
 export class ChatController implements OnModuleInit {
-  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
+  constructor(
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+    private readonly chatRealtime: ChatRealtimeGateway,
+  ) {}
 
   private buildChatHttpError(error: any, fallback: string) {
     const response = error?.response;
@@ -75,6 +79,7 @@ export class ChatController implements OnModuleInit {
           role,
         }),
         CHAT_REQUEST_TIMEOUT_MS,
+        CHAT_PATTERNS.GET_CONVERSATIONS,
       );
     } catch (error) {
       throw this.buildChatHttpError(error, 'Unable to load conversations.');
@@ -93,6 +98,7 @@ export class ChatController implements OnModuleInit {
           userId: req['user'].id,
         }),
         CHAT_REQUEST_TIMEOUT_MS,
+        CHAT_PATTERNS.GET_MESSAGES,
       );
     } catch (error) {
       throw this.buildChatHttpError(error, 'Unable to load chat messages.');
@@ -113,6 +119,7 @@ export class ChatController implements OnModuleInit {
           userId: req['user'].id,
         }),
         CHAT_REQUEST_TIMEOUT_MS,
+        CHAT_PATTERNS.GET_MESSAGES,
       );
     } catch (error) {
       throw this.buildChatHttpError(error, 'Unable to load chat messages.');
@@ -131,14 +138,22 @@ export class ChatController implements OnModuleInit {
     }
 
     try {
-      return await sendWithTimeout(
+      const result = await sendWithTimeout(
         this.kafka.send(CHAT_PATTERNS.SEND_MESSAGE, {
           bookingId,
           senderId: req['user'].id,
           text,
         }),
         CHAT_REQUEST_TIMEOUT_MS,
+        CHAT_PATTERNS.SEND_MESSAGE,
       );
+      this.chatRealtime.emitMessageCreated({
+        contextType: 'booking',
+        contextId: bookingId,
+        senderId: req['user'].id,
+        message: result,
+      });
+      return result;
     } catch (error) {
       throw this.buildChatHttpError(error, 'Unable to send message.');
     }
@@ -157,7 +172,7 @@ export class ChatController implements OnModuleInit {
     }
 
     try {
-      return await sendWithTimeout(
+      const result = await sendWithTimeout(
         this.kafka.send(CHAT_PATTERNS.SEND_MESSAGE, {
           contextType,
           contextId: decodeURIComponent(contextId),
@@ -165,7 +180,15 @@ export class ChatController implements OnModuleInit {
           text,
         }),
         CHAT_REQUEST_TIMEOUT_MS,
+        CHAT_PATTERNS.SEND_MESSAGE,
       );
+      this.chatRealtime.emitMessageCreated({
+        contextType,
+        contextId: decodeURIComponent(contextId),
+        senderId: req['user'].id,
+        message: result,
+      });
+      return result;
     } catch (error) {
       throw this.buildChatHttpError(error, 'Unable to send message.');
     }

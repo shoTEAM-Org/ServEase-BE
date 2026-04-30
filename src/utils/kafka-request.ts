@@ -30,6 +30,7 @@ function extractHttpError(error: unknown) {
 export function sendWithTimeout<T>(
   source: Observable<T>,
   timeoutMs: number = DEFAULT_KAFKA_TIMEOUT_MS,
+  context = 'unknown-pattern',
 ): Promise<T> {
   return lastValueFrom(
     source.pipe(
@@ -38,7 +39,7 @@ export function sendWithTimeout<T>(
         if (err instanceof TimeoutError) {
           const correlationId = getCorrelationId();
           logger.error(
-            `[${correlationId}] Upstream microservice did not reply within ${timeoutMs}ms`,
+            `[${correlationId}] Upstream microservice did not reply to ${context} within ${timeoutMs}ms`,
           );
           return throwError(
             () =>

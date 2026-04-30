@@ -4,6 +4,8 @@ import { SupabaseModule } from '@app/database';
 import { TrustService } from './trust.service.js';
 import { TrustKafkaController } from './trust.controller.js';
 
+const trustClientInstanceId = `${process.pid}-${Date.now()}`;
+
 @Module({
   imports: [
     SupabaseModule,
@@ -13,10 +15,12 @@ import { TrustKafkaController } from './trust.controller.js';
         transport: Transport.KAFKA,
         options: {
           client: {
-            clientId: 'trust-service-client',
+            clientId: `trust-service-client-${trustClientInstanceId}`,
             brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
           },
-          consumer: { groupId: 'trust-service-client-consumer' },
+          consumer: {
+            groupId: `trust-service-client-consumer-${trustClientInstanceId}`,
+          },
         },
       },
     ]),
@@ -26,4 +30,3 @@ import { TrustKafkaController } from './trust.controller.js';
   exports: [TrustService],
 })
 export class TrustServiceModule {}
-

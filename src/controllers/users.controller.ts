@@ -32,9 +32,15 @@ export class UsersController implements OnModuleInit {
 
   @Get('v1/profile')
   async getProfile(@Request() req: any) {
-    return sendWithTimeout(
-      this.kafka.send(AUTH_PATTERNS.GET_PROFILE, { userId: req['user'].id }),
-    );
+    const user = req['user'];
+    return {
+      id: user.id,
+      full_name: user.full_name,
+      email: user.email,
+      contact_number: user.contact_number,
+      role: user.role,
+      status: user.status,
+    };
   }
 
   @Patch('v1/profile')
@@ -53,6 +59,8 @@ export class UsersController implements OnModuleInit {
       this.kafka.send(AUTH_PATTERNS.GET_CUSTOMER_PROFILE, {
         userId: req['user'].id,
       }),
+      undefined,
+      AUTH_PATTERNS.GET_CUSTOMER_PROFILE,
     );
   }
 
@@ -70,6 +78,8 @@ export class UsersController implements OnModuleInit {
   async getAddresses(@Request() req: any) {
     return sendWithTimeout(
       this.kafka.send(AUTH_PATTERNS.GET_ADDRESSES, { userId: req['user'].id }),
+      undefined,
+      AUTH_PATTERNS.GET_ADDRESSES,
     );
   }
 

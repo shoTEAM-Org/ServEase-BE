@@ -126,13 +126,42 @@ export class TrustService implements OnModuleInit {
         this.supabase
           .schema(schemaName)
           .from('reviews')
-          .select('id, reviewer_id, rating, review_text, created_at')
+          .select('id, booking_id, reviewer_id, reviewee_id, rating, review_text, created_at')
           .eq('reviewee_id', normalizedProviderId)
           .order('created_at', { ascending: false }),
       'Failed to fetch provider reviews',
     );
 
-    return { reviews: reviews || [] };
+    const reviewRows = reviews || [];
+    const reviewIds = reviewRows
+      .map((review: any) => this.toTrimmedString(review?.id))
+      .filter(Boolean);
+
+    let responsesByReviewId = new Map<string, any>();
+    if (reviewIds.length) {
+      const { data: responses } = await this.runTrustQuery<any[]>(
+        (schemaName) =>
+          this.supabase
+            .schema(schemaName)
+            .from('review_responses')
+            .select('id, review_id, responder_id, response_text, created_at, updated_at')
+            .in('review_id', reviewIds),
+        'Failed to fetch provider review responses',
+      );
+      responsesByReviewId = new Map(
+        (responses || []).map((response: any) => [
+          this.toTrimmedString(response?.review_id),
+          response,
+        ]),
+      );
+    }
+
+    return {
+      reviews: reviewRows.map((review: any) => ({
+        ...review,
+        response: responsesByReviewId.get(this.toTrimmedString(review?.id)) || null,
+      })),
+    };
   }
 
   async createReview(payload: any) {
@@ -539,4 +568,3 @@ export class TrustService implements OnModuleInit {
     };
   }
 }
-

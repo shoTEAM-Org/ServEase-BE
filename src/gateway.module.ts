@@ -25,6 +25,9 @@ import { HealthController } from './controllers/health.controller.js';
 import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
 import { AdminRoleGuard } from './guards/admin-role.guard.js';
 import { GatewayKafkaLifecycle } from './kafka/gateway-kafka.lifecycle.js';
+import { ChatRealtimeGateway } from './chat-realtime.gateway.js';
+
+const gatewayKafkaInstanceId = `${process.pid}-${Date.now()}`;
 
 @Module({
   imports: [
@@ -39,11 +42,11 @@ import { GatewayKafkaLifecycle } from './kafka/gateway-kafka.lifecycle.js';
           transport: Transport.KAFKA,
           options: {
             client: {
-              clientId: 'servease-gateway',
+              clientId: `servease-gateway-${gatewayKafkaInstanceId}`,
               brokers: [config.get<string>('KAFKA_BROKER', 'localhost:9092')],
             },
             consumer: {
-              groupId: 'servease-gateway-consumer',
+              groupId: `servease-gateway-consumer-${gatewayKafkaInstanceId}`,
             },
           },
         }),
@@ -67,7 +70,7 @@ import { GatewayKafkaLifecycle } from './kafka/gateway-kafka.lifecycle.js';
     UploadsController,
     HealthController,
   ],
-  providers: [AdminRoleGuard, GatewayKafkaLifecycle],
+  providers: [AdminRoleGuard, GatewayKafkaLifecycle, ChatRealtimeGateway],
 })
 export class GatewayModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {

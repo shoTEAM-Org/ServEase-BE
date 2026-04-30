@@ -25,16 +25,22 @@ const REQUEST_TIMEOUT_MS =
 @Injectable()
 export class TimeoutInterceptor implements NestInterceptor {
   intercept(
-    _context: ExecutionContext,
+    context: ExecutionContext,
     next: CallHandler,
   ): Observable<unknown> {
+    const request = context.switchToHttp().getRequest<{
+      method?: string;
+      originalUrl?: string;
+      url?: string;
+    }>();
+    const route = `${request?.method || 'HTTP'} ${request?.originalUrl || request?.url || 'unknown-route'}`;
     return next.handle().pipe(
       timeout(REQUEST_TIMEOUT_MS),
       catchError((err) => {
         if (err instanceof TimeoutError) {
           const correlationId = getCorrelationId();
           logger.error(
-            `[${correlationId}] HTTP request timed out after ${REQUEST_TIMEOUT_MS}ms`,
+            `[${correlationId}] ${route} timed out after ${REQUEST_TIMEOUT_MS}ms`,
           );
           return throwError(
             () =>

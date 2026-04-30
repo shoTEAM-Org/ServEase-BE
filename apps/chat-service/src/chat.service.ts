@@ -173,9 +173,22 @@ export class ChatService implements OnModuleInit {
     );
     if (!normalizedIds.length) return [] as any[];
 
-    const response = await this.request<any>(AUTH_PATTERNS.GET_USERS_BY_IDS, {
-      userIds: normalizedIds,
-    });
+    let response: any = null;
+    try {
+      response = await this.request<any>(
+        AUTH_PATTERNS.GET_USERS_BY_IDS,
+        {
+          userIds: normalizedIds,
+        },
+        { timeoutMs: 2000, retries: 0 },
+      );
+    } catch (error) {
+      const reason = this.isTimeoutLikeError(error) ? 'timeout' : 'error';
+      this.logger.warn(
+        `chat service lookup degraded (${reason}): users.get-by-ids for ${normalizedIds.length} id(s)`,
+      );
+      return [] as any[];
+    }
     const users =
       response && typeof response === 'object' && 'users' in response
         ? response.users
@@ -537,14 +550,24 @@ export class ChatService implements OnModuleInit {
 
     let inquiryConversations: any[] = [];
     try {
+      const normalizedUserId = this.toTrimmedString(userId);
       const { data: rows } = await this.runWithChatSchemaFallback<any[]>(
-        (schema) =>
-          this.supabase
+        (schema) => {
+          const query = this.supabase
             .schema(schema)
             .from('conversations')
             .select('id, context_id, last_message_at')
             .eq('context_type', 'provider_inquiry')
-            .order('last_message_at', { ascending: false, nullsFirst: false }),
+            .order('last_message_at', { ascending: false, nullsFirst: false });
+
+          if (normalizedUserId) {
+            query.or(
+              `context_id.like.${normalizedUserId}:*,context_id.like.*:${normalizedUserId}`,
+            );
+          }
+
+          return query;
+        },
         'Unable to load provider inquiry conversations.',
       );
 
@@ -717,7 +740,15 @@ export class ChatService implements OnModuleInit {
         normalizedUserId,
         normalizedText,
       );
-      return { id: memoryMessage.id, created_at: memoryMessage.created_at };
+      return {
+        id: memoryMessage.id,
+        body: memoryMessage.body,
+        text: memoryMessage.body,
+        sender: booking?.provider_id === normalizedUserId ? 'provider' : 'customer',
+        sender_id: memoryMessage.sender_id,
+        created_at: memoryMessage.created_at,
+        delivery_status: memoryMessage.delivery_status,
+      };
     }
 
     try {
@@ -751,7 +782,15 @@ export class ChatService implements OnModuleInit {
         'Unable to update conversation timestamp.'
       );
 
-      return { id: data.id, created_at: data.created_at };
+      return {
+        id: data.id,
+        body: data.body,
+        text: data.body,
+        sender: booking?.provider_id === normalizedUserId ? 'provider' : 'customer',
+        sender_id: data.sender_id,
+        created_at: data.created_at,
+        delivery_status: data.delivery_status || 'sent',
+      };
     } catch (error) {
       if (!(error instanceof ChatStorageUnavailableError)) {
         throw error;
@@ -763,7 +802,15 @@ export class ChatService implements OnModuleInit {
         normalizedUserId,
         normalizedText,
       );
-      return { id: memoryMessage.id, created_at: memoryMessage.created_at };
+      return {
+        id: memoryMessage.id,
+        body: memoryMessage.body,
+        text: memoryMessage.body,
+        sender: booking?.provider_id === normalizedUserId ? 'provider' : 'customer',
+        sender_id: memoryMessage.sender_id,
+        created_at: memoryMessage.created_at,
+        delivery_status: memoryMessage.delivery_status,
+      };
     }
   }
 
@@ -833,7 +880,7 @@ export class ChatService implements OnModuleInit {
       return this.sendMessage(normalizedContextId, senderId, text);
     }
 
-    const { normalizedUserId } = this.assertInquiryParticipant(normalizedContextId, senderId);
+    const { providerId, normalizedUserId } = this.assertInquiryParticipant(normalizedContextId, senderId);
     const conversationId = await this.getOrCreateConversationByContext(normalizedContextType, normalizedContextId);
     const normalizedText = String(text || '').trim();
     const { data } = await this.runWithChatSchemaFallback<any>(
@@ -855,7 +902,15 @@ export class ChatService implements OnModuleInit {
           .eq('id', conversationId),
       'Unable to update provider inquiry timestamp.',
     );
-    return { id: data.id, created_at: data.created_at };
+    return {
+      id: data.id,
+      body: data.body,
+      text: data.body,
+      sender: providerId === normalizedUserId ? 'provider' : 'customer',
+      sender_id: data.sender_id,
+      created_at: data.created_at,
+      delivery_status: data.delivery_status || 'sent',
+    };
   }
 
   async markRead(bookingId: string, userId: string) {

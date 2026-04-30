@@ -4,6 +4,8 @@ import { SupabaseModule } from '@app/database';
 import { ChatService } from './chat.service.js';
 import { ChatKafkaController } from './chat.controller.js';
 
+const chatClientInstanceId = `${process.pid}-${Date.now()}`;
+
 @Module({
   imports: [
     SupabaseModule,
@@ -13,10 +15,12 @@ import { ChatKafkaController } from './chat.controller.js';
         transport: Transport.KAFKA,
         options: {
           client: {
-            clientId: 'chat-service-client',
+            clientId: `chat-service-client-${chatClientInstanceId}`,
             brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
           },
-          consumer: { groupId: 'chat-service-client-consumer' },
+          consumer: {
+            groupId: `chat-service-client-consumer-${chatClientInstanceId}`,
+          },
         },
       },
     ]),

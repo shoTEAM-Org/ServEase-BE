@@ -56,6 +56,9 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.DELETE_REVIEW);
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_PERFORMANCE_REPORT);
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_COMPLIANCE_REPORT);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.CREATE_REVIEW_RESPONSE);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.UPDATE_REVIEW_RESPONSE);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_REVIEW_WITH_RESPONSE);
     await connectKafkaClientWithRetry(this.kafka, {
       context: ProviderService.name,
       logger: this.logger,

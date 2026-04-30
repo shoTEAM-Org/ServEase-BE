@@ -563,6 +563,7 @@ export class ProviderController implements OnModuleInit {
     return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.SUBMIT_REVIEW, {
         ...body,
+        reviewee_id: body?.reviewee_id || body?.provider_id,
         reviewer_id: req['user'].id,
       }),
     );
