@@ -28,6 +28,14 @@ export type CalculatePricingQuoteInput = {
   radiusTier: RadiusTier;
   vehicle?: Partial<PricingVehicleInput>;
   fuel: PricingFuelInput;
+  laborBaseline?: PricingLaborBaselineInput;
+};
+
+export type PricingLaborBaselineInput = {
+  minLaborAmount: number;
+  maxLaborAmount: number;
+  typicalLaborAmount: number;
+  sourceNote?: string;
 };
 
 export type PricingQuote = {
@@ -35,6 +43,8 @@ export type PricingQuote = {
   fairEstimate: number;
   fairnessBand: FairnessBand;
   laborAmount: number;
+  benchmarkLaborAmount: number;
+  laborBaseline?: PricingLaborBaselineInput;
   travelTier: RadiusTier;
   travelAdjustment: number;
   operatingBuffer: number;
@@ -101,6 +111,8 @@ export function calculatePricingQuote(input: CalculatePricingQuoteInput): Pricin
   const laborAmount = roundMoney(
     input.pricingMode === 'hourly' ? providerPrice * hoursRequired : providerPrice
   );
+  const baselineTypical = positiveNumber(input.laborBaseline?.typicalLaborAmount);
+  const benchmarkLaborAmount = roundMoney(baselineTypical || laborAmount);
   const bookingAmount = roundMoney(input.bookingAmount ?? laborAmount);
   const vehicle = normalizeVehicle(input.vehicle);
   const fuelPrice = positiveNumber(input.fuel.pricePerLiter);
@@ -109,11 +121,18 @@ export function calculatePricingQuote(input: CalculatePricingQuoteInput): Pricin
     tierKm > 0 ? (tierKm / vehicle.fuelEfficiencyKmPerLiter) * fuelPrice : 0
   );
   const operatingBuffer = roundMoney(
-    travelAdjustment > 0 ? (laborAmount + travelAdjustment) * OPERATING_BUFFER_RATE : 0
+    travelAdjustment > 0 ? (benchmarkLaborAmount + travelAdjustment) * OPERATING_BUFFER_RATE : 0
   );
-  const fairEstimate = roundMoney(laborAmount + travelAdjustment + operatingBuffer);
+  const fairEstimate = roundMoney(benchmarkLaborAmount + travelAdjustment + operatingBuffer);
   const assumptions = [TIER_LABELS[input.radiusTier]];
 
+  if (input.laborBaseline) {
+    assumptions.push(
+      `Using category labor benchmark: ${input.laborBaseline.sourceNote || 'ServEase category baseline'}.`
+    );
+  } else {
+    assumptions.push('No category labor benchmark available; using provider labor price.');
+  }
   if (!input.vehicle) {
     assumptions.push('Using default motorcycle gasoline travel profile.');
   }
@@ -129,6 +148,15 @@ export function calculatePricingQuote(input: CalculatePricingQuoteInput): Pricin
     fairEstimate,
     fairnessBand: fairnessBand(bookingAmount, fairEstimate),
     laborAmount,
+    benchmarkLaborAmount,
+    laborBaseline: input.laborBaseline
+      ? {
+          minLaborAmount: roundMoney(input.laborBaseline.minLaborAmount),
+          maxLaborAmount: roundMoney(input.laborBaseline.maxLaborAmount),
+          typicalLaborAmount: roundMoney(input.laborBaseline.typicalLaborAmount),
+          sourceNote: input.laborBaseline.sourceNote,
+        }
+      : undefined,
     travelTier: input.radiusTier,
     travelAdjustment,
     operatingBuffer,
@@ -139,7 +167,8 @@ export function calculatePricingQuote(input: CalculatePricingQuoteInput): Pricin
     },
     assumptions,
     explanation: [
-      `Service labor is ${laborAmount.toFixed(2)} based on provider pricing.`,
+      `Provider labor is ${laborAmount.toFixed(2)}.`,
+      `Benchmark labor is ${benchmarkLaborAmount.toFixed(2)}.`,
       `Travel adjustment is ${travelAdjustment.toFixed(2)} for the ${input.radiusTier} radius tier.`,
       `Operating buffer is ${operatingBuffer.toFixed(2)}.`
     ]

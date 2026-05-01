@@ -555,7 +555,7 @@ export class ProviderService implements OnModuleInit {
     const { data: profiles } = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
-      .select('user_id, business_name, average_rating, verification_status')
+      .select('user_id, business_name, average_rating, verification_status, home_address, home_latitude, home_longitude, service_radius_km')
       .in('user_id', providerIds);
 
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
@@ -579,7 +579,7 @@ export class ProviderService implements OnModuleInit {
     const { data: profiles } = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
-      .select('user_id, business_name, trust_score, average_rating, verification_status')
+      .select('user_id, business_name, trust_score, average_rating, verification_status, home_address, home_latitude, home_longitude, service_radius_km')
       .in('user_id', providerIds);
 
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
@@ -614,7 +614,7 @@ export class ProviderService implements OnModuleInit {
       .schema('provider_catalog')
       .from('provider_profiles')
       .select(
-        'user_id, business_name, service_description, verification_status, average_rating, total_reviews, trust_score, home_latitude, home_longitude, verification_submitted_at, verification_decided_at, reject_reason',
+        'user_id, business_name, service_description, verification_status, average_rating, total_reviews, trust_score, home_address, home_latitude, home_longitude, service_radius_km, verification_submitted_at, verification_decided_at, reject_reason',
       )
       .eq('user_id', userId)
       .single();
@@ -708,7 +708,7 @@ export class ProviderService implements OnModuleInit {
       this.supabase
         .schema('provider_catalog')
         .from('provider_profiles')
-        .select('user_id, business_name, average_rating, verification_status, home_latitude, home_longitude')
+        .select('user_id, business_name, average_rating, verification_status, home_address, home_latitude, home_longitude, service_radius_km')
         .in('user_id', normalizedIds),
       3000,
       'provider.get-profiles-by-ids query',
@@ -1111,7 +1111,7 @@ export class ProviderService implements OnModuleInit {
         .schema('provider_catalog')
         .from('provider_profiles')
         .select(
-          'user_id, business_name, service_description, verification_status, verification_submitted_at, verification_decided_at, reject_reason, home_latitude, home_longitude',
+          'user_id, business_name, service_description, verification_status, verification_submitted_at, verification_decided_at, reject_reason, home_address, home_latitude, home_longitude, service_radius_km',
         )
         .eq('user_id', normalizedUserId)
         .maybeSingle(),
@@ -1763,7 +1763,7 @@ export class ProviderService implements OnModuleInit {
       .schema('provider_catalog')
       .from('provider_profiles')
       .select(
-        'user_id, business_name, service_description, trust_score, verification_status, home_latitude, home_longitude, service_radius_km',
+        'user_id, business_name, service_description, trust_score, verification_status, home_address, home_latitude, home_longitude, service_radius_km',
       )
       .eq('user_id', userId)
       .single();
@@ -1776,6 +1776,7 @@ export class ProviderService implements OnModuleInit {
     const allowed = [
       'business_name',
       'service_description',
+      'home_address',
       'home_latitude',
       'home_longitude',
       'service_radius_km',

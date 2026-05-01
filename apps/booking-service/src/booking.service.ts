@@ -276,6 +276,29 @@ export class BookingService implements OnModuleInit {
     };
   }
 
+  private async getLaborBaseline(serviceId: string, pricingMode: PricingMode, hoursRequired: number) {
+    if (!serviceId) return undefined;
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('service_pricing_baselines')
+      .select('pricing_mode, min_labor_amount, max_labor_amount, typical_labor_amount, source_note')
+      .eq('service_id', serviceId)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (!data) return undefined;
+
+    const baselineMode = this.normalizePricingMode(data.pricing_mode);
+    const multiplier = baselineMode === 'hourly' && pricingMode === 'hourly'
+      ? Math.max(1, hoursRequired)
+      : 1;
+    return {
+      minLaborAmount: (this.toNullableNumber(data.min_labor_amount) || 0) * multiplier,
+      maxLaborAmount: (this.toNullableNumber(data.max_labor_amount) || 0) * multiplier,
+      typicalLaborAmount: (this.toNullableNumber(data.typical_labor_amount) || 0) * multiplier,
+      sourceNote: this.toTrimmedString(data.source_note) || 'ServEase category baseline',
+    };
+  }
+
   private async getProviderRadiusTier(providerId: string, dto: any): Promise<RadiusTier> {
     const requestedTier = this.toTrimmedString(dto?.radius_tier);
     if (requestedTier) return this.normalizeRadiusTier(requestedTier);
@@ -305,6 +328,19 @@ export class BookingService implements OnModuleInit {
     if (distanceKm <= serviceRadius * 1.5) return 'extended';
     if (distanceKm <= serviceRadius * 2) return 'far';
     return 'outside';
+  }
+
+  private async getProviderBaseMissing(providerId: string) {
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('home_latitude, home_longitude')
+      .eq('user_id', providerId)
+      .maybeSingle();
+    return (
+      this.toNullableNumber(data?.home_latitude) === null ||
+      this.toNullableNumber(data?.home_longitude) === null
+    );
   }
 
   private haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -1595,9 +1631,14 @@ export class BookingService implements OnModuleInit {
     const fuelType = this.normalizeFuelType(vehicle?.fuelType);
     const fuel = await this.getFuelBaseline(fuelType);
     const radiusTier = await this.getProviderRadiusTier(normalizedProviderId, dto);
+    const providerBaseMissing = await this.getProviderBaseMissing(normalizedProviderId);
+    const laborBaseline = await this.getLaborBaseline(
+      this.toTrimmedString(providerService.service_id) || normalizedServiceId,
+      pricingMode,
+      hoursRequired,
+    );
 
-    return {
-      pricing_quote: calculatePricingQuote({
+    const pricingQuote = calculatePricingQuote({
         pricingMode,
         providerPrice,
         hoursRequired,
@@ -1605,7 +1646,14 @@ export class BookingService implements OnModuleInit {
         radiusTier,
         vehicle,
         fuel,
-      }),
+        laborBaseline,
+      });
+    if (providerBaseMissing) {
+      pricingQuote.assumptions.push('Provider service base is not set; travel tier uses base-radius fallback.');
+    }
+
+    return {
+      pricing_quote: pricingQuote,
     };
   }
 

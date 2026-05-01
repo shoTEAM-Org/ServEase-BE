@@ -106,4 +106,38 @@ describe('calculatePricingQuote', () => {
       ])
     );
   });
+
+  it('uses a category labor baseline when available', () => {
+    const quote = calculatePricingQuote({
+      pricingMode: 'flat',
+      providerPrice: 1600,
+      hoursRequired: 1,
+      bookingAmount: 1600,
+      radiusTier: 'base',
+      laborBaseline: {
+        minLaborAmount: 900,
+        maxLaborAmount: 1300,
+        typicalLaborAmount: 1100,
+        sourceNote: 'ServEase cleaning baseline'
+      },
+      fuel: {
+        fuelType: 'gasoline',
+        pricePerLiter: 87.69,
+        sourceName: 'GasWatch PH / DOE weekly advisory',
+        fetchedAt: '2026-05-01T00:00:00.000Z',
+        freshness: 'fresh'
+      }
+    });
+
+    expect(quote.laborAmount).toBe(1600);
+    expect(quote.benchmarkLaborAmount).toBe(1100);
+    expect(quote.laborBaseline).toMatchObject({
+      minLaborAmount: 900,
+      maxLaborAmount: 1300,
+      typicalLaborAmount: 1100
+    });
+    expect(quote.fairEstimate).toBe(1100);
+    expect(quote.fairnessBand).toBe('high');
+    expect(quote.assumptions).toContain('Using category labor benchmark: ServEase cleaning baseline.');
+  });
 });

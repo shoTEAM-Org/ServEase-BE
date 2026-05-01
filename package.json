@@ -54,7 +54,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "npm run test:golden",
     "fuel:baseline": "node scripts/update-fuel-baseline.js",
-    "fuel:gaswatchph": "node scripts/update-fuel-baseline-gaswatchph.js"
+    "fuel:gaswatchph": "node scripts/update-fuel-baseline-gaswatchph.js",
+    "pricing:baselines": "node scripts/update-pricing-baselines.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
