@@ -16,7 +16,13 @@ import {
   PAYMENT_PATTERNS,
   SUPPORT_PATTERNS,
   NOTIFICATION_PATTERNS,
+  calculatePricingQuote,
   connectKafkaClientWithRetry,
+  type FuelFreshness,
+  type FuelType,
+  type PricingMode,
+  type RadiusTier,
+  type VehicleType,
   sendKafkaRpcRequest,
 } from '@app/common';
 
@@ -100,6 +106,218 @@ export class BookingService implements OnModuleInit {
       if (['false', '0', 'no', 'n'].includes(normalized)) return false;
     }
     return fallback;
+  }
+
+  private normalizeFuelType(value: unknown): FuelType {
+    return this.toTrimmedString(value).toLowerCase() === 'diesel'
+      ? 'diesel'
+      : 'gasoline';
+  }
+
+  private normalizePricingMode(value: unknown): PricingMode {
+    return this.toTrimmedString(value).toLowerCase() === 'hourly'
+      ? 'hourly'
+      : 'flat';
+  }
+
+  private normalizeRadiusTier(value: unknown): RadiusTier {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['extended', 'far', 'outside'].includes(normalized)) {
+      return normalized as RadiusTier;
+    }
+    return 'base';
+  }
+
+  private normalizeVehicleType(value: unknown): VehicleType {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['car', 'van'].includes(normalized)) return normalized as VehicleType;
+    return 'motorcycle';
+  }
+
+  private async getFuelBaseline(fuelType: FuelType) {
+    const liveFuel = await this.fetchLiveFuelBaseline(fuelType);
+    if (liveFuel) return liveFuel;
+
+    const now = Date.now();
+    const { data } = await this.supabase
+      .schema('booking')
+      .from('fuel_price_cache')
+      .select('fuel_type, price_per_liter, source_name, source_url, fetched_at, valid_until')
+      .eq('country_code', 'PH')
+      .eq('fuel_type', fuelType)
+      .order('fetched_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      const fetchedAt = this.toTrimmedString(data.fetched_at) || new Date().toISOString();
+      const validUntil = this.toTrimmedString(data.valid_until);
+      const ageMs = now - new Date(fetchedAt).getTime();
+      const freshness: FuelFreshness =
+        validUntil && new Date(validUntil).getTime() >= now
+          ? 'fresh'
+          : ageMs <= 24 * 60 * 60 * 1000
+            ? 'cached'
+            : 'stale';
+
+      return {
+        fuelType,
+        pricePerLiter: Number(data.price_per_liter) || this.defaultFuelPrice(fuelType),
+        sourceName: this.toTrimmedString(data.source_name) || 'Fuel price cache',
+        sourceUrl: this.toTrimmedString(data.source_url) || undefined,
+        fetchedAt,
+        freshness,
+      };
+    }
+
+    return {
+      fuelType,
+      pricePerLiter: this.defaultFuelPrice(fuelType),
+      sourceName: 'ServEase default fuel baseline',
+      fetchedAt: new Date().toISOString(),
+      freshness: 'default' as FuelFreshness,
+    };
+  }
+
+  private async fetchLiveFuelBaseline(fuelType: FuelType) {
+    const url = this.toTrimmedString(process.env.SERVEASE_FUEL_PRICE_URL);
+    if (!url) return null;
+
+    try {
+      const response = await fetch(url, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!response.ok) return null;
+      const payload = await response.json();
+      const price =
+        this.extractFuelPrice(payload, fuelType) ||
+        this.extractFuelPrice(payload?.prices, fuelType) ||
+        this.extractFuelPrice(payload?.data, fuelType);
+      if (!price) return null;
+
+      const fetchedAt =
+        this.toTrimmedString(payload?.fetched_at) ||
+        this.toTrimmedString(payload?.updated_at) ||
+        new Date().toISOString();
+      const sourceName =
+        this.toTrimmedString(payload?.source_name) || 'Configured live fuel source';
+      const sourceUrl = this.toTrimmedString(payload?.source_url) || url;
+
+      await this.supabase
+        .schema('booking')
+        .from('fuel_price_cache')
+        .insert([
+          {
+            country_code: 'PH',
+            fuel_type: fuelType,
+            price_per_liter: price,
+            currency: 'PHP',
+            source_name: sourceName,
+            source_url: sourceUrl,
+            fetched_at: fetchedAt,
+            valid_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            raw_payload: payload,
+          },
+        ]);
+
+      return {
+        fuelType,
+        pricePerLiter: price,
+        sourceName,
+        sourceUrl,
+        fetchedAt,
+        freshness: 'fresh' as FuelFreshness,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `fuel price live fetch degraded: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      return null;
+    }
+  }
+
+  private extractFuelPrice(payload: any, fuelType: FuelType) {
+    if (!payload || typeof payload !== 'object') return null;
+    const keys =
+      fuelType === 'diesel'
+        ? ['diesel', 'diesel_price', 'diesel_php', 'diesel_price_per_liter']
+        : ['gasoline', 'gasoline_price', 'gasoline_php', 'gasoline_price_per_liter', 'petrol'];
+    for (const key of keys) {
+      const value = this.toNullableNumber(payload[key]);
+      if (value && value > 0) return value;
+    }
+    return null;
+  }
+
+  private defaultFuelPrice(fuelType: FuelType) {
+    const envKey =
+      fuelType === 'diesel'
+        ? 'SERVEASE_DEFAULT_DIESEL_PRICE_PHP'
+        : 'SERVEASE_DEFAULT_GASOLINE_PRICE_PHP';
+    const configured = this.toNullableNumber(process.env[envKey]);
+    return configured && configured > 0 ? configured : fuelType === 'diesel' ? 60 : 65;
+  }
+
+  private async getProviderTravelProfile(providerId: string) {
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_travel_profiles')
+      .select('vehicle_type, fuel_type, fuel_efficiency_km_per_liter')
+      .eq('provider_id', providerId)
+      .maybeSingle();
+
+    if (!data) return undefined;
+    return {
+      vehicleType: this.normalizeVehicleType(data.vehicle_type),
+      fuelType: this.normalizeFuelType(data.fuel_type),
+      fuelEfficiencyKmPerLiter:
+        this.toNullableNumber(data.fuel_efficiency_km_per_liter) || 45,
+    };
+  }
+
+  private async getProviderRadiusTier(providerId: string, dto: any): Promise<RadiusTier> {
+    const requestedTier = this.toTrimmedString(dto?.radius_tier);
+    if (requestedTier) return this.normalizeRadiusTier(requestedTier);
+
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('service_radius_km, home_latitude, home_longitude')
+      .eq('user_id', providerId)
+      .maybeSingle();
+    const serviceRadius = this.toNullableNumber(data?.service_radius_km) || 10;
+    const providerLat = this.toNullableNumber(data?.home_latitude);
+    const providerLng = this.toNullableNumber(data?.home_longitude);
+    const serviceLat = this.toNullableNumber(dto?.service_latitude);
+    const serviceLng = this.toNullableNumber(dto?.service_longitude);
+    if (
+      providerLat === null ||
+      providerLng === null ||
+      serviceLat === null ||
+      serviceLng === null
+    ) {
+      return 'base';
+    }
+
+    const distanceKm = this.haversineKm(providerLat, providerLng, serviceLat, serviceLng);
+    if (distanceKm <= serviceRadius) return 'base';
+    if (distanceKm <= serviceRadius * 1.5) return 'extended';
+    if (distanceKm <= serviceRadius * 2) return 'far';
+    return 'outside';
+  }
+
+  private haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+    const toRad = (value: number) => (value * Math.PI) / 180;
+    const earthRadiusKm = 6371;
+    const deltaLat = toRad(lat2 - lat1);
+    const deltaLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(deltaLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) *
+        Math.cos(toRad(lat2)) *
+        Math.sin(deltaLon / 2) ** 2;
+    return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
   private isMissingRelationError(error: any) {
@@ -1269,6 +1487,17 @@ export class BookingService implements OnModuleInit {
     const totalAmount = providerService
       ? serviceAmount
       : totalAmountCandidate ?? serviceAmount;
+    const pricingQuoteResult = await this.getPricingQuote({
+      ...dto,
+      provider_id: normalizedProviderId,
+      provider_service_id: normalizedProviderServiceId,
+      service_id: normalizedServiceId,
+      hours_required: normalizedHoursRequired,
+      booking_amount: totalAmount,
+      service_latitude: dto?.service_latitude,
+      service_longitude: dto?.service_longitude,
+    });
+    const pricingSnapshot = pricingQuoteResult.pricing_quote;
     const normalizedServiceLocationType =
       this.toTrimmedString(dto?.service_location_type).toLowerCase() ===
       'in_shop'
@@ -1320,6 +1549,7 @@ export class BookingService implements OnModuleInit {
       customer_notes: this.toNullableString(dto?.customer_notes),
       service_latitude: this.toNullableNumber(dto?.service_latitude),
       service_longitude: this.toNullableNumber(dto?.service_longitude),
+      pricing_snapshot: pricingSnapshot,
       status: 'pending',
     };
 
@@ -1334,9 +1564,48 @@ export class BookingService implements OnModuleInit {
         provider_service_id:
           normalizedProviderServiceId || this.toTrimmedString(providerService?.id),
         pricing_mode: normalizedPricingMode,
+        pricing_snapshot: pricingSnapshot,
         service_title: this.resolveServiceTitle(newBooking) || serviceTitle,
         service_name: this.resolveServiceTitle(newBooking) || serviceTitle,
       },
+    };
+  }
+
+  async getPricingQuote(dto: any) {
+    const normalizedProviderId = this.toTrimmedString(dto?.provider_id);
+    const normalizedServiceId = this.toTrimmedString(dto?.service_id);
+    const normalizedProviderServiceId = this.toTrimmedString(dto?.provider_service_id);
+    if (!normalizedProviderId) throw new BadRequestException('provider_id is required');
+    if (!normalizedServiceId && !normalizedProviderServiceId) {
+      throw new BadRequestException('service_id or provider_service_id is required');
+    }
+
+    const providerService = await this.getProviderServiceForBooking(
+      normalizedProviderId,
+      normalizedProviderServiceId,
+      normalizedServiceId,
+    );
+    if (!providerService) throw new NotFoundException('Provider service not found');
+
+    const pricingMode = this.normalizePricingMode(providerService.pricing_mode);
+    const providerPrice = this.toNullableNumber(providerService.price) || 0;
+    const hoursRequired = Math.max(1, Number(this.toNullableNumber(dto?.hours_required) || 1));
+    const laborAmount = pricingMode === 'hourly' ? providerPrice * hoursRequired : providerPrice;
+    const vehicle = await this.getProviderTravelProfile(normalizedProviderId);
+    const fuelType = this.normalizeFuelType(vehicle?.fuelType);
+    const fuel = await this.getFuelBaseline(fuelType);
+    const radiusTier = await this.getProviderRadiusTier(normalizedProviderId, dto);
+
+    return {
+      pricing_quote: calculatePricingQuote({
+        pricingMode,
+        providerPrice,
+        hoursRequired,
+        bookingAmount: this.toNullableNumber(dto?.booking_amount) ?? laborAmount,
+        radiusTier,
+        vehicle,
+        fuel,
+      }),
     };
   }
 

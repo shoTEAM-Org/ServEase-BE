@@ -28,6 +28,11 @@ export class BookingKafkaController {
     }
   }
 
+  @MessagePattern(BOOKING_PATTERNS.GET_PRICING_QUOTE)
+  async getPricingQuote(@Payload() data: any) {
+    return this.bookingService.getPricingQuote(data);
+  }
+
   @MessagePattern(BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS)
   async getCustomerBookings(@Payload() data: any) {
     return this.bookingService.getCustomerBookings(data.customerId);

@@ -52,7 +52,9 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "npm run test:golden"
+    "test:e2e": "npm run test:golden",
+    "fuel:baseline": "node scripts/update-fuel-baseline.js",
+    "fuel:gaswatchph": "node scripts/update-fuel-baseline-gaswatchph.js"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

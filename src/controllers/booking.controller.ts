@@ -43,6 +43,7 @@ export class BookingController implements OnModuleInit {
   async onModuleInit() {
     [
       BOOKING_PATTERNS.CREATE,
+      BOOKING_PATTERNS.GET_PRICING_QUOTE,
       BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS,
       BOOKING_PATTERNS.GET_HISTORY,
       BOOKING_PATTERNS.GET_REQUESTS,
@@ -81,6 +82,13 @@ export class BookingController implements OnModuleInit {
       });
       throw error;
     }
+  }
+
+  @Post('v1/quote')
+  async quote(@Body() dto: any) {
+    return sendWithTimeout(
+      this.kafka.send(BOOKING_PATTERNS.GET_PRICING_QUOTE, dto),
+    );
   }
 
   @Get('v1/customer')

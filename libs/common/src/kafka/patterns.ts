@@ -45,6 +45,7 @@ export const BOOKING_PATTERNS = {
   SAVE_PROVIDER_AVAILABILITY: 'booking.save-provider-availability',
   GET_RESERVED_SLOTS: 'booking.get-reserved-slots',
   CHECK_PROVIDER_AVAILABILITY: 'booking.check-provider-availability',
+  GET_PRICING_QUOTE: 'booking.get-pricing-quote',
   CREATE_ADDITIONAL_CHARGES: 'booking.create-additional-charges',
   GET_ADDITIONAL_CHARGES: 'booking.get-additional-charges',
   REVIEW_ADDITIONAL_CHARGES: 'booking.review-additional-charges',
