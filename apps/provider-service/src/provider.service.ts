@@ -32,6 +32,7 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.UPDATE_USER_STATUS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.UPDATE_STATUS_RPC);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_AVAILABILITY);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.SAVE_PROVIDER_AVAILABILITY);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESERVED_SLOTS);
@@ -1042,8 +1043,10 @@ export class ProviderService implements OnModuleInit {
   }
 
   async updateProviderBookingStatus(bookingId: string, status: string) {
-    this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, { id: bookingId, status });
-    return { ok: true };
+    return await this.request<any>(BOOKING_PATTERNS.UPDATE_STATUS_RPC, {
+      id: bookingId,
+      status,
+    });
   }
 
   // === Provider Availability ===

@@ -159,6 +159,22 @@ export class ChatService implements OnModuleInit {
     return { normalizedUserId, providerId, customerId };
   }
 
+  private isChatEnabledStatus(status: unknown) {
+    const normalizedStatus = this.toTrimmedString(status)
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/-/g, '_');
+    return ['confirmed', 'in_progress', 'completed'].includes(normalizedStatus);
+  }
+
+  private assertChatEnabled(booking: any) {
+    if (!this.isChatEnabledStatus(booking?.status)) {
+      throw new BadRequestException(
+        'Chat becomes available after the provider accepts this booking.',
+      );
+    }
+  }
+
   private async getUsersByIds(userIds: unknown) {
     const normalizedIds = Array.from(
       new Set(
@@ -518,6 +534,7 @@ export class ChatService implements OnModuleInit {
     if (!booking) {
       throw new BadRequestException('Booking not found.');
     }
+    this.assertChatEnabled(booking);
     const { normalizedUserId, providerId, customerId } =
       this.assertConversationParticipant(booking, userId);
     const contextBookingId = this.resolveBookingContextId(
@@ -599,6 +616,7 @@ export class ChatService implements OnModuleInit {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     const booking = await this.getChatBookingContext(normalizedBookingId);
     if (!booking) throw new BadRequestException('Booking not found.');
+    this.assertChatEnabled(booking);
 
     const { normalizedUserId } = this.assertConversationParticipant(
       booking,
@@ -664,6 +682,23 @@ export class ChatService implements OnModuleInit {
       );
       return { id: memoryMessage.id, created_at: memoryMessage.created_at };
     }
+  }
+
+  async ensureConversation(bookingId: string) {
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    if (!normalizedBookingId) return { ok: false };
+
+    const booking = await this.getChatBookingContext(normalizedBookingId);
+    if (!booking || !this.isChatEnabledStatus(booking.status)) {
+      return { ok: false };
+    }
+
+    const contextBookingId = this.resolveBookingContextId(
+      booking,
+      normalizedBookingId,
+    );
+    const conversationId = await this.getOrCreateConversation(contextBookingId);
+    return { ok: true, conversationId };
   }
 
   async markRead(bookingId: string, userId: string) {

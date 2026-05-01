@@ -1112,7 +1112,7 @@ export class BookingService implements OnModuleInit {
       .from('bookings')
       .select('*')
       .eq(actorColumn, normalizedUserId)
-      .in('status', ['pending', 'confirmed', 'in_progress', 'completed'])
+      .in('status', ['confirmed', 'in_progress', 'completed'])
       .order('created_at', { ascending: false });
 
     if (error) {
