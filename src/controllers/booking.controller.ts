@@ -36,11 +36,8 @@ export class BookingController implements OnModuleInit {
       BOOKING_PATTERNS.GET_HISTORY,
       BOOKING_PATTERNS.GET_REQUESTS,
       BOOKING_PATTERNS.GET_BY_ID,
-      BOOKING_PATTERNS.GET_STATUS,
       BOOKING_PATTERNS.GET_ATTACHMENTS,
       BOOKING_PATTERNS.SAVE_ATTACHMENTS,
-      BOOKING_PATTERNS.MARK_PROVIDER_DONE,
-      BOOKING_PATTERNS.MARK_CUSTOMER_DONE,
       BOOKING_PATTERNS.CANCEL,
       PROVIDER_PATTERNS.GET_PROFILES_BY_IDS,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
@@ -115,7 +112,8 @@ export class BookingController implements OnModuleInit {
         if (profile) {
           booking.provider = {
             ...booking.provider,
-            business_name: String(profile?.business_name || '').trim() || null,
+            business_name:
+              String(profile?.business_name || '').trim() || null,
             average_rating:
               profile?.average_rating == null
                 ? null
@@ -132,75 +130,12 @@ export class BookingController implements OnModuleInit {
 
   @Patch('v1/:id/status')
   @HttpCode(202)
-  async updateStatus(
-    @Param('id') id: string,
-    @Body() body: any,
-    @Request() req: any,
-  ) {
-    const requestedStatus = String(body?.status || '')
-      .trim()
-      .toLowerCase();
-    if (requestedStatus === 'completed') {
-      return this.markCustomerDone(id, req);
-    }
-    if (requestedStatus === 'provider_done') {
-      return this.markProviderDone(id, req);
-    }
-
+  async updateStatus(@Param('id') id: string, @Body() body: any) {
     this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, {
       id,
       status: body.status,
     });
     return { status: 'accepted' };
-  }
-
-  @Get('v1/:id/status')
-  async getStatus(@Param('id') id: string) {
-    return sendWithTimeout(
-      this.kafka.send(BOOKING_PATTERNS.GET_STATUS, { id }),
-    );
-  }
-
-  @Patch('v1/:id/provider-done')
-  async markProviderDone(@Param('id') id: string, @Request() req: any) {
-    try {
-      return await sendWithTimeout(
-        this.kafka.send(BOOKING_PATTERNS.MARK_PROVIDER_DONE, {
-          id,
-          providerId: req['user'].id,
-        }),
-      );
-    } catch (error: any) {
-      console.error('[gateway.booking.provider-done] failed', {
-        path: `/api/booking/v1/${id}/provider-done`,
-        bookingId: id,
-        providerId: req?.user?.id,
-        statusCode: error?.status || error?.response?.statusCode,
-        response: error?.response || error?.message || error,
-      });
-      throw error;
-    }
-  }
-
-  @Patch('v1/:id/customer-done')
-  async markCustomerDone(@Param('id') id: string, @Request() req: any) {
-    try {
-      return await sendWithTimeout(
-        this.kafka.send(BOOKING_PATTERNS.MARK_CUSTOMER_DONE, {
-          id,
-          customerId: req['user'].id,
-        }),
-      );
-    } catch (error: any) {
-      console.error('[gateway.booking.customer-done] failed', {
-        path: `/api/booking/v1/${id}/customer-done`,
-        bookingId: id,
-        customerId: req?.user?.id,
-        statusCode: error?.status || error?.response?.statusCode,
-        response: error?.response || error?.message || error,
-      });
-      throw error;
-    }
   }
 
   @Patch('v1/:id/cancel')

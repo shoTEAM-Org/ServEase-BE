@@ -15,14 +15,12 @@ import {
   sendKafkaRpcRequest,
 } from '@app/common';
 import 'multer';
-import { UsersService } from './users.service.js';
 
 @Injectable()
 export class AuthService implements OnModuleInit {
   constructor(
     private readonly supabase: SupabaseClient,
     @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
-    private readonly usersService: UsersService,
   ) {}
 
   async onModuleInit() {
@@ -62,43 +60,6 @@ export class AuthService implements OnModuleInit {
     });
   }
 
-  private toTrimmedString(value: unknown) {
-    if (typeof value === 'string') return value.trim();
-    if (typeof value === 'number' || typeof value === 'boolean') {
-      return String(value).trim();
-    }
-    return '';
-  }
-
-  private buildInitialAddressPayload(dto: Record<string, any>) {
-    const streetAddress = this.toTrimmedString(
-      dto.street_address ?? dto.street ?? dto.address,
-    );
-    if (!streetAddress) return null;
-
-    const payload: Record<string, any> = {
-      label: dto.label || 'Home',
-      street_address: streetAddress,
-      is_default: dto.is_default ?? true,
-    };
-
-    const optionalFields = [
-      'city',
-      'province',
-      'region',
-      'barangay',
-      'zip_code',
-      'postal_code',
-      'latitude',
-      'longitude',
-    ];
-    for (const field of optionalFields) {
-      if (dto[field] !== undefined) payload[field] = dto[field];
-    }
-
-    return payload;
-  }
-
   async register(dto: any) {
     try {
       const authClient = this.createAuthClient();
@@ -130,28 +91,6 @@ export class AuthService implements OnModuleInit {
         await this.supabase.schema('identity_and_user').from('users').delete().eq('id', userId);
         await this.supabase.auth.admin.deleteUser(userId);
         throw new Error(`Profile Table Error: ${profileError.message}`);
-      }
-
-      const initialAddress = this.buildInitialAddressPayload(dto);
-      if (initialAddress) {
-        try {
-          await this.usersService.addAddress(userId, initialAddress);
-        } catch (addressError: any) {
-          await this.supabase
-            .schema('identity_and_user')
-            .from('customer_profiles')
-            .delete()
-            .eq('user_id', userId);
-          await this.supabase
-            .schema('identity_and_user')
-            .from('users')
-            .delete()
-            .eq('id', userId);
-          await this.supabase.auth.admin.deleteUser(userId);
-          throw new Error(
-            `Address Table Error: ${addressError?.message || 'Failed to save address'}`,
-          );
-        }
       }
 
       const { data: signInData } = await authClient.auth.signInWithPassword({ email: dto.email, password: dto.password });
