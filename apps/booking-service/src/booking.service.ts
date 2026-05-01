@@ -20,7 +20,9 @@ import {
   connectKafkaClientWithRetry,
   type FuelFreshness,
   type FuelType,
+  type JobComplexity,
   type PricingMode,
+  type PricingUrgency,
   type RadiusTier,
   type VehicleType,
   sendKafkaRpcRequest,
@@ -126,6 +128,22 @@ export class BookingService implements OnModuleInit {
       return normalized as RadiusTier;
     }
     return 'base';
+  }
+
+  private normalizeJobComplexity(value: unknown): JobComplexity {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['simple', 'complex'].includes(normalized)) {
+      return normalized as JobComplexity;
+    }
+    return 'standard';
+  }
+
+  private normalizePricingUrgency(value: unknown): PricingUrgency {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['same_day', 'urgent'].includes(normalized)) {
+      return normalized as PricingUrgency;
+    }
+    return 'scheduled';
   }
 
   private normalizeVehicleType(value: unknown): VehicleType {
@@ -299,9 +317,13 @@ export class BookingService implements OnModuleInit {
     };
   }
 
-  private async getProviderRadiusTier(providerId: string, dto: any): Promise<RadiusTier> {
+  private async getProviderTravelContext(providerId: string, dto: any): Promise<{
+    radiusTier: RadiusTier;
+    distanceKm?: number;
+    serviceRadiusKm: number;
+    providerBaseMissing: boolean;
+  }> {
     const requestedTier = this.toTrimmedString(dto?.radius_tier);
-    if (requestedTier) return this.normalizeRadiusTier(requestedTier);
 
     const { data } = await this.supabase
       .schema('provider_catalog')
@@ -314,33 +336,33 @@ export class BookingService implements OnModuleInit {
     const providerLng = this.toNullableNumber(data?.home_longitude);
     const serviceLat = this.toNullableNumber(dto?.service_latitude);
     const serviceLng = this.toNullableNumber(dto?.service_longitude);
+    const providerBaseMissing = providerLat === null || providerLng === null;
+    const requestedRadiusTier = requestedTier ? this.normalizeRadiusTier(requestedTier) : null;
+
     if (
-      providerLat === null ||
-      providerLng === null ||
+      providerBaseMissing ||
       serviceLat === null ||
       serviceLng === null
     ) {
-      return 'base';
+      return {
+        radiusTier: requestedRadiusTier || 'base',
+        serviceRadiusKm: serviceRadius,
+        providerBaseMissing,
+      };
     }
 
     const distanceKm = this.haversineKm(providerLat, providerLng, serviceLat, serviceLng);
-    if (distanceKm <= serviceRadius) return 'base';
-    if (distanceKm <= serviceRadius * 1.5) return 'extended';
-    if (distanceKm <= serviceRadius * 2) return 'far';
-    return 'outside';
-  }
-
-  private async getProviderBaseMissing(providerId: string) {
-    const { data } = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_profiles')
-      .select('home_latitude, home_longitude')
-      .eq('user_id', providerId)
-      .maybeSingle();
-    return (
-      this.toNullableNumber(data?.home_latitude) === null ||
-      this.toNullableNumber(data?.home_longitude) === null
-    );
+    let radiusTier: RadiusTier = 'outside';
+    if (requestedRadiusTier) radiusTier = requestedRadiusTier;
+    else if (distanceKm <= serviceRadius) radiusTier = 'base';
+    else if (distanceKm <= serviceRadius * 2) radiusTier = 'extended';
+    else if (distanceKm <= serviceRadius * 3) radiusTier = 'far';
+    return {
+      radiusTier,
+      distanceKm,
+      serviceRadiusKm: serviceRadius,
+      providerBaseMissing: false,
+    };
   }
 
   private haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -1630,8 +1652,7 @@ export class BookingService implements OnModuleInit {
     const vehicle = await this.getProviderTravelProfile(normalizedProviderId);
     const fuelType = this.normalizeFuelType(vehicle?.fuelType);
     const fuel = await this.getFuelBaseline(fuelType);
-    const radiusTier = await this.getProviderRadiusTier(normalizedProviderId, dto);
-    const providerBaseMissing = await this.getProviderBaseMissing(normalizedProviderId);
+    const travelContext = await this.getProviderTravelContext(normalizedProviderId, dto);
     const laborBaseline = await this.getLaborBaseline(
       this.toTrimmedString(providerService.service_id) || normalizedServiceId,
       pricingMode,
@@ -1643,12 +1664,17 @@ export class BookingService implements OnModuleInit {
         providerPrice,
         hoursRequired,
         bookingAmount: this.toNullableNumber(dto?.booking_amount) ?? laborAmount,
-        radiusTier,
+        radiusTier: travelContext.radiusTier,
+        distanceKm: travelContext.distanceKm,
+        serviceRadiusKm: travelContext.serviceRadiusKm,
+        jobComplexity: this.normalizeJobComplexity(dto?.job_complexity),
+        urgency: this.normalizePricingUrgency(dto?.urgency),
         vehicle,
         fuel,
         laborBaseline,
+        providerBaseMissing: travelContext.providerBaseMissing,
       });
-    if (providerBaseMissing) {
+    if (travelContext.providerBaseMissing) {
       pricingQuote.assumptions.push('Provider service base is not set; travel tier uses base-radius fallback.');
     }
 

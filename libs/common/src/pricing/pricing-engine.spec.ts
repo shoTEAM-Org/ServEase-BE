@@ -21,9 +21,13 @@ describe('calculatePricingQuote', () => {
       bookingAmount: 1000,
       laborAmount: 1000,
       travelAdjustment: 0,
-      operatingBuffer: 0,
-      fairEstimate: 1000,
+      distanceLaborAllowance: 0,
+      operatingBuffer: 50,
+      fairEstimate: 1050,
+      fairMin: 1050,
+      fairMax: 1050,
       fairnessBand: 'fair',
+      confidence: 'low',
       fuel: {
         fuelType: 'gasoline',
         pricePerLiter: 65,
@@ -32,7 +36,7 @@ describe('calculatePricingQuote', () => {
     });
   });
 
-  it('uses hourly labor and marks prices above 135 percent of estimate as high', () => {
+  it('uses hourly labor and marks prices above the fair range as high', () => {
     const quote = calculatePricingQuote({
       pricingMode: 'hourly',
       providerPrice: 500,
@@ -49,11 +53,11 @@ describe('calculatePricingQuote', () => {
     });
 
     expect(quote.laborAmount).toBe(1000);
-    expect(quote.fairEstimate).toBe(1000);
+    expect(quote.fairEstimate).toBe(1050);
     expect(quote.fairnessBand).toBe('high');
   });
 
-  it('adds travel and operating buffer for far radius tier with vehicle assumptions', () => {
+  it('adds round-trip travel, distance labor, and operating buffer for far radius tier', () => {
     const quote = calculatePricingQuote({
       pricingMode: 'flat',
       providerPrice: 1000,
@@ -74,10 +78,13 @@ describe('calculatePricingQuote', () => {
       }
     });
 
-    expect(quote.travelAdjustment).toBe(210);
-    expect(quote.operatingBuffer).toBe(60.5);
-    expect(quote.fairEstimate).toBe(1270.5);
-    expect(quote.fairnessBand).toBe('fair');
+    expect(quote.distanceKm).toBe(30);
+    expect(quote.roundTripKm).toBe(75);
+    expect(quote.travelAdjustment).toBe(525);
+    expect(quote.distanceLaborAllowance).toBe(150);
+    expect(quote.operatingBuffer).toBe(83.75);
+    expect(quote.fairEstimate).toBe(1758.75);
+    expect(quote.fairnessBand).toBe('below_estimate');
     expect(quote.assumptions).toContain('Far travel tier applied.');
   });
 
@@ -97,8 +104,10 @@ describe('calculatePricingQuote', () => {
       }
     });
 
-    expect(quote.travelAdjustment).toBe(17.07);
+    expect(quote.travelAdjustment).toBe(42.67);
+    expect(quote.distanceLaborAllowance).toBe(60);
     expect(quote.fuel.freshness).toBe('stale');
+    expect(quote.confidence).toBe('low');
     expect(quote.assumptions).toEqual(
       expect.arrayContaining([
         'Using default motorcycle gasoline travel profile.',
@@ -114,6 +123,7 @@ describe('calculatePricingQuote', () => {
       hoursRequired: 1,
       bookingAmount: 1600,
       radiusTier: 'base',
+      distanceKm: 3,
       laborBaseline: {
         minLaborAmount: 900,
         maxLaborAmount: 1300,
@@ -136,8 +146,11 @@ describe('calculatePricingQuote', () => {
       maxLaborAmount: 1300,
       typicalLaborAmount: 1100
     });
-    expect(quote.fairEstimate).toBe(1100);
+    expect(quote.fairMin).toBe(986.09);
+    expect(quote.fairEstimate).toBe(1186.09);
+    expect(quote.fairMax).toBe(1386.09);
     expect(quote.fairnessBand).toBe('high');
+    expect(quote.confidence).toBe('high');
     expect(quote.assumptions).toContain('Using category labor benchmark: ServEase cleaning baseline.');
   });
 });
