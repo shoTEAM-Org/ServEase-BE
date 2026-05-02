@@ -138,7 +138,6 @@ describe('calculatePricingQuote', () => {
         freshness: 'fresh'
       }
     });
-
     expect(quote.laborAmount).toBe(1600);
     expect(quote.benchmarkLaborAmount).toBe(1100);
     expect(quote.laborBaseline).toMatchObject({
@@ -152,5 +151,31 @@ describe('calculatePricingQuote', () => {
     expect(quote.fairnessBand).toBe('high');
     expect(quote.confidence).toBe('high');
     expect(quote.assumptions).toContain('Using category labor benchmark: ServEase cleaning baseline.');
+  });
+
+  it('prefers geolocation coordinates when computing travel distance', () => {
+    const quote = calculatePricingQuote({
+      pricingMode: 'flat',
+      providerPrice: 1000,
+      hoursRequired: 1,
+      bookingAmount: 1200,
+      radiusTier: 'base',
+      distanceKm: 99,
+      providerCoordinates: { latitude: 14.5995, longitude: 120.9842 },
+      serviceCoordinates: { latitude: 14.6095, longitude: 120.9942 },
+      fuel: {
+        fuelType: 'gasoline',
+        pricePerLiter: 70,
+        sourceName: 'Test fuel source',
+        fetchedAt: '2026-05-01T00:00:00.000Z',
+        freshness: 'fresh'
+      }
+    });
+
+    expect(quote.distanceKm).toBeLessThan(99);
+    expect(quote.distanceKm).toBeGreaterThan(1);
+    expect(quote.assumptions).toContain(
+      'Travel distance uses provider base coordinates and the service address coordinates.'
+    );
   });
 });

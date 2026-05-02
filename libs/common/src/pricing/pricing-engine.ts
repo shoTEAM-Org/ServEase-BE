@@ -23,6 +23,11 @@ export type PricingVehicleInput = {
   fuelEfficiencyKmPerLiter: number;
 };
 
+export type PricingCoordinates = {
+  latitude: number;
+  longitude: number;
+};
+
 export type CalculatePricingQuoteInput = {
   pricingMode: PricingMode;
   providerPrice: number;
@@ -31,6 +36,8 @@ export type CalculatePricingQuoteInput = {
   radiusTier: RadiusTier;
   distanceKm?: number;
   serviceRadiusKm?: number;
+  providerCoordinates?: PricingCoordinates;
+  serviceCoordinates?: PricingCoordinates;
   jobComplexity?: JobComplexity;
   urgency?: PricingUrgency;
   vehicle?: Partial<PricingVehicleInput>;
@@ -117,6 +124,11 @@ function positiveNumber(value: unknown, fallback = 0) {
   return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : fallback;
 }
 
+function nonNegativeNumber(value: unknown, fallback = 0) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : fallback;
+}
+
 function normalizeVehicle(vehicle?: Partial<PricingVehicleInput>) {
   return {
     vehicleType: vehicle?.vehicleType || DEFAULT_VEHICLE.vehicleType,
@@ -154,6 +166,24 @@ function confidence(input: CalculatePricingQuoteInput, distanceKm: number): Pric
   return 'high';
 }
 
+function haversineKm(
+  origin?: PricingCoordinates,
+  destination?: PricingCoordinates
+) {
+  if (!origin || !destination) return undefined;
+
+  const toRadians = (value: number) => (value * Math.PI) / 180;
+  const earthRadiusKm = 6371;
+  const deltaLat = toRadians(destination.latitude - origin.latitude);
+  const deltaLon = toRadians(destination.longitude - origin.longitude);
+  const a =
+    Math.sin(deltaLat / 2) ** 2 +
+    Math.cos(toRadians(origin.latitude)) *
+      Math.cos(toRadians(destination.latitude)) *
+      Math.sin(deltaLon / 2) ** 2;
+  return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export function calculatePricingQuote(input: CalculatePricingQuoteInput): PricingQuote {
   const hoursRequired = Math.max(1, positiveNumber(input.hoursRequired, 1));
   const providerPrice = positiveNumber(input.providerPrice);
@@ -173,7 +203,8 @@ export function calculatePricingQuote(input: CalculatePricingQuoteInput): Pricin
   const vehicle = normalizeVehicle(input.vehicle);
   const fuelPrice = positiveNumber(input.fuel.pricePerLiter);
   const fallbackTierKm = TIER_KM[input.radiusTier] ?? 0;
-  const oneWayDistanceKm = roundMoney(positiveNumber(input.distanceKm, fallbackTierKm));
+  const geolocationDistanceKm = haversineKm(input.providerCoordinates, input.serviceCoordinates);
+  const oneWayDistanceKm = roundMoney(nonNegativeNumber(geolocationDistanceKm ?? input.distanceKm, fallbackTierKm));
   const roundTripKm = roundMoney(oneWayDistanceKm * ROAD_DISTANCE_FACTOR * ROUND_TRIP_MULTIPLIER);
   const travelAdjustment = roundMoney(
     roundTripKm > 0 ? (roundTripKm / vehicle.fuelEfficiencyKmPerLiter) * fuelPrice : 0
@@ -196,6 +227,9 @@ export function calculatePricingQuote(input: CalculatePricingQuoteInput): Pricin
   }
   if (!input.vehicle) {
     assumptions.push('Using default motorcycle gasoline travel profile.');
+  }
+  if (geolocationDistanceKm !== undefined) {
+    assumptions.push('Travel distance uses provider base coordinates and the service address coordinates.');
   }
   assumptions.push(`Job complexity is ${jobComplexity}.`);
   assumptions.push(`Urgency is ${urgency.replace(/_/g, ' ')}.`);

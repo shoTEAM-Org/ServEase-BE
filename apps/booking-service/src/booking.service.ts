@@ -322,6 +322,8 @@ export class BookingService implements OnModuleInit {
     distanceKm?: number;
     serviceRadiusKm: number;
     providerBaseMissing: boolean;
+    providerCoordinates?: { latitude: number; longitude: number };
+    serviceCoordinates?: { latitude: number; longitude: number };
   }> {
     const requestedTier = this.toTrimmedString(dto?.radius_tier);
 
@@ -348,6 +350,8 @@ export class BookingService implements OnModuleInit {
         radiusTier: requestedRadiusTier || 'base',
         serviceRadiusKm: serviceRadius,
         providerBaseMissing,
+        providerCoordinates: providerBaseMissing ? undefined : { latitude: providerLat as number, longitude: providerLng as number },
+        serviceCoordinates: serviceLat === null || serviceLng === null ? undefined : { latitude: serviceLat, longitude: serviceLng },
       };
     }
 
@@ -362,6 +366,8 @@ export class BookingService implements OnModuleInit {
       distanceKm,
       serviceRadiusKm: serviceRadius,
       providerBaseMissing: false,
+      providerCoordinates: { latitude: providerLat, longitude: providerLng },
+      serviceCoordinates: { latitude: serviceLat, longitude: serviceLng },
     };
   }
 
@@ -1660,20 +1666,22 @@ export class BookingService implements OnModuleInit {
     );
 
     const pricingQuote = calculatePricingQuote({
-        pricingMode,
-        providerPrice,
-        hoursRequired,
-        bookingAmount: this.toNullableNumber(dto?.booking_amount) ?? laborAmount,
-        radiusTier: travelContext.radiusTier,
-        distanceKm: travelContext.distanceKm,
-        serviceRadiusKm: travelContext.serviceRadiusKm,
-        jobComplexity: this.normalizeJobComplexity(dto?.job_complexity),
-        urgency: this.normalizePricingUrgency(dto?.urgency),
-        vehicle,
-        fuel,
-        laborBaseline,
-        providerBaseMissing: travelContext.providerBaseMissing,
-      });
+      pricingMode,
+      providerPrice,
+      hoursRequired,
+      bookingAmount: this.toNullableNumber(dto?.booking_amount) ?? laborAmount,
+      radiusTier: travelContext.radiusTier,
+      distanceKm: travelContext.distanceKm,
+      serviceRadiusKm: travelContext.serviceRadiusKm,
+      providerCoordinates: travelContext.providerCoordinates,
+      serviceCoordinates: travelContext.serviceCoordinates,
+      jobComplexity: this.normalizeJobComplexity(dto?.job_complexity),
+      urgency: this.normalizePricingUrgency(dto?.urgency),
+      vehicle,
+      fuel,
+      laborBaseline,
+      providerBaseMissing: travelContext.providerBaseMissing,
+    });
     if (travelContext.providerBaseMissing) {
       pricingQuote.assumptions.push('Provider service base is not set; travel tier uses base-radius fallback.');
     }
@@ -2698,11 +2706,13 @@ export class BookingService implements OnModuleInit {
 
       if (error) {
         // Log error but don't throw - timeline events are non-critical
-        console.warn('Failed to create timeline event:', error.message);
+        this.logger.warn(`Failed to create timeline event: ${error.message}`);
       }
     } catch (error) {
       // Log error but don't throw - timeline events are non-critical
-      console.warn('Failed to create timeline event:', error);
+      this.logger.warn(
+        `Failed to create timeline event: ${this.toTrimmedString((error as any)?.message)}`,
+      );
     }
   }
 
