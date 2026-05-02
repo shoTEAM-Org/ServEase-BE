@@ -198,6 +198,11 @@ export class ProviderKafkaController {
     return this.providerService.getMyServices(data.providerId, data.activeOnly === true);
   }
 
+  @MessagePattern(PROVIDER_PATTERNS.GET_PRICING_GUIDANCE)
+  async getPricingGuidance(@Payload() data: any) {
+    return this.providerService.getPricingGuidance(data.providerId, data);
+  }
+
   @MessagePattern(PROVIDER_PATTERNS.GET_PROFILE_DRAFT)
   async getProfileDraft(@Payload() data: any) {
     return this.providerService.getProfileDraft(data.userId);

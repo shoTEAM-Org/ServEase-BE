@@ -62,6 +62,7 @@ export class ProviderController implements OnModuleInit {
       BOOKING_PATTERNS.UPDATE_STATUS,
       PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS,
       PROVIDER_PATTERNS.GET_MY_SERVICES,
+      PROVIDER_PATTERNS.GET_PRICING_GUIDANCE,
       PROVIDER_PATTERNS.GET_PROFILE_DRAFT,
       PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES,
       PROVIDER_PATTERNS.SUBMIT_REVIEW,
@@ -451,6 +452,17 @@ export class ProviderController implements OnModuleInit {
   async getMyServices(@Request() req: any) {
     return sendWithTimeout(
       this.kafka.send(PROVIDER_PATTERNS.GET_MY_SERVICES, {
+        providerId: req['user'].id,
+      }),
+    );
+  }
+
+  @Post('v1/pricing-guidance')
+  @UseGuards(SupabaseAuthGuard, VerifiedProviderGuard)
+  async getPricingGuidance(@Request() req: any, @Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.GET_PRICING_GUIDANCE, {
+        ...body,
         providerId: req['user'].id,
       }),
     );

@@ -17,8 +17,16 @@ import {
   NOTIFICATION_PATTERNS,
   PAYMENT_PATTERNS,
   TRUST_PATTERNS,
+  calculatePricingQuote,
   connectKafkaClientWithRetry,
+  FuelFreshness,
+  FuelType,
+  JobComplexity,
   sendKafkaRpcRequest,
+  PricingMode,
+  PricingUrgency,
+  RadiusTier,
+  VehicleType,
 } from '@app/common';
 
 @Injectable()
@@ -237,6 +245,12 @@ export class ProviderService implements OnModuleInit {
     return parsed;
   }
 
+  private toNullableNumber(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   private toBoolean(value: unknown, fallback = false) {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'number') return value !== 0;
@@ -252,6 +266,127 @@ export class ProviderService implements OnModuleInit {
     const mode = this.toTrimmedString(value).toLowerCase();
     if (mode === 'hourly' || mode === 'flat') return mode;
     return null;
+  }
+
+  private normalizeFuelType(value: unknown): FuelType {
+    return this.toTrimmedString(value).toLowerCase() === 'diesel'
+      ? 'diesel'
+      : 'gasoline';
+  }
+
+  private normalizeRadiusTier(value: unknown): RadiusTier {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['extended', 'far', 'outside'].includes(normalized)) return normalized as RadiusTier;
+    return 'base';
+  }
+
+  private normalizeJobComplexity(value: unknown): JobComplexity {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['simple', 'complex'].includes(normalized)) return normalized as JobComplexity;
+    return 'standard';
+  }
+
+  private normalizePricingUrgency(value: unknown): PricingUrgency {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['same_day', 'urgent'].includes(normalized)) return normalized as PricingUrgency;
+    return 'scheduled';
+  }
+
+  private normalizeVehicleType(value: unknown): VehicleType {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['car', 'van'].includes(normalized)) return normalized as VehicleType;
+    return 'motorcycle';
+  }
+
+  private defaultFuelPrice(fuelType: FuelType) {
+    const envKey =
+      fuelType === 'diesel'
+        ? 'SERVEASE_DEFAULT_DIESEL_PRICE_PHP'
+        : 'SERVEASE_DEFAULT_GASOLINE_PRICE_PHP';
+    const configured = this.toNullableNumber(process.env[envKey]);
+    return configured && configured > 0 ? configured : fuelType === 'diesel' ? 60 : 65;
+  }
+
+  private async getFuelBaseline(fuelType: FuelType) {
+    const now = Date.now();
+    const { data } = await this.supabase
+      .schema('booking')
+      .from('fuel_price_cache')
+      .select('fuel_type, price_per_liter, source_name, source_url, fetched_at, valid_until')
+      .eq('country_code', 'PH')
+      .eq('fuel_type', fuelType)
+      .order('fetched_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      const fetchedAt = this.toTrimmedString(data.fetched_at) || new Date().toISOString();
+      const validUntil = this.toTrimmedString(data.valid_until);
+      const ageMs = now - new Date(fetchedAt).getTime();
+      const freshness: FuelFreshness =
+        validUntil && new Date(validUntil).getTime() >= now
+          ? 'fresh'
+          : ageMs <= 24 * 60 * 60 * 1000
+            ? 'cached'
+            : 'stale';
+
+      return {
+        fuelType,
+        pricePerLiter: Number(data.price_per_liter) || this.defaultFuelPrice(fuelType),
+        sourceName: this.toTrimmedString(data.source_name) || 'Fuel price cache',
+        sourceUrl: this.toTrimmedString(data.source_url) || undefined,
+        fetchedAt,
+        freshness,
+      };
+    }
+
+    return {
+      fuelType,
+      pricePerLiter: this.defaultFuelPrice(fuelType),
+      sourceName: 'ServEase default fuel baseline',
+      fetchedAt: new Date().toISOString(),
+      freshness: 'default' as FuelFreshness,
+    };
+  }
+
+  private async getProviderTravelProfile(providerId: string) {
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_travel_profiles')
+      .select('vehicle_type, fuel_type, fuel_efficiency_km_per_liter')
+      .eq('provider_id', providerId)
+      .maybeSingle();
+
+    if (!data) return undefined;
+    return {
+      vehicleType: this.normalizeVehicleType(data.vehicle_type),
+      fuelType: this.normalizeFuelType(data.fuel_type),
+      fuelEfficiencyKmPerLiter:
+        this.toNullableNumber(data.fuel_efficiency_km_per_liter) || 45,
+    };
+  }
+
+  private async getLaborBaseline(serviceId: string, pricingMode: PricingMode, hoursRequired: number) {
+    if (!serviceId) return undefined;
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('service_pricing_baselines')
+      .select('pricing_mode, min_labor_amount, max_labor_amount, typical_labor_amount, source_note')
+      .eq('service_id', serviceId)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (!data) return undefined;
+
+    const baselineMode = this.normalizePricingMode(data.pricing_mode) || 'flat';
+    const multiplier = baselineMode === 'hourly' && pricingMode === 'hourly'
+      ? Math.max(1, hoursRequired)
+      : 1;
+    return {
+      minLaborAmount: (this.toNullableNumber(data.min_labor_amount) || 0) * multiplier,
+      maxLaborAmount: (this.toNullableNumber(data.max_labor_amount) || 0) * multiplier,
+      typicalLaborAmount: (this.toNullableNumber(data.typical_labor_amount) || 0) * multiplier,
+      sourceNote: this.toTrimmedString(data.source_note) || 'ServEase category baseline',
+    };
   }
 
   private deriveApplicationStatus(
@@ -1602,6 +1737,52 @@ export class ProviderService implements OnModuleInit {
       return { services: [] };
     }
     return { services: data || [] };
+  }
+
+  async getPricingGuidance(providerId: string, body: any) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    const serviceId = this.toTrimmedString(body?.service_id ?? body?.serviceId);
+    const pricingMode = this.normalizePricingMode(body?.pricing_mode ?? body?.pricingMode) || 'flat';
+    const providerPrice = this.toPositiveNumber(body?.price);
+    const durationMinutes = this.toPositiveNumber(body?.duration_minutes ?? body?.durationMinutes) || 60;
+    const hoursRequired = Math.max(1, durationMinutes / 60);
+
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+    if (!serviceId) throw new BadRequestException('service_id is required');
+    if (!providerPrice) throw new BadRequestException('price is required');
+
+    const vehicle = await this.getProviderTravelProfile(normalizedProviderId);
+    const fuelType = this.normalizeFuelType(vehicle?.fuelType);
+    const fuel = await this.getFuelBaseline(fuelType);
+    const laborBaseline = await this.getLaborBaseline(serviceId, pricingMode, hoursRequired);
+    const radiusTier = this.normalizeRadiusTier(body?.radius_tier ?? body?.radiusTier);
+    const distanceKm = this.toNullableNumber(body?.distance_km ?? body?.distanceKm) ?? undefined;
+
+    const pricingQuote = calculatePricingQuote({
+      pricingMode,
+      providerPrice,
+      hoursRequired,
+      bookingAmount: pricingMode === 'hourly' ? providerPrice * hoursRequired : providerPrice,
+      radiusTier,
+      distanceKm,
+      jobComplexity: this.normalizeJobComplexity(body?.job_complexity ?? body?.jobComplexity),
+      urgency: this.normalizePricingUrgency(body?.urgency),
+      vehicle,
+      fuel,
+      laborBaseline,
+      providerBaseMissing: distanceKm === undefined,
+    });
+
+    pricingQuote.assumptions.push(
+      'Provider pricing guidance uses your listed price to show how competitive and sustainable it looks before customers book.',
+    );
+    if (distanceKm === undefined) {
+      pricingQuote.assumptions.push(
+        'No customer address is selected yet; travel guidance uses your normal service radius tier.',
+      );
+    }
+
+    return { pricing_guidance: pricingQuote };
   }
 
   async getAdminServices(page = 1, limit = 20) {

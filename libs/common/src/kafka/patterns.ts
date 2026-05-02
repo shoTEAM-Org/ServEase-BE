@@ -102,6 +102,7 @@ export const PROVIDER_PATTERNS = {
   GET_RESERVED_SLOTS: 'provider.get-reserved-slots',
   CHECK_AVAILABILITY: 'provider.check-availability',
   GET_MY_SERVICES: 'provider.get-my-services',
+  GET_PRICING_GUIDANCE: 'provider.get-pricing-guidance',
   CREATE_MY_SERVICE: 'provider.create-my-service',
   UPDATE_MY_SERVICE: 'provider.update-my-service',
   DELETE_MY_SERVICE: 'provider.delete-my-service',
