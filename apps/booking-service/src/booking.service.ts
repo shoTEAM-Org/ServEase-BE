@@ -28,6 +28,75 @@ import {
   sendKafkaRpcRequest,
 } from '@app/common';
 
+interface BookingRecord {
+  id: string;
+  customer_id: string;
+  provider_id: string;
+  service_id: string;
+  provider_service_id: string;
+  service_title: string;
+  status: string;
+  scheduled_at: string;
+  created_at: string;
+  updated_at: string;
+  total_amount: number;
+  amount?: number;
+  service_amount?: number;
+  address_id: string;
+  address_label?: string;
+  service_address?: string;
+  city?: string;
+  service_latitude?: number;
+  service_longitude?: number;
+  latest_location?: any;
+  provider_location?: any;
+  provider_latitude?: number;
+  provider_longitude?: number;
+  timeline?: any[];
+  customer_notes?: string;
+  notes?: string;
+  service_location_type?: string;
+  pricing_mode?: string;
+  hours_required?: number;
+  pricing_snapshot?: any;
+  started_at?: string;
+  completed_at?: string;
+  cancelled_at?: string;
+  cancelled_by?: string;
+  cancel_reason?: string;
+  cancel_explanation?: string;
+}
+
+interface ProviderServiceRecord {
+  id: string;
+  provider_id: string;
+  service_id: string;
+  title: string;
+  description: string;
+  price: number;
+  pricing_mode: string;
+  is_active: boolean;
+}
+
+interface AttachmentRecord {
+  id: string;
+  booking_id: string;
+  file_url: string;
+  file_name: string;
+  mime_type: string;
+  storage_path: string;
+  created_at: string;
+}
+
+interface PricingQuoteDto {
+  provider_id: string;
+  service_id?: string;
+  provider_service_id?: string;
+  hours_required?: number;
+  [key: string]: any;
+}
+
+
 @Injectable()
 export class BookingService implements OnModuleInit {
   private readonly availabilitySchemas = ['booking'] as const;
@@ -306,7 +375,7 @@ export class BookingService implements OnModuleInit {
     if (!data) return undefined;
 
     const baselineMode = this.normalizePricingMode(data.pricing_mode);
-    const multiplier = baselineMode === 'hourly' && pricingMode === 'hourly'
+    const multiplier = baselineMode === 'hourly'
       ? Math.max(1, hoursRequired)
       : 1;
     return {
@@ -1271,7 +1340,7 @@ export class BookingService implements OnModuleInit {
     if (error) throw error;
 
     const attachments = await Promise.all(
-      (data || []).map(async (row: any) => {
+      (data || []).map(async (row: AttachmentRecord) => {
         const storagePath =
           this.toTrimmedString(row?.storage_path) ||
           this.extractStoragePathFromAttachmentUrl(row?.file_url);
@@ -1635,7 +1704,7 @@ export class BookingService implements OnModuleInit {
     };
   }
 
-  async getPricingQuote(dto: any) {
+  async getPricingQuote(dto: PricingQuoteDto) {
     const normalizedProviderId = this.toTrimmedString(dto?.provider_id);
     const normalizedServiceId = this.toTrimmedString(dto?.service_id);
     const normalizedProviderServiceId = this.toTrimmedString(dto?.provider_service_id);
@@ -1702,7 +1771,7 @@ export class BookingService implements OnModuleInit {
 
     const bookingRows = data || [];
     const bookingIds = bookingRows
-      .map((booking: any) => this.toTrimmedString(booking?.id))
+      .map((booking: BookingRecord) => this.toTrimmedString(booking?.id))
       .filter(Boolean);
     let timelineByBookingId = new Map<string, any[]>();
 
@@ -1762,7 +1831,7 @@ export class BookingService implements OnModuleInit {
     }
 
     // Return bookings without timeline events for performance - timeline will be fetched on-demand
-    const bookings = (data || []).map((booking: any) => ({
+    const bookings = (data || []).map((booking: BookingRecord) => ({
       ...booking,
       service_title: this.resolveServiceTitle(booking),
       timeline: [], // Empty timeline for list view
@@ -2485,12 +2554,12 @@ export class BookingService implements OnModuleInit {
       .schema('booking')
       .from('bookings')
       .select('*')
-      .in('status', ['completed', 'cancelled', 'disputed']);
+      .in('status', ['completed', 'cancelled', 'disputed', 'declined']);
     if (error) throw new BadRequestException(error.message);
 
     const normalizedRequesterId = this.toTrimmedString(requesterId);
     const history = normalizedRequesterId
-      ? (data || []).filter((booking: any) => {
+      ? (data || []).filter((booking: BookingRecord) => {
           const bookingCustomerId = this.toTrimmedString(booking?.customer_id);
           const bookingProviderId = this.toTrimmedString(booking?.provider_id);
           return (
@@ -2513,7 +2582,7 @@ export class BookingService implements OnModuleInit {
 
     const normalizedProviderId = this.toTrimmedString(providerId);
     const requests = normalizedProviderId
-      ? (data || []).filter((booking: any) => {
+      ? (data || []).filter((booking: BookingRecord) => {
           return this.toTrimmedString(booking?.provider_id) === normalizedProviderId;
         })
       : data || [];

@@ -23,7 +23,9 @@ type JoinChatPayload = {
     credentials: true,
   },
 })
-export class ChatRealtimeGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class ChatRealtimeGateway
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   @WebSocketServer()
   private server!: Server;
 
@@ -54,7 +56,10 @@ export class ChatRealtimeGateway implements OnGatewayConnection, OnGatewayDiscon
   }
 
   @SubscribeMessage('chat:join')
-  joinConversation(@ConnectedSocket() client: Socket, @MessageBody() payload: JoinChatPayload) {
+  joinConversation(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: JoinChatPayload,
+  ) {
     if (!client.data.userId) return { ok: false };
 
     const room = this.contextRoom(payload?.contextType, payload?.contextId);
@@ -72,7 +77,8 @@ export class ChatRealtimeGateway implements OnGatewayConnection, OnGatewayDiscon
 
   private extractToken(client: Socket) {
     const authToken = client.handshake.auth?.token;
-    if (typeof authToken === 'string' && authToken.trim()) return authToken.trim();
+    if (typeof authToken === 'string' && authToken.trim())
+      return authToken.trim();
 
     const header = client.handshake.headers.authorization;
     if (typeof header === 'string' && header.startsWith('Bearer ')) {

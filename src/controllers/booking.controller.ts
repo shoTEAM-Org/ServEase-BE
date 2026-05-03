@@ -231,12 +231,16 @@ export class BookingController implements OnModuleInit {
     @Body('status') status: string,
   ) {
     if (req?.['user']?.role !== 'provider') {
-      throw new ForbiddenException('Only providers can update booking progress');
+      throw new ForbiddenException(
+        'Only providers can update booking progress',
+      );
     }
 
     const providerId = String(req?.['user']?.id || '').trim();
     const bookingId = String(id || '').trim();
-    const normalizedStatus = String(status || '').trim().toLowerCase();
+    const normalizedStatus = String(status || '')
+      .trim()
+      .toLowerCase();
     const labels: Record<string, string> = {
       on_the_way: 'Provider is on the way',
       arrived: 'Provider has arrived',
@@ -245,7 +249,9 @@ export class BookingController implements OnModuleInit {
 
     if (!bookingId) throw new BadRequestException('booking id is required');
     if (!labels[normalizedStatus]) {
-      throw new BadRequestException('status must be one of: on_the_way, arrived, busy');
+      throw new BadRequestException(
+        'status must be one of: on_the_way, arrived, busy',
+      );
     }
 
     const { data: booking, error: bookingError } = await this.supabase
@@ -258,10 +264,14 @@ export class BookingController implements OnModuleInit {
     if (bookingError) throw new BadRequestException(bookingError.message);
     if (!booking) throw new NotFoundException('Booking not found');
     if (String(booking.provider_id) !== providerId) {
-      throw new ForbiddenException('Only the assigned provider can update progress');
+      throw new ForbiddenException(
+        'Only the assigned provider can update progress',
+      );
     }
     if (!['confirmed', 'in_progress'].includes(String(booking.status))) {
-      throw new BadRequestException('Provider progress can only be updated for active bookings');
+      throw new BadRequestException(
+        'Provider progress can only be updated for active bookings',
+      );
     }
 
     const now = new Date().toISOString();
@@ -279,31 +289,37 @@ export class BookingController implements OnModuleInit {
       );
     if (statusError) throw new BadRequestException(statusError.message);
 
-    const { data: existingEvent, error: existingEventError } = await this.supabase
-      .schema('booking')
-      .from('booking_timeline_events')
-      .select('event_type, label, icon, created_at')
-      .eq('booking_id', bookingId)
-      .eq('event_type', 'provider-status')
-      .eq('icon', normalizedStatus)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    const { data: existingEvent, error: existingEventError } =
+      await this.supabase
+        .schema('booking')
+        .from('booking_timeline_events')
+        .select('event_type, label, icon, created_at')
+        .eq('booking_id', bookingId)
+        .eq('event_type', 'provider-status')
+        .eq('icon', normalizedStatus)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (existingEventError) throw new BadRequestException(existingEventError.message);
+    if (existingEventError)
+      throw new BadRequestException(existingEventError.message);
 
-    const event = existingEvent || (await this.supabase
-      .schema('booking')
-      .from('booking_timeline_events')
-      .insert({
-        booking_id: bookingId,
-        event_type: 'provider-status',
-        label: labels[normalizedStatus],
-        icon: normalizedStatus,
-        created_at: now,
-      })
-      .select('event_type, label, icon, created_at')
-      .single()).data;
+    const event =
+      existingEvent ||
+      (
+        await this.supabase
+          .schema('booking')
+          .from('booking_timeline_events')
+          .insert({
+            booking_id: bookingId,
+            event_type: 'provider-status',
+            label: labels[normalizedStatus],
+            icon: normalizedStatus,
+            created_at: now,
+          })
+          .select('event_type, label, icon, created_at')
+          .single()
+      ).data;
 
     if (!event) {
       throw new BadRequestException('Unable to update booking timeline');

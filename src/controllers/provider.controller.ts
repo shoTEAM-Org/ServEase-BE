@@ -316,7 +316,9 @@ export class ProviderController implements OnModuleInit {
   @UseGuards(SupabaseAuthGuard)
   async getBookingById(@Param('id') id: string, @Request() req: any) {
     if (req['user']?.role !== 'provider') {
-      throw new ForbiddenException('Only providers can use provider booking routes');
+      throw new ForbiddenException(
+        'Only providers can use provider booking routes',
+      );
     }
 
     const providerId = String(req['user'].id || '').trim();
@@ -337,7 +339,8 @@ export class ProviderController implements OnModuleInit {
       .maybeSingle();
 
     if (error) throw new InternalServerErrorException(error.message);
-    if (!booking) throw new ForbiddenException('Booking is not assigned to this provider');
+    if (!booking)
+      throw new ForbiddenException('Booking is not assigned to this provider');
 
     return { booking };
   }
@@ -351,16 +354,30 @@ export class ProviderController implements OnModuleInit {
     @Body('status') status: string,
   ) {
     if (req['user']?.role !== 'provider') {
-      throw new ForbiddenException('Only providers can update provider booking status');
+      throw new ForbiddenException(
+        'Only providers can update provider booking status',
+      );
     }
     return this.updateBookingStatusDirect(id, req['user'].id, status);
   }
 
-  private async updateBookingStatusDirect(id: string, providerId: string, status: string) {
+  private async updateBookingStatusDirect(
+    id: string,
+    providerId: string,
+    status: string,
+  ) {
     const bookingId = String(id || '').trim();
     const normalizedProviderId = String(providerId || '').trim();
-    const normalizedStatus = String(status || '').trim().toLowerCase();
-    const allowedStatuses = ['pending', 'confirmed', 'in_progress', 'completed', 'cancelled'];
+    const normalizedStatus = String(status || '')
+      .trim()
+      .toLowerCase();
+    const allowedStatuses = [
+      'pending',
+      'confirmed',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ];
     const validTransitions: Record<string, string[]> = {
       pending: ['confirmed', 'cancelled'],
       confirmed: ['in_progress', 'cancelled'],
@@ -381,12 +398,15 @@ export class ProviderController implements OnModuleInit {
       .eq('id', bookingId)
       .maybeSingle();
 
-    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    if (bookingError)
+      throw new InternalServerErrorException(bookingError.message);
     if (!booking || String(booking.provider_id) !== normalizedProviderId) {
       throw new ForbiddenException('Booking is not assigned to this provider');
     }
 
-    const currentStatus = String(booking.status || '').trim().toLowerCase();
+    const currentStatus = String(booking.status || '')
+      .trim()
+      .toLowerCase();
     if (!(validTransitions[currentStatus] || []).includes(normalizedStatus)) {
       throw new BadRequestException(
         `Cannot transition booking from '${currentStatus}' to '${normalizedStatus}'`,
@@ -430,7 +450,10 @@ export class ProviderController implements OnModuleInit {
         created_at: now,
       });
 
-    return { message: 'Booking status updated successfully.', booking: updated };
+    return {
+      message: 'Booking status updated successfully.',
+      booking: updated,
+    };
   }
 
   @Put('v1/availability')
@@ -528,7 +551,8 @@ export class ProviderController implements OnModuleInit {
   ) {
     const normalizedBookingId = String(bookingId || '').trim();
     const requesterId = String(req?.['user']?.id || '').trim();
-    if (!normalizedBookingId) throw new BadRequestException('bookingId is required');
+    if (!normalizedBookingId)
+      throw new BadRequestException('bookingId is required');
 
     const { data: booking, error: bookingError } = await this.supabase
       .schema('booking')
@@ -537,12 +561,17 @@ export class ProviderController implements OnModuleInit {
       .eq('id', normalizedBookingId)
       .maybeSingle();
 
-    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    if (bookingError)
+      throw new InternalServerErrorException(bookingError.message);
     if (
       !booking ||
-      ![booking.customer_id, booking.provider_id].map(String).includes(requesterId)
+      ![booking.customer_id, booking.provider_id]
+        .map(String)
+        .includes(requesterId)
     ) {
-      throw new ForbiddenException('Booking charges are not available to this user');
+      throw new ForbiddenException(
+        'Booking charges are not available to this user',
+      );
     }
 
     const { data, error } = await this.supabase

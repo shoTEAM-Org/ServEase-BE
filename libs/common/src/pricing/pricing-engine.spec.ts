@@ -13,8 +13,8 @@ describe('calculatePricingQuote', () => {
         pricePerLiter: 65,
         sourceName: 'Test fuel source',
         fetchedAt: '2026-05-01T00:00:00.000Z',
-        freshness: 'fresh'
-      }
+        freshness: 'fresh',
+      },
     });
 
     expect(quote).toMatchObject({
@@ -31,8 +31,8 @@ describe('calculatePricingQuote', () => {
       fuel: {
         fuelType: 'gasoline',
         pricePerLiter: 65,
-        freshness: 'fresh'
-      }
+        freshness: 'fresh',
+      },
     });
   });
 
@@ -48,8 +48,8 @@ describe('calculatePricingQuote', () => {
         pricePerLiter: 60,
         sourceName: 'Test fuel source',
         fetchedAt: '2026-05-01T00:00:00.000Z',
-        freshness: 'fresh'
-      }
+        freshness: 'fresh',
+      },
     });
 
     expect(quote.laborAmount).toBe(1000);
@@ -67,15 +67,15 @@ describe('calculatePricingQuote', () => {
       vehicle: {
         vehicleType: 'car',
         fuelType: 'gasoline',
-        fuelEfficiencyKmPerLiter: 10
+        fuelEfficiencyKmPerLiter: 10,
       },
       fuel: {
         fuelType: 'gasoline',
         pricePerLiter: 70,
         sourceName: 'Test fuel source',
         fetchedAt: '2026-05-01T00:00:00.000Z',
-        freshness: 'fresh'
-      }
+        freshness: 'fresh',
+      },
     });
 
     expect(quote.distanceKm).toBe(30);
@@ -100,8 +100,8 @@ describe('calculatePricingQuote', () => {
         pricePerLiter: 64,
         sourceName: 'Fallback source',
         fetchedAt: '2026-04-29T00:00:00.000Z',
-        freshness: 'stale'
-      }
+        freshness: 'stale',
+      },
     });
 
     expect(quote.travelAdjustment).toBe(42.67);
@@ -111,8 +111,8 @@ describe('calculatePricingQuote', () => {
     expect(quote.assumptions).toEqual(
       expect.arrayContaining([
         'Using default motorcycle gasoline travel profile.',
-        'Fuel baseline is stale; estimate uses the last known value.'
-      ])
+        'Fuel baseline is stale; estimate uses the last known value.',
+      ]),
     );
   });
 
@@ -128,29 +128,31 @@ describe('calculatePricingQuote', () => {
         minLaborAmount: 900,
         maxLaborAmount: 1300,
         typicalLaborAmount: 1100,
-        sourceNote: 'ServEase cleaning baseline'
+        sourceNote: 'ServEase cleaning baseline',
       },
       fuel: {
         fuelType: 'gasoline',
         pricePerLiter: 87.69,
         sourceName: 'GasWatch PH / DOE weekly advisory',
         fetchedAt: '2026-05-01T00:00:00.000Z',
-        freshness: 'fresh'
-      }
+        freshness: 'fresh',
+      },
     });
     expect(quote.laborAmount).toBe(1600);
     expect(quote.benchmarkLaborAmount).toBe(1100);
     expect(quote.laborBaseline).toMatchObject({
       minLaborAmount: 900,
       maxLaborAmount: 1300,
-      typicalLaborAmount: 1100
+      typicalLaborAmount: 1100,
     });
     expect(quote.fairMin).toBe(986.09);
     expect(quote.fairEstimate).toBe(1186.09);
     expect(quote.fairMax).toBe(1386.09);
     expect(quote.fairnessBand).toBe('high');
     expect(quote.confidence).toBe('high');
-    expect(quote.assumptions).toContain('Using category labor benchmark: ServEase cleaning baseline.');
+    expect(quote.assumptions).toContain(
+      'Using category labor benchmark: ServEase cleaning baseline.',
+    );
   });
 
   it('prefers geolocation coordinates when computing travel distance', () => {
@@ -168,14 +170,42 @@ describe('calculatePricingQuote', () => {
         pricePerLiter: 70,
         sourceName: 'Test fuel source',
         fetchedAt: '2026-05-01T00:00:00.000Z',
-        freshness: 'fresh'
-      }
+        freshness: 'fresh',
+      },
     });
 
     expect(quote.distanceKm).toBeLessThan(99);
     expect(quote.distanceKm).toBeGreaterThan(1);
     expect(quote.assumptions).toContain(
-      'Travel distance uses provider base coordinates and the service address coordinates.'
+      'Travel distance uses provider base coordinates and the service address coordinates.',
     );
+  });
+
+  it('provides high confidence for on-site services when labor baseline and fuel are fresh', () => {
+    const quote = calculatePricingQuote({
+      pricingMode: 'flat',
+      providerPrice: 1000,
+      hoursRequired: 1,
+      bookingAmount: 1100,
+      radiusTier: 'base',
+      distanceKm: 0,
+      providerBaseMissing: false,
+      fuel: {
+        fuelType: 'gasoline',
+        pricePerLiter: 65,
+        sourceName: 'Fresh Fuel',
+        fetchedAt: new Date().toISOString(),
+        freshness: 'fresh',
+      },
+      laborBaseline: {
+        minLaborAmount: 800,
+        maxLaborAmount: 1200,
+        typicalLaborAmount: 1000,
+        sourceNote: 'Test Baseline',
+      },
+    });
+
+    expect(quote.confidence).toBe('high');
+    expect(quote.distanceKm).toBe(0);
   });
 });

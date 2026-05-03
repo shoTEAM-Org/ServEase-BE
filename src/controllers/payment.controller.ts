@@ -64,7 +64,8 @@ export class PaymentController implements OnModuleInit {
   ) {
     const normalizedBookingId = String(bookingId || '').trim();
     const requesterId = String(req?.['user']?.id || '').trim();
-    if (!normalizedBookingId) throw new BadRequestException('bookingId is required');
+    if (!normalizedBookingId)
+      throw new BadRequestException('bookingId is required');
 
     const { data: booking, error: bookingError } = await this.supabase
       .schema('booking')
@@ -73,12 +74,17 @@ export class PaymentController implements OnModuleInit {
       .eq('id', normalizedBookingId)
       .maybeSingle();
 
-    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    if (bookingError)
+      throw new InternalServerErrorException(bookingError.message);
     if (
       !booking ||
-      ![booking.customer_id, booking.provider_id].map(String).includes(requesterId)
+      ![booking.customer_id, booking.provider_id]
+        .map(String)
+        .includes(requesterId)
     ) {
-      throw new ForbiddenException('Booking payment is not available to this user');
+      throw new ForbiddenException(
+        'Booking payment is not available to this user',
+      );
     }
 
     const { data, error } = await this.supabase

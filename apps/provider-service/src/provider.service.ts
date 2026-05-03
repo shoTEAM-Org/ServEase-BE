@@ -378,7 +378,7 @@ export class ProviderService implements OnModuleInit {
     if (!data) return undefined;
 
     const baselineMode = this.normalizePricingMode(data.pricing_mode) || 'flat';
-    const multiplier = baselineMode === 'hourly' && pricingMode === 'hourly'
+    const multiplier = baselineMode === 'hourly'
       ? Math.max(1, hoursRequired)
       : 1;
     return {

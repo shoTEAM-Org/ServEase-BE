@@ -24,10 +24,7 @@ const REQUEST_TIMEOUT_MS =
 
 @Injectable()
 export class TimeoutInterceptor implements NestInterceptor {
-  intercept(
-    context: ExecutionContext,
-    next: CallHandler,
-  ): Observable<unknown> {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const request = context.switchToHttp().getRequest<{
       method?: string;
       originalUrl?: string;
