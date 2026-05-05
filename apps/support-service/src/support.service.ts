@@ -27,6 +27,7 @@ export class SupportService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_ROLE);
     this.kafka.subscribeToResponseOf(NOTIFICATION_PATTERNS.SEND_BROADCAST);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_ID);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_IDS);
     await this.kafka.connect();
   }
 
@@ -38,10 +39,14 @@ export class SupportService implements OnModuleInit {
     return '';
   }
 
-  private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
+  private async request<T = any>(
+    pattern: string,
+    payload: unknown,
+    options: { timeoutMs?: number } = {},
+  ): Promise<T> {
     return await sendKafkaRpcRequest(
       () => this.kafka.send<T, unknown>(pattern, payload),
-      { context: pattern },
+      { context: pattern, ...options },
     );
   }
 
@@ -81,6 +86,32 @@ export class SupportService implements OnModuleInit {
       return response?.booking || null;
     } catch {
       return null;
+    }
+  }
+
+  private async getBookingsByIds(bookingIds: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(bookingIds) ? bookingIds : [])
+          .map((bookingId) => this.toTrimmedString(bookingId))
+          .filter(Boolean),
+      ),
+    );
+    if (!normalizedIds.length) return [] as any[];
+
+    try {
+      const response = await this.request<any>(
+        BOOKING_PATTERNS.GET_BY_IDS,
+        { ids: normalizedIds },
+        { timeoutMs: 2500 },
+      );
+      const bookings =
+        response && typeof response === 'object' && 'bookings' in response
+          ? response.bookings
+          : [];
+      return Array.isArray(bookings) ? bookings : [];
+    } catch {
+      return [] as any[];
     }
   }
 
@@ -178,13 +209,13 @@ export class SupportService implements OnModuleInit {
           .filter(Boolean),
       ),
     );
-    const bookingEntries = await Promise.all(
-      bookingIds.map(async (bookingId) => [
-        bookingId,
-        await this.getBookingById(bookingId),
-      ] as const),
+    const bookings = await this.getBookingsByIds(bookingIds);
+    const bookingsById = new Map(
+      bookings.map((booking: any) => [
+        this.toTrimmedString(booking?.id),
+        booking,
+      ]),
     );
-    const bookingsById = new Map(bookingEntries);
 
     const userIds = Array.from(
       new Set(
@@ -203,7 +234,12 @@ export class SupportService implements OnModuleInit {
           .filter(Boolean),
       ),
     );
-    const users = await this.getUsersByIds(userIds);
+    let users: any[] = [];
+    try {
+      users = await this.getUsersByIds(userIds);
+    } catch {
+      users = [];
+    }
     const usersById = new Map(
       users.map((user: any) => [this.toTrimmedString(user?.id), user]),
     );

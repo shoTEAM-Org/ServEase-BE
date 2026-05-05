@@ -1602,6 +1602,25 @@ export class BookingService implements OnModuleInit {
     };
   }
 
+  async getBookingsByIds(ids: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(ids) ? ids : [])
+          .map((id) => this.toTrimmedString(id))
+          .filter(Boolean),
+      ),
+    );
+    if (!normalizedIds.length) return { bookings: [] };
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('*')
+      .in('id', normalizedIds);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { bookings: data || [] };
+  }
+
   async updateStatus(id: string, status: string) {
     const { data, error } = await this.supabase
       .schema('booking')

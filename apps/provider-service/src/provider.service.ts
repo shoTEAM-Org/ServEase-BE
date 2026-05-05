@@ -479,7 +479,7 @@ export class ProviderService implements OnModuleInit {
     return { profiles: data || [] };
   }
 
-  async getProviderApplications(page = 1, limit = 20, status = 'pending') {
+  async getProviderApplications(page = 1, limit = 20, status = 'all') {
     const normalizedPage = Number.isFinite(Number(page))
       ? Math.max(1, Number(page))
       : 1;
@@ -498,7 +498,7 @@ export class ProviderService implements OnModuleInit {
       .order('created_at', { ascending: false })
       .range(offset, offset + normalizedLimit - 1);
 
-    const normalizedStatus = this.toTrimmedString(status).toLowerCase() || 'pending';
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase() || 'all';
     if (normalizedStatus !== 'all') {
       query.eq('verification_status', normalizedStatus);
     }
@@ -1091,22 +1091,112 @@ export class ProviderService implements OnModuleInit {
     };
   }
 
+  async createAdminService(body: any) {
+    const source = body && typeof body === 'object' ? body : {};
+    const providerId = this.toTrimmedString(source.provider_id ?? source.providerId);
+    const categoryId = this.toTrimmedString(source.category_id ?? source.categoryId);
+    const title = this.toTrimmedString(source.title);
+    const price = this.toPositiveNumber(source.price);
+
+    if (!providerId) throw new BadRequestException('provider_id is required');
+    if (!categoryId) throw new BadRequestException('category_id is required');
+    if (!title) throw new BadRequestException('title is required');
+    if (price === null) {
+      throw new BadRequestException('price must be a number greater than 0');
+    }
+
+    const payload = {
+      provider_id: providerId,
+      category_id: categoryId,
+      title,
+      description: this.toNullableString(source.description),
+      price,
+      is_active: this.toBoolean(source.is_active ?? source.isActive, true),
+    };
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .insert([payload])
+      .select('*')
+      .single();
+    if (error) {
+      throw new BadRequestException(
+        `Failed to create service: ${error.message}${
+          error.code ? ` (${error.code})` : ''
+        }`,
+      );
+    }
+    return { service: data };
+  }
+
   async updateAdminService(id: string, body: any) {
     const normalizedId = this.toTrimmedString(id);
     if (!normalizedId) throw new BadRequestException('id is required');
 
-    const { provider_id: _providerId, id: _id, ...updates } = body || {};
+    const source = body && typeof body === 'object' ? body : {};
+    const {
+      provider_id: _providerId,
+      id: _id,
+      status,
+      isActive,
+      is_active,
+      active: _active,
+      ...rawUpdates
+    } = source;
+    const updates: Record<string, any> = {};
+
+    const supportedFields = [
+      'title',
+      'description',
+      'category_id',
+      'price',
+    ];
+    for (const field of supportedFields) {
+      if (Object.hasOwn(rawUpdates, field)) updates[field] = rawUpdates[field];
+    }
+    if (Object.hasOwn(rawUpdates, 'categoryId')) {
+      updates.category_id = rawUpdates.categoryId;
+    }
+
+    if (is_active !== undefined) {
+      updates.is_active = this.toBoolean(is_active, true);
+    } else if (isActive !== undefined) {
+      updates.is_active = this.toBoolean(isActive, true);
+    } else if (status !== undefined) {
+      const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+      if (normalizedStatus === 'active') {
+        updates.is_active = true;
+      } else if (normalizedStatus === 'inactive') {
+        updates.is_active = false;
+      } else {
+        throw new BadRequestException(
+          'status must be one of: active, inactive',
+        );
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      throw new BadRequestException('No supported service fields provided');
+    }
+
     const { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
       .update(updates)
       .eq('id', normalizedId)
-      .select('id');
-    if (error) throw new BadRequestException(error.message);
+      .select('*');
+    if (error) {
+      throw new BadRequestException(
+        `Failed to update service: ${error.message}${
+          error.code ? ` (${error.code})` : ''
+        }`,
+      );
+    }
     if (!data || data.length === 0) {
       throw new NotFoundException(`Service ${normalizedId} not found`);
     }
-    return { ok: true };
+    return { ok: true, service: data[0] };
   }
 
   async deleteAdminService(id: string) {

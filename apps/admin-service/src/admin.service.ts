@@ -64,6 +64,7 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.UPDATE_ADMIN_CATEGORY);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.DELETE_ADMIN_CATEGORY);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.GET_ADMIN_SERVICES);
+    this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.CREATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.UPDATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.DELETE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.GET_ADMIN_SERVICE_AREAS);
@@ -304,7 +305,7 @@ export class AdminService implements OnModuleInit {
     return { ok: true };
   }
 
-  async getProviderApplications(page = 1, limit = 20, status = 'pending') {
+  async getProviderApplications(page = 1, limit = 20, status = 'all') {
     return await this.request(PROVIDER_PATTERNS.GET_APPLICATIONS, {
       page,
       limit,
@@ -374,8 +375,7 @@ export class AdminService implements OnModuleInit {
   }
 
   async updateBookingStatus(id: string, status: string) {
-    this.kafka.emit(BOOKING_PATTERNS.UPDATE_STATUS, { id, status });
-    return { ok: true };
+    return await this.request(BOOKING_PATTERNS.UPDATE_STATUS, { id, status });
   }
 
   async createBookingDispute(bookingId: string, userId: string, reason: string) {
@@ -440,10 +440,13 @@ export class AdminService implements OnModuleInit {
   }
 
   async updatePayout(id: string, status: string) {
-    return await this.request(PAYMENT_PATTERNS.UPDATE_ADMIN_PAYOUT, {
+    console.log('[admin-service service] forwarding payout update', { id, status });
+    const response = await this.request(PAYMENT_PATTERNS.UPDATE_ADMIN_PAYOUT, {
       id,
       status,
     });
+    console.log('[admin-service service] payment-service payout response', response);
+    return response;
   }
 
   async getRefunds(page = 1, limit = 20) {
@@ -453,8 +456,12 @@ export class AdminService implements OnModuleInit {
     });
   }
 
-  async markRefund(id: string) {
-    return await this.request(PAYMENT_PATTERNS.MARK_ADMIN_REFUND, { id });
+  async markRefund(id: string, status?: string, rejectReason?: string) {
+    return await this.request(PAYMENT_PATTERNS.MARK_ADMIN_REFUND, {
+      id,
+      status,
+      reject_reason: rejectReason,
+    });
   }
 
   async getFailedPayments(page = 1, limit = 20) {
@@ -493,6 +500,10 @@ export class AdminService implements OnModuleInit {
       page,
       limit,
     });
+  }
+
+  async createService(body: any) {
+    return await this.request(CATALOG_PATTERNS.CREATE_ADMIN_SERVICE, body);
   }
 
   async updateService(id: string, body: any) {

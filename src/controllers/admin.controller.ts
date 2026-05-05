@@ -12,6 +12,9 @@ import {
   Inject,
   OnModuleInit,
   HttpCode,
+  BadRequestException,
+  NotFoundException,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { sendWithTimeout } from '../utils/kafka-request.js';
@@ -23,10 +26,34 @@ import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 export class AdminController implements OnModuleInit {
   constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
 
+  private buildAdminHttpError(error: any, fallback: string) {
+    const response = error?.response;
+    const status =
+      Number(
+        response?.statusCode ||
+          response?.status ||
+          error?.statusCode ||
+          error?.status,
+      ) || 500;
+    const rawMessage = response?.message || error?.message;
+    const message = Array.isArray(rawMessage)
+      ? rawMessage.filter((item: any) => typeof item === 'string').join(', ')
+      : typeof rawMessage === 'string'
+        ? rawMessage
+        : fallback;
+
+    if (status === 400) return new BadRequestException(message || fallback);
+    if (status === 404) return new NotFoundException(message || fallback);
+    return new InternalServerErrorException(
+      !message || message === 'Internal server error' ? fallback : message,
+    );
+  }
+
   async onModuleInit() {
     [
       ADMIN_PATTERNS.GET_CUSTOMERS,
       ADMIN_PATTERNS.GET_CUSTOMER_BY_ID,
+      ADMIN_PATTERNS.UPDATE_CUSTOMER_STATUS,
       ADMIN_PATTERNS.GET_PROVIDERS,
       ADMIN_PATTERNS.GET_PROVIDER_BY_ID,
       ADMIN_PATTERNS.GET_PROVIDER_APPLICATIONS,
@@ -35,18 +62,24 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.GET_ADMIN_PROFILE,
       ADMIN_PATTERNS.GET_ALL_BOOKINGS,
       ADMIN_PATTERNS.GET_ONGOING,
+      ADMIN_PATTERNS.UPDATE_BOOKING_STATUS,
       ADMIN_PATTERNS.GET_DISPUTES,
       ADMIN_PATTERNS.GET_SUPPORT_TICKETS,
       ADMIN_PATTERNS.GET_TRANSACTIONS,
       ADMIN_PATTERNS.GET_EARNINGS,
       ADMIN_PATTERNS.GET_PAYOUTS,
+      ADMIN_PATTERNS.UPDATE_PAYOUT,
       ADMIN_PATTERNS.GET_REFUNDS,
+      ADMIN_PATTERNS.MARK_REFUND,
       ADMIN_PATTERNS.GET_FAILED_PAYMENTS,
       ADMIN_PATTERNS.GET_CATEGORIES,
       ADMIN_PATTERNS.CREATE_CATEGORY,
       ADMIN_PATTERNS.GET_ALL_SERVICES,
+      ADMIN_PATTERNS.CREATE_SERVICE,
+      ADMIN_PATTERNS.UPDATE_SERVICE,
       ADMIN_PATTERNS.GET_SERVICE_AREAS,
       ADMIN_PATTERNS.CREATE_SERVICE_AREA,
+      ADMIN_PATTERNS.UPDATE_CATEGORY,
       ADMIN_PATTERNS.GET_REVENUE_REPORT,
       ADMIN_PATTERNS.GET_BOOKING_ANALYTICS,
       ADMIN_PATTERNS.GET_BUSINESS_REPORT,
@@ -88,13 +121,13 @@ export class AdminController implements OnModuleInit {
   }
 
   @Patch('v1/users/customers/:id/status')
-  @HttpCode(202)
   updateCustomerStatus(
     @Param('id') id: string,
     @Body('status') status: string,
   ) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_CUSTOMER_STATUS, { id, status });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_CUSTOMER_STATUS, { id, status }),
+    );
   }
 
   @Get('v1/users/providers')
@@ -128,7 +161,7 @@ export class AdminController implements OnModuleInit {
   getProviderApplications(
     @Query('page') page = '1',
     @Query('limit') limit = '20',
-    @Query('status') status = 'pending',
+    @Query('status') status = 'all',
   ) {
     return sendWithTimeout(
       this.kafka.send(ADMIN_PATTERNS.GET_PROVIDER_APPLICATIONS, {
@@ -210,10 +243,10 @@ export class AdminController implements OnModuleInit {
   }
 
   @Patch('v1/operations/bookings/:id/status')
-  @HttpCode(202)
   updateBookingStatus(@Param('id') id: string, @Body('status') status: string) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_BOOKING_STATUS, { id, status });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_BOOKING_STATUS, { id, status }),
+    );
   }
 
   @Post('v1/operations/bookings/:id/disputes')
@@ -303,9 +336,18 @@ export class AdminController implements OnModuleInit {
 
   @Patch('v1/finance/payouts/:id')
   @HttpCode(202)
-  updatePayout(@Param('id') id: string, @Body('status') status: string) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_PAYOUT, { id, status });
-    return { status: 'accepted' };
+  async updatePayout(@Param('id') id: string, @Body('status') status: string) {
+    try {
+      console.log('[admin-gateway] PATCH payout received', { id, status });
+      const response = await sendWithTimeout(
+        this.kafka.send(ADMIN_PATTERNS.UPDATE_PAYOUT, { id, status }),
+      );
+      console.log('[admin-gateway] PATCH payout response', response);
+      return response;
+    } catch (error) {
+      console.log('[admin-gateway] PATCH payout error', error);
+      throw this.buildAdminHttpError(error, 'Failed to update payout status');
+    }
   }
 
   @Get('v1/finance/refunds')
@@ -320,9 +362,14 @@ export class AdminController implements OnModuleInit {
 
   @Patch('v1/finance/refunds/:id')
   @HttpCode(202)
-  markRefund(@Param('id') id: string) {
-    this.kafka.emit(ADMIN_PATTERNS.MARK_REFUND, { id });
-    return { status: 'accepted' };
+  async markRefund(@Param('id') id: string, @Body() body: any) {
+    try {
+      return await sendWithTimeout(
+        this.kafka.send(ADMIN_PATTERNS.MARK_REFUND, { id, ...body }),
+      );
+    } catch (error) {
+      throw this.buildAdminHttpError(error, 'Failed to update refund status');
+    }
   }
 
   @Get('v1/finance/failed')
@@ -354,10 +401,10 @@ export class AdminController implements OnModuleInit {
   }
 
   @Patch('v1/marketplace/categories/:id')
-  @HttpCode(202)
   updateCategory(@Param('id') id: string, @Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_CATEGORY, { id, ...body });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_CATEGORY, { id, ...body }),
+    );
   }
 
   @Delete('v1/marketplace/categories/:id')
@@ -377,11 +424,22 @@ export class AdminController implements OnModuleInit {
     );
   }
 
+  @Post('v1/marketplace/services')
+  createService(@Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.CREATE_SERVICE, body),
+    );
+  }
+
   @Patch('v1/marketplace/services/:id')
-  @HttpCode(202)
-  updateService(@Param('id') id: string, @Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_SERVICE, { id, ...body });
-    return { status: 'accepted' };
+  async updateService(@Param('id') id: string, @Body() body: any) {
+    try {
+      return await sendWithTimeout(
+        this.kafka.send(ADMIN_PATTERNS.UPDATE_SERVICE, { id, ...body }),
+      );
+    } catch (error) {
+      throw this.buildAdminHttpError(error, 'Failed to update service');
+    }
   }
 
   @Delete('v1/marketplace/services/:id')

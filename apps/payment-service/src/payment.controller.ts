@@ -59,7 +59,11 @@ export class PaymentKafkaController {
 
   @MessagePattern(PAYMENT_PATTERNS.MARK_ADMIN_REFUND)
   async markAdminRefund(@Payload() data: any) {
-    return this.paymentService.markAdminRefund(data?.id);
+    return this.paymentService.markAdminRefund(
+      data?.id,
+      data?.status,
+      data?.reject_reason,
+    );
   }
 
   @MessagePattern(PAYMENT_PATTERNS.GET_ADMIN_FAILED_PAYMENTS)
