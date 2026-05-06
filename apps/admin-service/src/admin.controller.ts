@@ -268,4 +268,55 @@ export class AdminKafkaController {
   async getComplianceReport(@Payload() data: any) {
     return this.adminService.getComplianceReport(data.from, data.to);
   }
+
+  // === PLATFORM SETTINGS ===
+
+  @MessagePattern(ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS)
+  async getNotificationSettings() {
+    return this.adminService.getNotificationSettings();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTINGS)
+  async updateNotificationSettings(@Payload() data: any) {
+    return this.adminService.updateNotificationSettings(data);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_SECURITY_SETTINGS)
+  async getSecuritySettings() {
+    return this.adminService.getSecuritySettings();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_SECURITY_SETTINGS)
+  async updateSecuritySettings(@Payload() data: any) {
+    return this.adminService.updateSecuritySettings(data);
+  }
+
+  // === INTEGRATIONS ===
+
+  @MessagePattern(ADMIN_PATTERNS.GET_INTEGRATIONS)
+  async getIntegrations() {
+    return this.adminService.getIntegrations();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.TOGGLE_INTEGRATION)
+  async toggleIntegration(@Payload() data: any) {
+    return this.adminService.toggleIntegration(data.service, data.enabled);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.TEST_INTEGRATION)
+  async testIntegration(@Payload() data: any) {
+    return this.adminService.testIntegration(data.service);
+  }
+
+  // === COMMISSION RULES ===
+
+  @MessagePattern(ADMIN_PATTERNS.GET_COMMISSION_RULES)
+  async getCommissionRules() {
+    return this.adminService.getCommissionRules();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_COMMISSION_RULE)
+  async updateCommissionRule(@Payload() data: any) {
+    return this.adminService.updateCommissionRule(data.ruleId, data.currentRate);
+  }
 }

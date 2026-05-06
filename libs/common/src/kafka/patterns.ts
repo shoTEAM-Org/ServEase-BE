@@ -201,6 +201,21 @@ export const ADMIN_PATTERNS = {
   GET_USER_REPORT: 'admin.reports.users',
   GET_PERFORMANCE_REPORT: 'admin.reports.performance',
   GET_COMPLIANCE_REPORT: 'admin.reports.compliance',
+
+  // Platform Settings
+  GET_NOTIFICATION_SETTINGS: 'admin.settings.notifications.get',
+  UPDATE_NOTIFICATION_SETTINGS: 'admin.settings.notifications.update',
+  GET_SECURITY_SETTINGS: 'admin.settings.security.get',
+  UPDATE_SECURITY_SETTINGS: 'admin.settings.security.update',
+
+  // Integrations
+  GET_INTEGRATIONS: 'admin.settings.integrations.get',
+  TOGGLE_INTEGRATION: 'admin.settings.integrations.toggle',
+  TEST_INTEGRATION: 'admin.settings.integrations.test',
+
+  // Commission Rules
+  GET_COMMISSION_RULES: 'admin.settings.commission.get',
+  UPDATE_COMMISSION_RULE: 'admin.settings.commission.update',
 } as const;
 
 export const CATALOG_PATTERNS = {

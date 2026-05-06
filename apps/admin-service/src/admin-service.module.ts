@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
+import { SupabaseModule } from '@app/database';
 import { AdminService } from './admin.service.js';
 import { AdminKafkaController } from './admin.controller.js';
 
 @Module({
   imports: [
+    SupabaseModule,
     ClientsModule.register([
       {
         name: 'KAFKA_CLIENT',

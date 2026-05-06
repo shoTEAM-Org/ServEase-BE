@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Patch,
   Delete,
   Param,
@@ -87,6 +88,15 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.GET_USER_REPORT,
       ADMIN_PATTERNS.GET_PERFORMANCE_REPORT,
       ADMIN_PATTERNS.GET_COMPLIANCE_REPORT,
+      ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS,
+      ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTINGS,
+      ADMIN_PATTERNS.GET_SECURITY_SETTINGS,
+      ADMIN_PATTERNS.UPDATE_SECURITY_SETTINGS,
+      ADMIN_PATTERNS.GET_INTEGRATIONS,
+      ADMIN_PATTERNS.TOGGLE_INTEGRATION,
+      ADMIN_PATTERNS.TEST_INTEGRATION,
+      ADMIN_PATTERNS.GET_COMMISSION_RULES,
+      ADMIN_PATTERNS.UPDATE_COMMISSION_RULE,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
     await this.kafka.connect();
   }
@@ -531,6 +541,72 @@ export class AdminController implements OnModuleInit {
   getComplianceReport(@Query('from') from?: string, @Query('to') to?: string) {
     return sendWithTimeout(
       this.kafka.send(ADMIN_PATTERNS.GET_COMPLIANCE_REPORT, { from, to }),
+    );
+  }
+
+  // ── PLATFORM SETTINGS ──────────────────────────────────────
+  @Get('v1/settings/notifications')
+  getNotificationSettings() {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS, {}),
+    );
+  }
+
+  @Put('v1/settings/notifications')
+  updateNotificationSettings(@Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTINGS, body),
+    );
+  }
+
+  @Get('v1/settings/security')
+  getSecuritySettings() {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_SECURITY_SETTINGS, {}),
+    );
+  }
+
+  @Put('v1/settings/security')
+  updateSecuritySettings(@Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_SECURITY_SETTINGS, body),
+    );
+  }
+
+  // ── INTEGRATIONS ───────────────────────────────────────────
+  @Get('v1/settings/integrations')
+  getIntegrations() {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_INTEGRATIONS, {}),
+    );
+  }
+
+  @Put('v1/settings/integrations/:service/toggle')
+  toggleIntegration(@Param('service') service: string, @Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.TOGGLE_INTEGRATION, { service, enabled: body.enabled }),
+    );
+  }
+
+  @Post('v1/settings/integrations/:service/test')
+  testIntegration(@Param('service') service: string) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.TEST_INTEGRATION, { service }),
+    );
+  }
+
+  // ── COMMISSION RULES ───────────────────────────────────────
+  @Get('v1/commission-rules')
+  getCommissionRules() {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_COMMISSION_RULES, {}),
+    );
+  }
+
+  @Put('v1/commission-rules/:id')
+  updateCommissionRule(@Param('id') id: string, @Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_COMMISSION_RULE, { ruleId: id, currentRate: body.currentRate }),
     );
   }
 }
