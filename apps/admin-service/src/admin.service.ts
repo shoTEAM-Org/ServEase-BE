@@ -76,6 +76,8 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USER_REPORT);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PERFORMANCE_REPORT);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_COMPLIANCE_REPORT);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.GET_COMMISSION);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.UPDATE_COMMISSION);
     await this.kafka.connect();
   }
 
@@ -548,6 +550,16 @@ export class AdminService implements OnModuleInit {
     type?: string;
   }) {
     return await this.request(SUPPORT_PATTERNS.SEND_BROADCAST, body);
+  }
+
+  // === COMMISSION ===
+
+  async getCommission() {
+    return await this.request(PAYMENT_PATTERNS.GET_COMMISSION, {});
+  }
+
+  async updateCommission(body: any) {
+    return await this.request(PAYMENT_PATTERNS.UPDATE_COMMISSION, body);
   }
 
   // === REPORTS ===

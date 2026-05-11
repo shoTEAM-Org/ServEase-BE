@@ -81,6 +81,16 @@ export class PaymentKafkaController {
     return this.paymentService.getFinancialReport(data?.from, data?.to);
   }
 
+  @MessagePattern(PAYMENT_PATTERNS.GET_COMMISSION)
+  async getCommission(@Payload() data: any) {
+    return this.paymentService.getCommission();
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.UPDATE_COMMISSION)
+  async updateCommission(@Payload() data: any) {
+    return this.paymentService.updateCommission(data);
+  }
+  
   @MessagePattern(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT)
   async ensureBookingPayment(@Payload() data: any) {
     try {

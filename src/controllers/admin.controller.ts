@@ -97,6 +97,8 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.TEST_INTEGRATION,
       ADMIN_PATTERNS.GET_COMMISSION_RULES,
       ADMIN_PATTERNS.UPDATE_COMMISSION_RULE,
+      ADMIN_PATTERNS.GET_COMMISSION,
+      ADMIN_PATTERNS.UPDATE_COMMISSION,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
     await this.kafka.connect();
   }
@@ -389,6 +391,21 @@ export class AdminController implements OnModuleInit {
         page: +page,
         limit: +limit,
       }),
+    );
+  }
+
+  @Get('v1/finance/commission')
+  getCommission() {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_COMMISSION, {}),
+    );
+  }
+
+  @Patch('v1/finance/commission')
+  @HttpCode(202)
+  updateCommission(@Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_COMMISSION, body),
     );
   }
 

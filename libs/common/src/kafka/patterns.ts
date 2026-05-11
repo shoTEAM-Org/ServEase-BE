@@ -83,6 +83,8 @@ export const PAYMENT_PATTERNS = {
   GET_ADMIN_FAILED_PAYMENTS: 'payment.admin.get-failed-payments',
   GET_REVENUE_REPORT: 'payment.reports.revenue',
   GET_FINANCIAL_REPORT: 'payment.reports.financial',
+  GET_COMMISSION: 'payment.admin.get-commission',
+  UPDATE_COMMISSION: 'payment.admin.update-commission',
 } as const;
 
 export const PROVIDER_PATTERNS = {
@@ -177,6 +179,8 @@ export const ADMIN_PATTERNS = {
   GET_REFUNDS: 'admin.finance.get-refunds',
   MARK_REFUND: 'admin.finance.mark-refund',
   GET_FAILED_PAYMENTS: 'admin.finance.get-failed-payments',
+  GET_COMMISSION: 'admin.finance.get-commission',
+  UPDATE_COMMISSION: 'admin.finance.update-commission',
 
   // Marketplace
   GET_CATEGORIES: 'admin.marketplace.get-categories',

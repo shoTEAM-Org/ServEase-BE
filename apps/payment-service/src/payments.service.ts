@@ -951,4 +951,34 @@ export class PaymentService implements OnModuleInit {
     if (payoutsError) throw new InternalServerErrorException(payoutsError.message);
     return { payments: payments || [], payouts: payouts || [] };
   }
+
+  async getCommission() {
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('platform_config')
+      .select('*')
+      .eq('key', 'commission_rate')
+      .single();
+
+    if (error || !data) {
+      return { commission_rate: 10 };
+    }
+
+    return { commission_rate: Number(data.value) };
+  }
+
+  async updateCommission(body: any) {
+    const rate = Number(body?.commission_rate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      throw new BadRequestException('commission_rate must be a number between 0 and 100');
+    }
+
+    const { error } = await this.supabase
+      .schema('payment')
+      .from('platform_config')
+      .upsert({ key: 'commission_rate', value: String(rate) });
+
+    if (error) throw new InternalServerErrorException(error.message);
+    return { ok: true, commission_rate: rate };
+  }
 }
