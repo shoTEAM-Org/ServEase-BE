@@ -83,6 +83,7 @@ export const PAYMENT_PATTERNS = {
   GET_ADMIN_FAILED_PAYMENTS: 'payment.admin.get-failed-payments',
   GET_REVENUE_REPORT: 'payment.reports.revenue',
   GET_FINANCIAL_REPORT: 'payment.reports.financial',
+  CHECKOUT_WITH_QUOTE: 'payment.checkout-with-quote',
 } as const;
 
 export const PROVIDER_PATTERNS = {

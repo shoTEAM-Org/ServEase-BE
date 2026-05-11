@@ -1686,8 +1686,88 @@ export class BookingService implements OnModuleInit {
       pricingQuote.assumptions.push('Provider service base is not set; travel tier uses base-radius fallback.');
     }
 
+    let quoteId: string | undefined;
+    const bookingId = this.toTrimmedString(dto?.booking_id);
+    if (bookingId) {
+      const materialsAmount = this.toNullableNumber(dto?.materials_amount) ?? 0;
+      const resolvedServiceId = this.toTrimmedString(providerService.service_id) || normalizedServiceId || null;
+      let categoryId: string | null = null;
+      let baseBookingFee = 50.00;
+      if (resolvedServiceId) {
+        const { data: categoryRow } = await this.supabase
+          .schema('provider_catalog')
+          .from('service_categories')
+          .select('id, parent_id, base_booking_fee')
+          .eq('id', resolvedServiceId)
+          .maybeSingle();
+        categoryId = this.toTrimmedString(categoryRow?.parent_id) || this.toTrimmedString(categoryRow?.id) || null;
+        baseBookingFee = this.toNullableNumber(categoryRow?.base_booking_fee) ?? 50.00;
+      }
+      const { data: quoteRow, error: quoteError } = await this.supabase
+        .schema('payment')
+        .from('price_quotes')
+        .insert([{
+          booking_id: bookingId,
+          service_id: this.toTrimmedString(providerService.id) || null,
+          category_id: categoryId,
+          base_booking_fee: baseBookingFee,
+          effort_amount: pricingQuote.laborAmount,
+          travel_fee: pricingQuote.travelAdjustment,
+          fuel_adjustment: pricingQuote.operatingBuffer,
+          materials_amount: materialsAmount,
+          base_effort_pool: baseBookingFee + pricingQuote.laborAmount,
+          total_amount: (baseBookingFee + pricingQuote.laborAmount) + pricingQuote.travelAdjustment + pricingQuote.operatingBuffer + materialsAmount,
+          units: hoursRequired,
+          distance_km: pricingQuote.distanceKm ?? null,
+          expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+          is_used: false,
+        }])
+        .select('id')
+        .single();
+
+      if (quoteError) {
+        this.logger.warn(`Failed to save price quote for booking ${bookingId}: ${JSON.stringify(quoteError)}`);
+      } else {
+        quoteId = quoteRow?.id;
+      }
+    }
+
+    const DEFAULT_COMMISSION_RATE = 0.15;
+    let commissionRate = DEFAULT_COMMISSION_RATE;
+    try {
+      const { data: configRow, error: configError } = await this.supabase
+        .schema('payment')
+        .from('platform_pricing_config')
+        .select('config_value')
+        .eq('config_key', 'commission_rate')
+        .eq('is_active', true)
+        .maybeSingle();
+      if (!configError && configRow) {
+        const parsed = this.toNullableNumber(configRow.config_value);
+        if (parsed !== null && parsed > 0) commissionRate = parsed;
+      }
+    } catch {
+      this.logger.warn('Failed to fetch commission_rate from platform_pricing_config; using default 0.15');
+    }
+
+    const baseBookingFeeForCommission = this.toNullableNumber(providerService?.base_booking_fee) ?? 50.00;
+    const baseEffortPool = Math.round((baseBookingFeeForCommission + pricingQuote.laborAmount) * 100) / 100;
+    const totalAmount = pricingQuote.fairEstimate;
+    const serveaseIncome = Math.round(baseEffortPool * commissionRate * 100) / 100;
+    const providerEarnings = Math.round((totalAmount - serveaseIncome) * 100) / 100;
+    const providerSharePct = totalAmount > 0 ? Math.round((providerEarnings / totalAmount) * 100 * 100) / 100 : 0;
+    const platformSharePct = totalAmount > 0 ? Math.round((serveaseIncome / totalAmount) * 100 * 100) / 100 : 0;
+
     return {
       pricing_quote: pricingQuote,
+      ...(quoteId !== undefined ? { quote_id: quoteId } : {}),
+      commission: {
+        rate: commissionRate,
+        servease_income: serveaseIncome,
+        provider_earnings: providerEarnings,
+        provider_share_pct: providerSharePct,
+        platform_share_pct: platformSharePct,
+      },
     };
   }
 

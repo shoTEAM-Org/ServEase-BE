@@ -40,6 +40,7 @@ export class PaymentController implements OnModuleInit {
       PAYMENT_PATTERNS.MARK_PAID,
       PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT,
       PAYMENT_PATTERNS.UPDATE_AMOUNT,
+      PAYMENT_PATTERNS.CHECKOUT_WITH_QUOTE,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
   }
 
@@ -152,6 +153,17 @@ export class PaymentController implements OnModuleInit {
   async cancelPayment(@Param('bookingId') bookingId: string) {
     return sendWithTimeout(
       this.kafka.send(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT, { bookingId }),
+    );
+  }
+
+  @Post('v1/checkout-quote')
+  async checkoutWithQuote(@Body() body: any, @Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(PAYMENT_PATTERNS.CHECKOUT_WITH_QUOTE, {
+        quote_id: body.quote_id,
+        payment_method: body.payment_method,
+        requester_id: req['user'].id,
+      }),
     );
   }
 

@@ -30,7 +30,20 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_PRICING_QUOTE)
   async getPricingQuote(@Payload() data: any) {
-    return this.bookingService.getPricingQuote(data);
+    try {
+      return await this.bookingService.getPricingQuote(data);
+    } catch (error: any) {
+      const response = typeof error?.getResponse === 'function' ? error.getResponse() : undefined;
+      console.error('[booking-service.get-pricing-quote] failed', {
+        providerId: data?.provider_id,
+        serviceId: data?.service_id,
+        providerServiceId: data?.provider_service_id,
+        bookingId: data?.booking_id,
+        message: error?.message,
+        details: response || error?.response || error,
+      });
+      throw error;
+    }
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS)

@@ -3,6 +3,7 @@ import {
   Injectable,
   InternalServerErrorException,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
   OnModuleInit,
@@ -344,6 +345,120 @@ export class PaymentService implements OnModuleInit {
       throw new InternalServerErrorException('Failed to ensure booking payment');
     }
     return { payment: insertedRows[0] };
+  }
+
+  async checkoutWithQuote(dto: any) {
+    const quoteId = this.toTrimmedString(dto?.quote_id);
+    const paymentMethod = this.normalizePaymentMethod(dto?.payment_method) || 'cash_on_service';
+    const requesterId = this.toTrimmedString(dto?.requester_id);
+
+    if (!quoteId) throw new BadRequestException('quote_id is required');
+    if (!requesterId) throw new BadRequestException('requester_id is required');
+
+    const { data: quote, error: quoteError } = await this.supabase
+      .schema('payment')
+      .from('price_quotes')
+      .select('id, booking_id, base_booking_fee, effort_amount, travel_fee, fuel_adjustment, materials_amount, base_effort_pool, total_amount, expires_at, is_used')
+      .eq('id', quoteId)
+      .maybeSingle();
+    if (quoteError) throw new InternalServerErrorException(quoteError.message);
+    if (!quote) throw new NotFoundException('Quote not found');
+    if (new Date(quote.expires_at).getTime() < Date.now()) throw new BadRequestException('Quote has expired');
+    if (quote.is_used) throw new ConflictException('Quote already used');
+
+    const { data: booking, error: bookingError } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('id, customer_id, provider_id')
+      .eq('id', quote.booking_id)
+      .maybeSingle();
+    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (this.toTrimmedString(booking.customer_id) !== requesterId) {
+      throw new ForbiddenException('Not your booking');
+    }
+
+    const existingPayment = await this.getLatestPaymentByBookingId(quote.booking_id);
+    if (existingPayment) throw new ConflictException('Payment already exists for this booking');
+
+    const DEFAULT_COMMISSION_RATE = 0.15;
+    let commissionRate = DEFAULT_COMMISSION_RATE;
+    try {
+      const { data: configRow, error: configError } = await this.supabase
+        .schema('payment')
+        .from('platform_pricing_config')
+        .select('config_value')
+        .eq('config_key', 'commission_rate')
+        .eq('is_active', true)
+        .maybeSingle();
+      if (!configError && configRow) {
+        const parsed = this.toPositiveAmount(configRow.config_value);
+        if (parsed !== null) commissionRate = parsed;
+      }
+    } catch {
+      this.logger.warn('Failed to fetch commission_rate from platform_pricing_config; using default 0.15');
+    }
+
+    const baseEffortPool = Number(quote.base_effort_pool);
+    const totalAmount = Number(quote.total_amount);
+    const serveaseIncome = Math.round(baseEffortPool * commissionRate * 100) / 100;
+    const providerEarnings = Math.round((totalAmount - serveaseIncome) * 100) / 100;
+
+    const { data: paymentRows, error: paymentInsertError } = await this.supabase
+      .schema('payment')
+      .from('payments')
+      .insert([{
+        booking_id: quote.booking_id,
+        customer_id: booking.customer_id,
+        provider_id: booking.provider_id,
+        amount: totalAmount,
+        base_booking_fee: Number(quote.base_booking_fee),
+        effort_amount: Number(quote.effort_amount),
+        travel_fee: Number(quote.travel_fee),
+        fuel_adjustment: Number(quote.fuel_adjustment),
+        materials_amount: Number(quote.materials_amount),
+        base_effort_pool: baseEffortPool,
+        total_amount_new: totalAmount,
+        commission_rate: commissionRate,
+        servease_income: serveaseIncome,
+        provider_earnings: providerEarnings,
+        quote_id: quote.id,
+        method: paymentMethod,
+        status: 'pending',
+      }])
+      .select();
+    if (paymentInsertError) throw new InternalServerErrorException(paymentInsertError.message);
+
+    const payment = Array.isArray(paymentRows) ? paymentRows[0] : null;
+    if (!payment) throw new InternalServerErrorException('Failed to create payment');
+
+    await this.supabase
+      .schema('payment')
+      .from('price_quotes')
+      .update({ is_used: true, used_at: new Date().toISOString() })
+      .eq('id', quoteId);
+
+    return {
+      payment_id: payment.id,
+      booking_id: quote.booking_id,
+      total_amount: totalAmount,
+      breakdown: {
+        base_booking_fee: Number(quote.base_booking_fee),
+        effort_amount: Number(quote.effort_amount),
+        travel_fee: Number(quote.travel_fee),
+        fuel_adjustment: Number(quote.fuel_adjustment),
+        materials_amount: Number(quote.materials_amount),
+        base_effort_pool: baseEffortPool,
+        total_amount: totalAmount,
+      },
+      commission: {
+        rate: commissionRate,
+        servease_income: serveaseIncome,
+        provider_earnings: providerEarnings,
+      },
+      status: 'pending',
+      created_at: payment.created_at,
+    };
   }
 
   async markBookingPaymentPaid(body: any) {

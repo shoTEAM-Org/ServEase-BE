@@ -115,4 +115,20 @@ export class PaymentKafkaController {
   async updateBookingPaymentAmount(@Payload() data: any) {
     return this.paymentService.updateBookingPaymentAmount(data.bookingId, data.amount);
   }
+
+  @MessagePattern(PAYMENT_PATTERNS.CHECKOUT_WITH_QUOTE)
+  async checkoutWithQuote(@Payload() data: any) {
+    try {
+      return await this.paymentService.checkoutWithQuote(data);
+    } catch (error: any) {
+      console.error('[payment-service.checkout-with-quote] failed', {
+        quoteId: data?.quote_id,
+        requesterId: data?.requester_id,
+        paymentMethod: data?.payment_method,
+        message: error?.message,
+        details: error?.response || error,
+      });
+      throw error;
+    }
+  }
 }
