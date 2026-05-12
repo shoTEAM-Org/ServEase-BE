@@ -99,12 +99,15 @@ export class ProviderController implements OnModuleInit {
   @HttpCode(202)
   async updateBookingStatus(
     @Param('id') id: string,
+    @Request() req: any,
     @Body('status') status: string,
   ) {
     const result = await sendWithTimeout(
       this.kafka.send(BOOKING_PATTERNS.UPDATE_STATUS_RPC, {
         id,
         status,
+        actorId: req['user'].id,
+        actorRole: 'provider',
       }),
     );
     const normalizedStatus = String(status || '').trim().toLowerCase();
