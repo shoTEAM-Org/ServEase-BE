@@ -138,6 +138,79 @@ export class BookingService implements OnModuleInit {
     );
   }
 
+  private normalizeStatusKey(value: unknown): string {
+    return this.toTrimmedString(value)
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/-/g, '_');
+  }
+
+  private isProviderRejectedBooking(
+    booking: Record<string, unknown> | null | undefined,
+  ) {
+    const normalizedStatus = this.normalizeStatusKey(booking?.status);
+    if (normalizedStatus === 'rejected') return true;
+
+    const normalizedReason = this.normalizeStatusKey(
+      booking?.cancellation_reason,
+    );
+    return (
+      normalizedReason === 'provider_rejected' ||
+      normalizedReason === 'provider_declined'
+    );
+  }
+
+  private decorateCustomerFacingBooking<T extends Record<string, unknown>>(
+    booking: T,
+  ): T {
+    if (!this.isProviderRejectedBooking(booking)) {
+      return booking;
+    }
+
+    return {
+      ...booking,
+      status: 'rejected',
+    };
+  }
+
+  private async updateBookingWithSchemaFallback(
+    bookingId: string,
+    payload: Record<string, unknown>,
+  ) {
+    let nextPayload = { ...payload };
+    let schemaFallbackAttempts = 0;
+
+    while (schemaFallbackAttempts < 8) {
+      const updateResult = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .update(nextPayload)
+        .eq('id', bookingId)
+        .select()
+        .single();
+
+      if (!updateResult.error) {
+        return updateResult.data;
+      }
+
+      if (!this.isSchemaMismatchError(updateResult.error)) {
+        throw updateResult.error;
+      }
+
+      const missingColumn = this.extractMissingColumnFromError(
+        updateResult.error,
+      );
+      if (!missingColumn || !(missingColumn in nextPayload)) {
+        throw updateResult.error;
+      }
+
+      delete nextPayload[missingColumn];
+      schemaFallbackAttempts += 1;
+    }
+
+    throw new BadRequestException('Failed to update booking');
+  }
+
   private async getBookingRowByIdentifier(
     bookingIdentifier: string,
     selectColumns = '*',
@@ -1024,13 +1097,13 @@ export class BookingService implements OnModuleInit {
     );
     const providerById = new Map(providerEntries);
 
-    const bookings = (data || []).map((booking: any) => {
-      const providerId = this.toTrimmedString(booking?.provider_id);
-      return {
-        ...booking,
-        provider: providerById.get(providerId) || {},
-      };
-    });
+      const bookings = (data || []).map((booking: any) => {
+        const providerId = this.toTrimmedString(booking?.provider_id);
+        return this.decorateCustomerFacingBooking({
+          ...booking,
+          provider: providerById.get(providerId) || {},
+        });
+      });
 
     return { bookings };
   }
@@ -1136,8 +1209,8 @@ export class BookingService implements OnModuleInit {
       throw new NotFoundException('Booking not found');
     }
 
-    return { booking: data };
-  }
+      return { booking: this.decorateCustomerFacingBooking(data) };
+    }
 
   async getAllBookings(page = 1, limit = 20) {
     const normalizedPage = Number.isFinite(Number(page))
@@ -1619,7 +1692,7 @@ export class BookingService implements OnModuleInit {
     ]);
 
     return {
-      booking: {
+      booking: this.decorateCustomerFacingBooking({
         ...data,
         service_title: this.resolveServiceTitle(data),
         provider: {
@@ -1632,24 +1705,96 @@ export class BookingService implements OnModuleInit {
           full_name: this.toTrimmedString(customerUser?.full_name),
           contact_number: this.toTrimmedString(customerUser?.contact_number),
         },
-      },
+      }),
     };
   }
 
-  async updateStatus(id: string, status: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .update({ status })
-      .eq('id', id)
-      .select()
-      .single();
-    if (error) {
-      if (error.code === 'PGRST116')
-        throw new NotFoundException(`Booking with id ${id} not found`);
-      throw new BadRequestException(error.message);
+  async updateStatus(id: string, status: string, metadata?: Record<string, unknown>) {
+    const booking = await this.getBookingRowByIdentifier(id, 'id, provider_id');
+    if (!booking?.id) {
+      throw new NotFoundException(`Booking with id ${id} not found`);
     }
-    return { message: 'Booking status updated successfully.', booking: data };
+
+    const bookingId = this.toTrimmedString(booking.id);
+    const normalizedStatus = this.normalizeStatusKey(status);
+    const actorId = this.toTrimmedString(metadata?.actorId);
+    const actorRole = this.normalizeStatusKey(metadata?.actorRole);
+    const providerId = this.toTrimmedString(booking.provider_id);
+    const nowIso = new Date().toISOString();
+
+    const isProviderRejection =
+      normalizedStatus === 'rejected' &&
+      actorRole === 'provider' &&
+      actorId &&
+      actorId === providerId;
+
+    const basePayload: Record<string, unknown> = {
+      status,
+    };
+
+    if (normalizedStatus === 'cancelled' && actorId) {
+      basePayload.cancelled_at = nowIso;
+      basePayload.cancelled_by = actorId;
+    }
+
+    if (isProviderRejection) {
+      const rejectionPayload: Record<string, unknown> = {
+        status: 'rejected',
+        cancellation_reason: 'provider_rejected',
+        cancelled_at: nowIso,
+        cancelled_by: actorId,
+      };
+
+      try {
+        const data = await this.updateBookingWithSchemaFallback(
+          bookingId,
+          rejectionPayload,
+        );
+        return {
+          message: 'Booking rejected successfully.',
+          booking: this.decorateCustomerFacingBooking(data),
+        };
+      } catch (error: any) {
+        const fallbackPayload: Record<string, unknown> = {
+          status: 'cancelled',
+          cancellation_reason: 'provider_rejected',
+          cancelled_at: nowIso,
+          cancelled_by: actorId,
+        };
+
+        try {
+          const data = await this.updateBookingWithSchemaFallback(
+            bookingId,
+            fallbackPayload,
+          );
+          return {
+            message: 'Booking rejected successfully.',
+            booking: this.decorateCustomerFacingBooking(data),
+          };
+        } catch (fallbackError: any) {
+          const finalError = fallbackError?.message ? fallbackError : error;
+          throw new BadRequestException(
+            this.toTrimmedString(finalError?.message) ||
+              'Failed to reject booking',
+          );
+        }
+      }
+    }
+
+    try {
+      const data = await this.updateBookingWithSchemaFallback(
+        bookingId,
+        basePayload,
+      );
+      return { message: 'Booking status updated successfully.', booking: data };
+    } catch (error: any) {
+      if (error?.code === 'PGRST116') {
+        throw new NotFoundException(`Booking with id ${id} not found`);
+      }
+      throw new BadRequestException(
+        this.toTrimmedString(error?.message) || 'Failed to update booking',
+      );
+    }
   }
 
   async cancelBooking(
