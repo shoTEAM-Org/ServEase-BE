@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   InternalServerErrorException,
   Logger,
@@ -13,9 +14,19 @@ import {
   AUTH_PATTERNS,
   BOOKING_PATTERNS,
   KafkaRpcRequestOptions,
+  NOTIFICATION_PATTERNS,
   PAYMENT_PATTERNS,
   TRUST_PATTERNS,
+  calculatePricingQuote,
+  connectKafkaClientWithRetry,
+  FuelFreshness,
+  FuelType,
+  JobComplexity,
   sendKafkaRpcRequest,
+  PricingMode,
+  PricingUrgency,
+  RadiusTier,
+  VehicleType,
 } from '@app/common';
 
 @Injectable()
@@ -29,6 +40,7 @@ export class ProviderService implements OnModuleInit {
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_ROLE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.UPDATE_USER_STATUS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID);
@@ -37,9 +49,7 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.SAVE_PROVIDER_AVAILABILITY);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESERVED_SLOTS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.CHECK_PROVIDER_AVAILABILITY);
-    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.CREATE_RESCHEDULE);
-    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESCHEDULES);
-    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.REVIEW_RESCHEDULE);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.UPDATE_STATUS);
     this.kafka.subscribeToResponseOf(
       BOOKING_PATTERNS.CREATE_ADDITIONAL_CHARGES,
     );
@@ -55,7 +65,14 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.DELETE_REVIEW);
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_PERFORMANCE_REPORT);
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_COMPLIANCE_REPORT);
-    await this.kafka.connect();
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.CREATE_REVIEW_RESPONSE);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.UPDATE_REVIEW_RESPONSE);
+    this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_REVIEW_WITH_RESPONSE);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_FUEL_BASELINE);
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: ProviderService.name,
+      logger: this.logger,
+    });
   }
 
   private async request<T = any>(
@@ -129,6 +146,87 @@ export class ProviderService implements OnModuleInit {
     return Array.isArray(users) ? users : [];
   }
 
+  private async getAdminUsersFromAuth() {
+    const response = await this.request<any>(AUTH_PATTERNS.GET_USERS_BY_ROLE, {
+      role: 'admin',
+      page: 1,
+      limit: 100,
+    });
+    const users =
+      response && typeof response === 'object' && 'users' in response
+        ? response.users
+        : [];
+    return Array.isArray(users) ? users : [];
+  }
+
+  private sanitizeStorageName(value: unknown) {
+    const raw = this.toTrimmedString(value) || 'document';
+    return raw.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 120);
+  }
+
+  private normalizeDocumentType(value: unknown) {
+    return this.toTrimmedString(value).toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+  }
+
+  private async toVerificationSignedUrl(path: unknown) {
+    const normalizedPath = this.toTrimmedString(path);
+    if (!normalizedPath) return null;
+    const { data } = await this.supabase.storage
+      .from('verification-docs')
+      .createSignedUrl(normalizedPath, 60 * 60);
+    return data?.signedUrl || null;
+  }
+
+  private async mapProviderDocument(doc: any) {
+    const filePath = doc.document_file_path || '';
+    const fileName = filePath.split('/').pop() || undefined;
+    return {
+      document_id: doc.document_id,
+      id: doc.document_id,
+      provider_id: doc.provider_id,
+      document_type: doc.document_type,
+      document_file_path: doc.document_file_path,
+      file_name: fileName,
+      status: doc.status || 'pending',
+      reject_reason: doc.reject_reason || null,
+      uploaded_at: doc.uploaded_at || null,
+      reviewed_at: doc.reviewed_at || null,
+      reviewed_by: doc.reviewed_by || null,
+      signed_url: await this.toVerificationSignedUrl(doc.document_file_path),
+    };
+  }
+
+  private async emitProviderNotification(
+    pattern: string,
+    userId: string,
+    metadata: Record<string, unknown> = {},
+  ) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) return;
+    this.kafka.emit(pattern, {
+      userId: normalizedUserId,
+      type: pattern,
+      metadata,
+    });
+  }
+
+  private async emitAdminProviderApplicationSubmitted(providerId: string) {
+    try {
+      const admins = await this.getAdminUsersFromAuth();
+      for (const admin of admins) {
+        await this.emitProviderNotification(
+          NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_SUBMITTED,
+          admin?.id,
+          { providerId },
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Failed to notify admins about provider application ${providerId}: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+    }
+  }
+
   private toTrimmedString(value: unknown) {
     if (typeof value === 'string') return value.trim();
     if (typeof value === 'number' || typeof value === 'boolean') {
@@ -148,6 +246,13 @@ export class ProviderService implements OnModuleInit {
     if (!Number.isFinite(parsed) || parsed <= 0) return null;
     return parsed;
   }
+
+  private toNullableNumber(value: unknown): number | null {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
   private toBoolean(value: unknown, fallback = false) {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'number') return value !== 0;
@@ -170,45 +275,102 @@ export class ProviderService implements OnModuleInit {
     return null;
   }
 
-  private normalizeServiceLocationType(value: unknown): 'mobile' | 'in_shop' {
-    return this.toTrimmedString(value).toLowerCase() === 'in_shop' ? 'in_shop' : 'mobile';
+  private normalizeFuelType(value: unknown): FuelType {
+    return this.toTrimmedString(value).toLowerCase() === 'diesel'
+      ? 'diesel'
+      : 'gasoline';
   }
 
-  private ensurePricingModes(
-    supportsHourly: boolean,
-    supportsFlat: boolean,
-    flatRateInput: number | null,
-  ) {
-    if (supportsHourly || supportsFlat) {
-      return { supportsHourly, supportsFlat };
-    }
-
-    if (flatRateInput !== null) {
-      return { supportsHourly: false, supportsFlat: true };
-    }
-
-    return { supportsHourly: true, supportsFlat: false };
+  private normalizeRadiusTier(value: unknown): RadiusTier {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['extended', 'far', 'outside'].includes(normalized)) return normalized as RadiusTier;
+    return 'base';
   }
 
-  private resolveFallbackRate(resolvedPrice: number): number | null {
-    return resolvedPrice > 0 ? resolvedPrice : null;
+  private normalizeJobComplexity(value: unknown): JobComplexity {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['simple', 'complex'].includes(normalized)) return normalized as JobComplexity;
+    return 'standard';
   }
 
-  private resolveDefaultPricingMode(
-    source: Record<string, unknown>,
-    supportsHourly: boolean,
-    supportsFlat: boolean,
-  ): 'hourly' | 'flat' {
-    if (supportsHourly && supportsFlat) {
-      return (
-        this.normalizePricingMode(
-          source.default_pricing_mode ?? source.defaultPricingMode,
-        ) || 'hourly'
+  private normalizePricingUrgency(value: unknown): PricingUrgency {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['same_day', 'urgent'].includes(normalized)) return normalized as PricingUrgency;
+    return 'scheduled';
+  }
+
+  private normalizeVehicleType(value: unknown): VehicleType {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['car', 'van'].includes(normalized)) return normalized as VehicleType;
+    return 'motorcycle';
+  }
+
+  private defaultFuelPrice(fuelType: FuelType) {
+    const envKey =
+      fuelType === 'diesel'
+        ? 'SERVEASE_DEFAULT_DIESEL_PRICE_PHP'
+        : 'SERVEASE_DEFAULT_GASOLINE_PRICE_PHP';
+    const configured = this.toNullableNumber(process.env[envKey]);
+    return configured && configured > 0 ? configured : fuelType === 'diesel' ? 60 : 65;
+  }
+
+  private async getFuelBaseline(fuelType: FuelType) {
+    try {
+      const result = await sendKafkaRpcRequest<{ fuelType: FuelType; pricePerLiter: number; sourceName: string; sourceUrl?: string; fetchedAt: string; freshness: FuelFreshness }>(
+        () => this.kafka.send(BOOKING_PATTERNS.GET_FUEL_BASELINE, { fuel_type: fuelType }),
+        { context: BOOKING_PATTERNS.GET_FUEL_BASELINE },
       );
+      if (result) return result;
+    } catch {
+      // fall through to default
     }
+    return {
+      fuelType,
+      pricePerLiter: this.defaultFuelPrice(fuelType),
+      sourceName: 'ServEase default fuel baseline',
+      fetchedAt: new Date().toISOString(),
+      freshness: 'default' as FuelFreshness,
+    };
+  }
 
-    if (supportsHourly) return 'hourly';
-    return 'flat';
+  private async getProviderTravelProfile(providerId: string) {
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_travel_profiles')
+      .select('vehicle_type, fuel_type, fuel_efficiency_km_per_liter')
+      .eq('provider_id', providerId)
+      .maybeSingle();
+
+    if (!data) return undefined;
+    return {
+      vehicleType: this.normalizeVehicleType(data.vehicle_type),
+      fuelType: this.normalizeFuelType(data.fuel_type),
+      fuelEfficiencyKmPerLiter:
+        this.toNullableNumber(data.fuel_efficiency_km_per_liter) || 45,
+    };
+  }
+
+  private async getLaborBaseline(serviceId: string, pricingMode: PricingMode, hoursRequired: number) {
+    if (!serviceId) return undefined;
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('service_pricing_baselines')
+      .select('pricing_mode, min_labor_amount, max_labor_amount, typical_labor_amount, source_note')
+      .eq('service_id', serviceId)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (!data) return undefined;
+
+    const baselineMode = this.normalizePricingMode(data.pricing_mode) || 'flat';
+    const multiplier = baselineMode === 'hourly' && pricingMode === 'hourly'
+      ? Math.max(1, hoursRequired)
+      : 1;
+    return {
+      minLaborAmount: (this.toNullableNumber(data.min_labor_amount) || 0) * multiplier,
+      maxLaborAmount: (this.toNullableNumber(data.max_labor_amount) || 0) * multiplier,
+      typicalLaborAmount: (this.toNullableNumber(data.typical_labor_amount) || 0) * multiplier,
+      sourceNote: this.toTrimmedString(data.source_note) || 'ServEase category baseline',
+    };
   }
 
   private deriveApplicationStatus(
@@ -226,19 +388,25 @@ export class ProviderService implements OnModuleInit {
   }
 
   private mapVerificationStatusToUserStatus(status: string) {
-    if (status === 'approved') return 'active';
-    if (status === 'rejected') return 'rejected';
-    return 'pending';
+    if (
+      status === 'approved' ||
+      status === 'pending' ||
+      status === 'under_review' ||
+      status === 'rejected'
+    ) {
+      return 'active';
+    }
+    return 'inactive';
   }
 
   private validateRequiredServiceFields(
     requireCoreFields: boolean,
     title: string,
-    categoryId: string,
+    serviceId: string,
   ) {
     if (!requireCoreFields) return;
     if (!title) throw new BadRequestException('Service title is required');
-    if (!categoryId) throw new BadRequestException('Service category is required');
+    if (!serviceId) throw new BadRequestException('Service category is required');
   }
 
   private isSchemaMismatchError(error: any) {
@@ -250,6 +418,35 @@ export class ProviderService implements OnModuleInit {
       message.includes('pgrst204') ||
       message.includes('pgrst200')
     );
+  }
+
+  private isUuid(value: string): boolean {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  }
+
+  private async resolveServiceCategoryId(serviceId: string): Promise<string | null> {
+    const normalizedServiceId = this.toTrimmedString(serviceId);
+    if (!normalizedServiceId) return null;
+    if (this.isUuid(normalizedServiceId)) return normalizedServiceId;
+
+    const legacySlugMap: Record<string, string> = {
+      'cat-cleaning': 'home-cleaning',
+      'cat-aircon': 'aircon-services',
+      'cat-electrical': 'electrical',
+      'cat-plumbing': 'plumbing',
+    };
+    const slug = legacySlugMap[normalizedServiceId] || normalizedServiceId.replace(/^cat-/, '');
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('service_categories')
+      .select('id')
+      .or(`slug.eq.${slug},name.ilike.${slug.replace(/-/g, ' ')}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) throw new BadRequestException(error.message);
+    return this.toTrimmedString(data?.id) || null;
   }
 
   private normalizeServicePayload(
@@ -264,35 +461,16 @@ export class ProviderService implements OnModuleInit {
       body && typeof body === 'object' ? body : {};
     const requireCoreFields = Boolean(options.requireCoreFields);
     const title = this.toTrimmedString(source.title);
-    const categoryId = this.toTrimmedString(source.category_id ?? source.categoryId);
-    this.validateRequiredServiceFields(requireCoreFields, title, categoryId);
+    const serviceId = this.toTrimmedString(source.service_id ?? source.serviceId);
+    this.validateRequiredServiceFields(requireCoreFields, title, serviceId);
 
-    const hourlyRateInput = this.toPositiveNumber(source.hourly_rate ?? source.hourlyRate);
-    const flatRateInput = this.toPositiveNumber(source.flat_rate ?? source.flatRate);
     const priceInput = this.toPositiveNumber(source.price);
-
-    let supportsHourly = this.toBoolean(
-      source.supports_hourly ?? source.supportsHourly,
-      hourlyRateInput !== null,
+    const durationInput = this.toPositiveNumber(
+      source.duration_minutes ?? source.durationMinutes,
     );
-    let supportsFlat = this.toBoolean(
-      source.supports_flat ?? source.supportsFlat,
-      flatRateInput !== null,
-    );
-
-    const normalizedPricingModes = this.ensurePricingModes(
-      supportsHourly,
-      supportsFlat,
-      flatRateInput,
-    );
-    supportsHourly = normalizedPricingModes.supportsHourly;
-    supportsFlat = normalizedPricingModes.supportsFlat;
-
-    const resolvedPrice = Math.max(priceInput || 0, hourlyRateInput || 0, flatRateInput || 0);
-    const fallbackRate = this.resolveFallbackRate(resolvedPrice);
-    const locationType = this.normalizeServiceLocationType(
-      source.service_location_type ?? source.serviceLocationType,
-    );
+    const pricingMode =
+      this.normalizePricingMode(source.pricing_mode ?? source.pricingMode) ||
+      'hourly';
 
     const payload: Record<string, any> = {};
     if (options.providerId) payload.provider_id = options.providerId;
@@ -300,27 +478,138 @@ export class ProviderService implements OnModuleInit {
     if (Object.hasOwn(source, 'description') || requireCoreFields) {
       payload.description = this.toNullableString(source.description);
     }
-    if (categoryId || requireCoreFields) payload.category_id = categoryId;
-    if (resolvedPrice > 0 || requireCoreFields) payload.price = resolvedPrice;
-
-    if (options.legacyOnly) return payload;
-
-    payload.supports_hourly = supportsHourly;
-    payload.hourly_rate = supportsHourly ? hourlyRateInput ?? fallbackRate : null;
-    payload.supports_flat = supportsFlat;
-    payload.flat_rate = supportsFlat ? flatRateInput ?? fallbackRate : null;
-    payload.default_pricing_mode = this.resolveDefaultPricingMode(
-      source,
-      supportsHourly,
-      supportsFlat,
-    );
-    payload.service_location_type = locationType;
-    payload.service_location_address =
-      locationType === 'in_shop'
-        ? this.toNullableString(source.service_location_address ?? source.serviceLocationAddress)
-        : null;
+    if (serviceId || requireCoreFields) payload.service_id = serviceId;
+    if (priceInput !== null || requireCoreFields) payload.price = priceInput || 0;
+    if (Object.hasOwn(source, 'pricing_mode') || Object.hasOwn(source, 'pricingMode') || requireCoreFields) {
+      payload.pricing_mode = pricingMode;
+    }
+    if (
+      Object.hasOwn(source, 'duration_minutes') ||
+      Object.hasOwn(source, 'durationMinutes') ||
+      requireCoreFields
+    ) {
+      payload.duration_minutes = durationInput || 60;
+    }
+    if (Object.hasOwn(source, 'is_active')) {
+      payload.is_active = this.toBoolean(source.is_active, true);
+    }
 
     return payload;
+  }
+
+  // === Provider Status ===
+  async getProviderStatus(providerId: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) {
+      throw new BadRequestException('providerId is required');
+    }
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_status')
+      .select('provider_id, status, last_updated')
+      .eq('provider_id', normalizedProviderId)
+      .single();
+
+    if (error && error.code !== 'PGRST116') {
+      throw new InternalServerErrorException(error.message);
+    }
+
+    // If no status record exists, return default status
+    if (!data) {
+      return {
+        status: 'success',
+        data: {
+          provider_id: normalizedProviderId,
+          status: 'offline',
+          updated_at: new Date().toISOString()
+        }
+      };
+    }
+
+    return {
+      status: 'success',
+      data: {
+        provider_id: data.provider_id,
+        status: data.status,
+        updated_at: data.last_updated || new Date().toISOString()
+      }
+    };
+  }
+
+  async updateProviderStatus(providerId: string, status: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+    
+    if (!normalizedProviderId) {
+      throw new BadRequestException('providerId is required');
+    }
+    
+    if (!['online', 'on_the_way', 'arrived', 'busy', 'offline'].includes(normalizedStatus)) {
+      throw new BadRequestException('status must be one of: online, on_the_way, arrived, busy, offline');
+    }
+
+    // First try to update
+    const { data: updateData, error: updateError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_status')
+      .update({
+        status: normalizedStatus,
+        last_updated: new Date().toISOString()
+      })
+      .eq('provider_id', normalizedProviderId)
+      .select()
+      .single();
+
+    // If no rows were updated (PGRST116), insert instead
+    if (updateError && updateError.code === 'PGRST116') {
+      const { data: insertData, error: insertError } = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_status')
+        .insert({
+          provider_id: normalizedProviderId,
+          status: normalizedStatus,
+          last_updated: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        throw new InternalServerErrorException(insertError.message);
+      }
+
+      // Create timeline events for active bookings (fire and forget)
+      this.addTimelineEventsForProviderStatus(normalizedProviderId, normalizedStatus);
+
+      return {
+        status: 'success',
+        data: {
+          provider_id: insertData.provider_id,
+          status: insertData.status,
+          updated_at: insertData.last_updated || new Date().toISOString()
+        }
+      };
+    }
+
+    if (updateError) {
+      throw new InternalServerErrorException(updateError.message);
+    }
+
+    // Create timeline events for active bookings (fire and forget)
+    this.addTimelineEventsForProviderStatus(normalizedProviderId, normalizedStatus);
+
+    return {
+      status: 'success',
+      data: {
+        provider_id: updateData.provider_id,
+        status: updateData.status,
+        updated_at: updateData.last_updated || new Date().toISOString()
+      }
+    };
+  }
+
+  private addTimelineEventsForProviderStatus(providerId: string, status: string) {
+    this.kafka.emit(BOOKING_PATTERNS.ADD_PROVIDER_STATUS_EVENTS, { provider_id: providerId, status });
   }
 
   // === Existing: Provider Discovery ===
@@ -328,15 +617,15 @@ export class ProviderService implements OnModuleInit {
     const { data: services, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .select('id, title, price, provider_id')
-      .eq('category_id', serviceId);
+      .select('id, service_id, title, price, pricing_mode, duration_minutes, provider_id')
+      .eq('service_id', serviceId);
     if (error) throw new InternalServerErrorException(error.message);
 
     const providerIds = [...new Set((services || []).map((s: any) => s.provider_id))];
     const { data: profiles } = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
-      .select('user_id, business_name, average_rating, verification_status')
+      .select('user_id, business_name, bio, service_description, average_rating, verification_status, home_address, home_latitude, home_longitude, service_radius_km')
       .in('user_id', providerIds);
 
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
@@ -360,14 +649,15 @@ export class ProviderService implements OnModuleInit {
     const { data: services, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .select('id, title, price, description, category_id, provider_id');
+      .select('id, service_id, title, price, pricing_mode, duration_minutes, description, provider_id')
+      .eq('is_active', true);
     if (error) throw new InternalServerErrorException(error.message);
 
     const providerIds = [...new Set((services || []).map((s: any) => s.provider_id))];
     const { data: profiles } = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
-      .select('user_id, business_name, trust_score, average_rating, verification_status')
+      .select('user_id, business_name, bio, service_description, trust_score, average_rating, verification_status, home_address, home_latitude, home_longitude, service_radius_km')
       .in('user_id', providerIds);
 
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
@@ -392,7 +682,26 @@ export class ProviderService implements OnModuleInit {
       )
       .map((s: any) => ({ ...s, provider_profiles: profileMap[s.provider_id] || null }));
 
-    return { success: true, data: filtered };
+    // Group active services by provider, keeping the lowest-priced as the representative
+    const providerServiceMap = new Map<string, any>();
+    for (const s of (services || [])) {
+      if (profileMap[s.provider_id]?.verification_status !== 'approved') continue;
+      const matchesSearch =
+        !lower ||
+        s.title?.toLowerCase().includes(lower) ||
+        s.description?.toLowerCase().includes(lower) ||
+        profileMap[s.provider_id]?.business_name?.toLowerCase().includes(lower);
+      if (!matchesSearch) continue;
+      const existing = providerServiceMap.get(s.provider_id);
+      if (!existing || s.price < existing.price) {
+        providerServiceMap.set(s.provider_id, {
+          ...s,
+          provider_profiles: profileMap[s.provider_id] || null,
+        });
+      }
+    }
+
+    return { success: true, data: Array.from(providerServiceMap.values()) };
   }
 
   // === Existing: Provider Profile ===
@@ -401,7 +710,7 @@ export class ProviderService implements OnModuleInit {
       .schema('provider_catalog')
       .from('provider_profiles')
       .select(
-        'user_id, business_name, service_description, verification_status, average_rating, total_reviews, trust_score',
+        'user_id, business_name, bio, service_description, verification_status, average_rating, total_reviews, trust_score, home_address, home_latitude, home_longitude, service_radius_km, verification_submitted_at, verification_decided_at, reject_reason',
       )
       .eq('user_id', userId)
       .single();
@@ -411,16 +720,11 @@ export class ProviderService implements OnModuleInit {
     const { data: documents } = await this.supabase
       .schema('provider_catalog')
       .from('provider_documents')
-      .select('document_id, document_type, document_file_path, status')
+      .select('document_id, provider_id, document_type, document_file_path, status, reject_reason, uploaded_at, reviewed_at, reviewed_by')
       .eq('provider_id', userId);
 
     const documentsWithUrls = await Promise.all(
-      (documents || []).map(async (doc: any) => {
-        const { data: urlData } = await this.supabase.storage
-          .from('verification-docs')
-          .createSignedUrl(doc.document_file_path, 60);
-        return { ...doc, view_url: urlData?.signedUrl || null };
-      }),
+      (documents || []).map((doc: any) => this.mapProviderDocument(doc)),
     );
     return {
       status: 'success',
@@ -433,22 +737,27 @@ export class ProviderService implements OnModuleInit {
     const businessName = this.toTrimmedString(payload?.businessName);
     const documentType = this.toTrimmedString(payload?.documentType);
     const filePath = this.toTrimmedString(payload?.filePath);
+    const dateOfBirthRaw = this.toTrimmedString(payload?.dateOfBirth);
+    const dateOfBirth = dateOfBirthRaw && /^\d{4}-\d{2}-\d{2}$/.test(dateOfBirthRaw)
+      ? dateOfBirthRaw
+      : null;
 
     if (!userId) throw new BadRequestException('userId is required');
     if (!businessName) throw new BadRequestException('businessName is required');
     if (!documentType) throw new BadRequestException('documentType is required');
     if (!filePath) throw new BadRequestException('filePath is required');
 
+    const profileRow: Record<string, unknown> = {
+      user_id: userId,
+      business_name: businessName,
+      verification_status: 'pending',
+    };
+    if (dateOfBirth) profileRow.date_of_birth = dateOfBirth;
+
     const { data: profile, error: profileError } = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
-      .insert([
-        {
-          user_id: userId,
-          business_name: businessName,
-          verification_status: 'pending',
-        },
-      ])
+      .insert([profileRow])
       .select()
       .single();
     if (profileError)
@@ -491,11 +800,15 @@ export class ProviderService implements OnModuleInit {
     );
     if (!normalizedIds.length) return { profiles: [] };
 
-    const { data, error } = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_profiles')
-      .select('user_id, business_name, average_rating, verification_status')
-      .in('user_id', normalizedIds);
+    const { data, error } = await this.withQueryTimeout(
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .select('user_id, business_name, bio, service_description, average_rating, verification_status, home_address, home_latitude, home_longitude, service_radius_km')
+        .in('user_id', normalizedIds),
+      3000,
+      'provider.get-profiles-by-ids query',
+    );
     if (error) throw new InternalServerErrorException(error.message);
     return { profiles: data || [] };
   }
@@ -513,7 +826,7 @@ export class ProviderService implements OnModuleInit {
       .schema('provider_catalog')
       .from('provider_profiles')
       .select(
-        'user_id, business_name, verification_status, created_at, updated_at, service_description',
+        'user_id, business_name, verification_status, created_at, updated_at, bio, service_description',
         { count: 'exact' },
       )
       .order('created_at', { ascending: false })
@@ -628,14 +941,21 @@ export class ProviderService implements OnModuleInit {
     }
 
     const profile = profileResult.data;
-    const documents = (docsResult.data || []).map((doc: any) => ({
+    const mappedDocuments = await Promise.all(
+      (docsResult.data || []).map((doc: any) => this.mapProviderDocument(doc)),
+    );
+    const documents = mappedDocuments.map((doc: any) => ({
       id: doc.document_id,
+      document_id: doc.document_id,
       name: doc.document_type || 'Document',
+      document_type: doc.document_type,
       file: doc.document_file_path || '',
       status: doc.status || 'pending',
       reject_reason: doc.reject_reason || null,
       uploaded_at: doc.uploaded_at || null,
       reviewed_at: doc.reviewed_at || null,
+      signed_url: doc.signed_url || null,
+      view_url: doc.signed_url || null,
     }));
 
     const status = profile.verification_status || user.status || 'pending';
@@ -652,6 +972,7 @@ export class ProviderService implements OnModuleInit {
       email: user.email || null,
       contact_number: user.contact_number || null,
       profile: {
+        bio: profile.bio || profile.service_description || null,
         service_description: profile.service_description || null,
         verification_status: profile.verification_status || null,
         trust_score: profile.trust_score || null,
@@ -670,9 +991,9 @@ export class ProviderService implements OnModuleInit {
     const normalizedId = this.toTrimmedString(id);
     const normalizedStatus = this.toTrimmedString(status).toLowerCase();
     if (!normalizedId) throw new BadRequestException('id is required');
-    if (!['approved', 'rejected', 'pending'].includes(normalizedStatus)) {
+    if (!['approved', 'rejected', 'pending', 'under_review'].includes(normalizedStatus)) {
       throw new BadRequestException(
-        'status must be one of: approved, rejected, pending',
+        'status must be one of: approved, rejected, pending, under_review',
       );
     }
     if (
@@ -696,7 +1017,16 @@ export class ProviderService implements OnModuleInit {
     const profileUpdate = await this.supabase
       .schema('provider_catalog')
       .from('provider_profiles')
-      .update({ verification_status: normalizedStatus })
+      .update({
+        verification_status: normalizedStatus,
+        verification_decided_at: ['approved', 'rejected'].includes(normalizedStatus)
+          ? new Date().toISOString()
+          : null,
+        reject_reason:
+          normalizedStatus === 'rejected'
+            ? this.toTrimmedString(rejectReason)
+            : null,
+      })
       .eq('user_id', normalizedId);
     if (profileUpdate.error) {
       throw new BadRequestException(profileUpdate.error.message);
@@ -712,11 +1042,13 @@ export class ProviderService implements OnModuleInit {
 
     const documentIds = (docsResult.data || []).map((doc: any) => doc.document_id);
     if (documentIds.length > 0) {
+      const documentStatus =
+        normalizedStatus === 'under_review' ? 'pending' : normalizedStatus;
       const docUpdate = await this.supabase
         .schema('provider_catalog')
         .from('provider_documents')
         .update({
-          status: normalizedStatus,
+          status: documentStatus,
           reject_reason:
             normalizedStatus === 'rejected'
               ? this.toTrimmedString(rejectReason)
@@ -727,6 +1059,20 @@ export class ProviderService implements OnModuleInit {
       if (docUpdate.error) {
         throw new BadRequestException(docUpdate.error.message);
       }
+    }
+
+    if (normalizedStatus === 'approved') {
+      await this.emitProviderNotification(
+        NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_APPROVED,
+        normalizedId,
+      );
+    }
+    if (normalizedStatus === 'rejected') {
+      await this.emitProviderNotification(
+        NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_REJECTED,
+        normalizedId,
+        { reason: this.toTrimmedString(rejectReason) },
+      );
     }
 
     return { ok: true };
@@ -790,22 +1136,25 @@ export class ProviderService implements OnModuleInit {
       );
     }
 
-    const profileUpdate = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_profiles')
-      .update({ verification_status: normalizedStatus })
-      .eq('user_id', providerId);
-    if (profileUpdate.error) {
-      throw new InternalServerErrorException(profileUpdate.error.message);
+    if (normalizedStatus === 'rejected') {
+      const profileUpdate = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .update({
+          verification_status: 'rejected',
+          reject_reason: this.toTrimmedString(dto?.reject_reason),
+          verification_decided_at: new Date().toISOString(),
+        })
+        .eq('user_id', providerId);
+      if (profileUpdate.error) {
+        throw new InternalServerErrorException(profileUpdate.error.message);
+      }
+      await this.emitProviderNotification(
+        NOTIFICATION_PATTERNS.PROVIDER_APPLICATION_REJECTED,
+        providerId,
+        { reason: this.toTrimmedString(dto?.reject_reason) },
+      );
     }
-
-    const mappedUserStatus = this.mapVerificationStatusToUserStatus(
-      normalizedStatus,
-    );
-    await this.request(AUTH_PATTERNS.UPDATE_USER_STATUS, {
-      userId: providerId,
-      status: mappedUserStatus,
-    });
 
     return {
       status: 'success',
@@ -817,6 +1166,237 @@ export class ProviderService implements OnModuleInit {
         reviewed_at: docUpdate.data.reviewed_at,
       },
     };
+  }
+
+  async getRequiredDocumentTypes() {
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('required_document_types')
+      .select('*')
+      .order('sort_order', { ascending: true });
+    if (error) throw new InternalServerErrorException(error.message);
+    return { documentTypes: data || [] };
+  }
+
+  async getMyDocuments(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .select(
+        'document_id, provider_id, document_type, document_file_path, status, reject_reason, uploaded_at, reviewed_at, reviewed_by',
+      )
+      .eq('provider_id', normalizedUserId)
+      .order('uploaded_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+
+    return {
+      documents: await Promise.all(
+        (data || []).map((doc: any) => this.mapProviderDocument(doc)),
+      ),
+    };
+  }
+
+  async getMyVerification(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const [profileResult, required, documents] = await Promise.all([
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .select(
+          'user_id, business_name, bio, service_description, verification_status, verification_submitted_at, verification_decided_at, reject_reason, home_address, home_latitude, home_longitude, service_radius_km',
+        )
+        .eq('user_id', normalizedUserId)
+        .maybeSingle(),
+      this.getRequiredDocumentTypes(),
+      this.getMyDocuments(normalizedUserId),
+    ]);
+
+    if (profileResult.error) {
+      throw new InternalServerErrorException(profileResult.error.message);
+    }
+
+    return {
+      profile: profileResult.data || null,
+      verification_status:
+        profileResult.data?.verification_status || 'pending',
+      required_document_types: required.documentTypes,
+      documents: documents.documents,
+    };
+  }
+
+  async uploadDocument(
+    userId: string,
+    documentType: string,
+    file: Express.Multer.File,
+  ) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const normalizedDocumentType = this.normalizeDocumentType(documentType);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+    if (!normalizedDocumentType) {
+      throw new BadRequestException('document_type is required');
+    }
+    if (!file) throw new BadRequestException('A document file is required');
+
+    const { data: profile, error: profileError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('verification_status')
+      .eq('user_id', normalizedUserId)
+      .maybeSingle();
+    if (profileError) throw new InternalServerErrorException(profileError.message);
+    if (!profile) throw new NotFoundException('Provider profile not found');
+    if (this.toTrimmedString(profile.verification_status) === 'approved') {
+      throw new BadRequestException('Approved providers cannot replace verification documents');
+    }
+
+    const storagePath = `providers/${normalizedUserId}/${normalizedDocumentType}/${Date.now()}_${this.sanitizeStorageName(file.originalname)}`;
+    const { error: uploadError } = await this.supabase.storage
+      .from('verification-docs')
+      .upload(storagePath, file.buffer, {
+        contentType: file.mimetype,
+        upsert: false,
+      });
+    if (uploadError) throw new BadRequestException(uploadError.message);
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .insert([
+        {
+          provider_id: normalizedUserId,
+          document_type: normalizedDocumentType,
+          document_file_path: storagePath,
+          status: 'pending',
+        },
+      ])
+      .select()
+      .single();
+    if (error) throw new InternalServerErrorException(error.message);
+
+    return {
+      document: await this.mapProviderDocument(data),
+      status: 'pending',
+    };
+  }
+
+  async deleteMyDocument(userId: string, documentId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const normalizedDocumentId = this.toTrimmedString(documentId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+    if (!normalizedDocumentId) throw new BadRequestException('documentId is required');
+
+    const { data: doc, error: fetchError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .select('document_id, provider_id, document_file_path, status')
+      .eq('document_id', normalizedDocumentId)
+      .eq('provider_id', normalizedUserId)
+      .maybeSingle();
+    if (fetchError) throw new InternalServerErrorException(fetchError.message);
+    if (!doc) throw new NotFoundException('Document not found');
+
+    const status = this.toTrimmedString(doc.status);
+    if (!['pending', 'rejected'].includes(status)) {
+      throw new BadRequestException('Only pending or rejected documents can be deleted');
+    }
+
+    const { error: deleteError } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_documents')
+      .delete()
+      .eq('document_id', normalizedDocumentId)
+      .eq('provider_id', normalizedUserId);
+    if (deleteError) throw new InternalServerErrorException(deleteError.message);
+
+    const storagePath = this.toTrimmedString(doc.document_file_path);
+    if (storagePath) {
+      await this.supabase.storage.from('verification-docs').remove([storagePath]);
+    }
+
+    return { ok: true };
+  }
+
+  async submitForReview(userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const [profileResult, requiredResult, docsResult] = await Promise.all([
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .select('verification_status')
+        .eq('user_id', normalizedUserId)
+        .maybeSingle(),
+      this.supabase
+        .schema('provider_catalog')
+        .from('required_document_types')
+        .select('code')
+        .eq('is_required', true),
+      this.supabase
+        .schema('provider_catalog')
+        .from('provider_documents')
+        .select('document_type, status')
+        .eq('provider_id', normalizedUserId),
+    ]);
+
+    if (profileResult.error) {
+      throw new InternalServerErrorException(profileResult.error.message);
+    }
+    if (!profileResult.data) throw new NotFoundException('Provider profile not found');
+    if (requiredResult.error) {
+      throw new InternalServerErrorException(requiredResult.error.message);
+    }
+    if (docsResult.error) {
+      throw new InternalServerErrorException(docsResult.error.message);
+    }
+
+    const currentStatus = this.toTrimmedString(
+      profileResult.data.verification_status,
+    );
+    if (!['pending', 'rejected'].includes(currentStatus)) {
+      throw new BadRequestException(
+        'Only pending or rejected applications can be submitted for review',
+      );
+    }
+
+    const acceptableDocs = new Set(
+      (docsResult.data || [])
+        .filter((doc: any) => this.toTrimmedString(doc.status) !== 'rejected')
+        .map((doc: any) => this.normalizeDocumentType(doc.document_type)),
+    );
+    const missing = (requiredResult.data || [])
+      .map((row: any) => this.normalizeDocumentType(row.code))
+      .filter((code: string) => !acceptableDocs.has(code));
+    if (missing.length) {
+      throw new BadRequestException(
+        `Missing required documents: ${missing.join(', ')}`,
+      );
+    }
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .update({
+        verification_status: 'under_review',
+        verification_submitted_at: new Date().toISOString(),
+        verification_decided_at: null,
+        reject_reason: null,
+      })
+      .eq('user_id', normalizedUserId)
+      .select(
+        'user_id, business_name, verification_status, verification_submitted_at',
+      )
+      .single();
+    if (error) throw new InternalServerErrorException(error.message);
+
+    await this.emitAdminProviderApplicationSubmitted(normalizedUserId);
+
+    return { profile: data, status: 'under_review' };
   }
 
   async getProviderDashboard(providerId: string) {
@@ -1031,21 +1611,37 @@ export class ProviderService implements OnModuleInit {
     const normalizedProviderId = this.toTrimmedString(providerId);
     if (!normalizedProviderId) return { bookings: [] };
 
-    return await this.request<any>(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS, {
-      providerId: normalizedProviderId,
-    });
+    try {
+      return await this.request<any>(
+        BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS,
+        { providerId: normalizedProviderId },
+        { timeoutMs: 5000, retries: 0 },
+      );
+    } catch (error) {
+      this.logger.warn(
+        `provider.get-bookings degraded: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      return { bookings: [] };
+    }
   }
 
-  async getProviderBookingById(bookingId: string) {
+  async getProviderBookingById(bookingId: string, providerId?: string) {
     return await this.request<any>(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID, {
       bookingId,
+      providerId,
     });
   }
 
-  async updateProviderBookingStatus(bookingId: string, status: string) {
-    return await this.request<any>(BOOKING_PATTERNS.UPDATE_STATUS_RPC, {
+  async updateProviderBookingStatus(
+    bookingId: string,
+    status: string,
+    providerId?: string,
+  ) {
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+    return await this.request(BOOKING_PATTERNS.UPDATE_STATUS, {
       id: bookingId,
-      status,
+      status: normalizedStatus || status,
+      providerId,
     });
   }
 
@@ -1085,17 +1681,142 @@ export class ProviderService implements OnModuleInit {
   }
 
   // === My Services (Provider Catalog) ===
-  async getMyServices(providerId: string) {
+  async getMyServices(providerId: string, activeOnly = false) {
     const normalizedProviderId = this.toTrimmedString(providerId);
     if (!normalizedProviderId) return { services: [] };
 
-    const { data, error } = await this.supabase
+    let query = this.supabase
       .schema('provider_catalog')
       .from('provider_services')
       .select('*')
       .eq('provider_id', normalizedProviderId);
-    if (error) throw new InternalServerErrorException(error.message);
+
+    if (activeOnly) {
+      query = query.eq('is_active', true);
+    }
+
+    const { data, error } = await this.withQueryTimeout(
+      query,
+      3000,
+      'provider.get-my-services query',
+    );
+    if (error) {
+      this.logger.warn(
+        `provider.get-my-services degraded: ${this.toTrimmedString(error.message)}`,
+      );
+      return { services: [] };
+    }
     return { services: data || [] };
+  }
+
+  async getTravelProfile(providerId: string) {
+    return (await this.getProviderTravelProfile(providerId)) ?? null;
+  }
+
+  async getServiceLaborBaseline(serviceId: string, pricingMode: PricingMode, hoursRequired: number) {
+    return (await this.getLaborBaseline(serviceId, pricingMode, hoursRequired)) ?? null;
+  }
+
+  async getProviderServiceForBooking(providerId: string, providerServiceId?: string, serviceId?: string) {
+    const selectColumns = 'id, provider_id, service_id, title, description, pricing_mode, price, duration_minutes, is_active, base_booking_fee';
+    const isInvalidUuid = (err: any) => {
+      const code = this.toTrimmedString(err?.code).toUpperCase();
+      const msg = this.toTrimmedString(err?.message).toLowerCase();
+      return code === '22P02' || msg.includes('invalid input syntax for type uuid');
+    };
+    const isMissingRelation = (err: any) => {
+      const code = this.toTrimmedString(err?.code).toUpperCase();
+      const msg = this.toTrimmedString(err?.message).toLowerCase();
+      return code === '42P01' || code === 'PGRST106' || ((msg.includes('relation') || msg.includes('schema')) && msg.includes('does not exist'));
+    };
+
+    if (providerServiceId) {
+      const result = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_services')
+        .select(selectColumns)
+        .eq('provider_id', providerId)
+        .eq('id', providerServiceId)
+        .eq('is_active', true)
+        .maybeSingle();
+      if (result.error) {
+        if (isInvalidUuid(result.error) || isMissingRelation(result.error)) return null;
+        throw new InternalServerErrorException(result.error.message);
+      }
+      if (result.data) return result.data;
+    }
+
+    if (!serviceId) return null;
+    const result = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .select(selectColumns)
+      .eq('provider_id', providerId)
+      .eq('service_id', serviceId)
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+    if (result.error) {
+      if (isInvalidUuid(result.error) || isMissingRelation(result.error)) return null;
+      throw new InternalServerErrorException(result.error.message);
+    }
+    return result.data ?? null;
+  }
+
+  async getPricingLocation(providerId: string) {
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('service_radius_km, home_latitude, home_longitude')
+      .eq('user_id', providerId)
+      .maybeSingle();
+    return data ?? null;
+  }
+
+  async getPricingGuidance(providerId: string, body: any) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    const serviceId = this.toTrimmedString(body?.service_id ?? body?.serviceId);
+    const pricingMode = this.normalizePricingMode(body?.pricing_mode ?? body?.pricingMode) || 'flat';
+    const providerPrice = this.toPositiveNumber(body?.price);
+    const durationMinutes = this.toPositiveNumber(body?.duration_minutes ?? body?.durationMinutes) || 60;
+    const hoursRequired = Math.max(1, durationMinutes / 60);
+
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+    if (!serviceId) throw new BadRequestException('service_id is required');
+    if (!providerPrice) throw new BadRequestException('price is required');
+
+    const vehicle = await this.getProviderTravelProfile(normalizedProviderId);
+    const fuelType = this.normalizeFuelType(vehicle?.fuelType);
+    const fuel = await this.getFuelBaseline(fuelType);
+    const laborBaseline = await this.getLaborBaseline(serviceId, pricingMode, hoursRequired);
+    const radiusTier = this.normalizeRadiusTier(body?.radius_tier ?? body?.radiusTier);
+    const distanceKm = this.toNullableNumber(body?.distance_km ?? body?.distanceKm) ?? undefined;
+
+    const pricingQuote = calculatePricingQuote({
+      pricingMode,
+      providerPrice,
+      hoursRequired,
+      bookingAmount: pricingMode === 'hourly' ? providerPrice * hoursRequired : providerPrice,
+      radiusTier,
+      distanceKm,
+      jobComplexity: this.normalizeJobComplexity(body?.job_complexity ?? body?.jobComplexity),
+      urgency: this.normalizePricingUrgency(body?.urgency),
+      vehicle,
+      fuel,
+      laborBaseline,
+      providerBaseMissing: distanceKm === undefined,
+    });
+
+    pricingQuote.assumptions.push(
+      'Provider pricing guidance uses your listed price to show how competitive and sustainable it looks before customers book.',
+    );
+    if (distanceKm === undefined) {
+      pricingQuote.assumptions.push(
+        'No customer address is selected yet; travel guidance uses your normal service radius tier.',
+      );
+    }
+
+    return { pricing_guidance: pricingQuote };
   }
 
   async getAdminServices(page = 1, limit = 20) {
@@ -1248,14 +1969,43 @@ export class ProviderService implements OnModuleInit {
     return { ok: true };
   }
 
+  private async checkProviderVerificationStatus(providerId: string): Promise<void> {
+    const { data: profile, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('verification_status')
+      .eq('user_id', providerId)
+      .single();
+
+    if (error) {
+      throw new InternalServerErrorException('Failed to verify provider status');
+    }
+
+    const verificationStatus = this.toTrimmedString(profile?.verification_status);
+    if (verificationStatus !== 'approved') {
+      throw new ForbiddenException(
+        'You must complete the screening process and be fully verified before adding services. ' +
+        'Please complete your verification in the Provider Verification section.'
+      );
+    }
+  }
+
   async createMyService(providerId: string, body: any) {
     const normalizedProviderId = this.toTrimmedString(providerId);
     if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+
+    // Check if provider is verified before allowing service creation
+    await this.checkProviderVerificationStatus(normalizedProviderId);
 
     const payload = this.normalizeServicePayload(body, {
       providerId: normalizedProviderId,
       requireCoreFields: true,
     });
+    const resolvedServiceId = await this.resolveServiceCategoryId(payload.service_id);
+    if (!resolvedServiceId) {
+      throw new BadRequestException('Service category is not recognized');
+    }
+    payload.service_id = resolvedServiceId;
 
     let { data, error } = await this.supabase
       .schema('provider_catalog')
@@ -1263,20 +2013,6 @@ export class ProviderService implements OnModuleInit {
       .insert([payload])
       .select()
       .single();
-
-    if (error && this.isSchemaMismatchError(error)) {
-      const legacyPayload = this.normalizeServicePayload(body, {
-        providerId: normalizedProviderId,
-        requireCoreFields: true,
-        legacyOnly: true,
-      });
-      ({ data, error } = await this.supabase
-        .schema('provider_catalog')
-        .from('provider_services')
-        .insert([legacyPayload])
-        .select()
-        .single());
-    }
 
     if (error) throw new BadRequestException(error.message);
     return { service: data };
@@ -1288,7 +2024,15 @@ export class ProviderService implements OnModuleInit {
     if (!normalizedServiceId) throw new BadRequestException('serviceId is required');
     if (!normalizedProviderId) throw new BadRequestException('providerId is required');
 
+    // Check if provider is verified before allowing service update
+    await this.checkProviderVerificationStatus(normalizedProviderId);
+
     const payload = this.normalizeServicePayload(body, { requireCoreFields: true });
+    const resolvedServiceId = await this.resolveServiceCategoryId(payload.service_id);
+    if (!resolvedServiceId) {
+      throw new BadRequestException('Service category is not recognized');
+    }
+    payload.service_id = resolvedServiceId;
     let { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
@@ -1298,26 +2042,17 @@ export class ProviderService implements OnModuleInit {
       .select()
       .single();
 
-    if (error && this.isSchemaMismatchError(error)) {
-      const legacyPayload = this.normalizeServicePayload(body, {
-        requireCoreFields: true,
-        legacyOnly: true,
-      });
-      ({ data, error } = await this.supabase
-        .schema('provider_catalog')
-        .from('provider_services')
-        .update(legacyPayload)
-        .eq('id', normalizedServiceId)
-        .eq('provider_id', normalizedProviderId)
-        .select()
-        .single());
-    }
-
     if (error) throw new BadRequestException(error.message);
     return { service: data };
   }
 
   async deleteMyService(serviceId: string, providerId: string) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+
+    // Check if provider is verified before allowing service deletion
+    await this.checkProviderVerificationStatus(normalizedProviderId);
+
     const { error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
@@ -1334,7 +2069,7 @@ export class ProviderService implements OnModuleInit {
       .schema('provider_catalog')
       .from('provider_profiles')
       .select(
-        'user_id, business_name, service_description, trust_score, verification_status',
+        'user_id, business_name, bio, service_description, trust_score, verification_status, home_address, home_latitude, home_longitude, service_radius_km',
       )
       .eq('user_id', userId)
       .single();
@@ -1346,56 +2081,43 @@ export class ProviderService implements OnModuleInit {
   async saveProfileDraft(userId: string, body: any) {
     const allowed = [
       'business_name',
+      'bio',
       'service_description',
-      'verification_status',
+      'home_address',
+      'home_latitude',
+      'home_longitude',
+      'service_radius_km',
     ];
     const updates: any = {};
     for (const key of allowed) {
       if (body[key] !== undefined) updates[key] = body[key];
     }
 
-    const { data, error } = await this.supabase
+    const baseQuery = this.supabase
       .schema('provider_catalog')
-      .from('provider_profiles')
+      .from('provider_profiles');
+
+    // If the provider profile row doesn't exist yet, PostgREST returns 0 rows
+    // and `.single()` produces an error. Treat that case as "create on first edit".
+    const { data, error } = await baseQuery
       .update(updates)
       .eq('user_id', userId)
       .select()
       .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    return { draft: data };
-  }
 
-  // === Reschedule Requests ===
-  async createRescheduleRequest(body: any) {
-    return await this.request<any>(BOOKING_PATTERNS.CREATE_RESCHEDULE, body);
-  }
+    if (!error) return { draft: data };
 
-  async getRescheduleRequests(bookingId: string) {
-    const normalizedBookingId = this.toTrimmedString(bookingId);
-    if (!normalizedBookingId) return { requests: [] };
-
-    try {
-      return await this.request<any>(
-        BOOKING_PATTERNS.GET_RESCHEDULES,
-        { bookingId: normalizedBookingId },
-        { timeoutMs: 10_000, retries: 1, retryDelayMs: 300 },
-      );
-    } catch (error) {
-      if (this.isTimeoutLikeError(error)) {
-        this.logger.warn(
-          `booking.get-reschedules degraded: timeout for bookingId=${normalizedBookingId}`,
-        );
-        return { requests: [] };
-      }
-      throw error;
+    // PGRST116: "The result contains 0 rows" (common when update matched nothing).
+    if ((error as any)?.code === 'PGRST116') {
+      const { data: inserted, error: insertError } = await baseQuery
+        .insert({ user_id: userId, ...updates })
+        .select()
+        .single();
+      if (insertError) throw new InternalServerErrorException(insertError.message);
+      return { draft: inserted };
     }
-  }
 
-  async reviewRescheduleRequest(requestId: string, body: any) {
-    return await this.request<any>(BOOKING_PATTERNS.REVIEW_RESCHEDULE, {
-      requestId,
-      ...body,
-    });
+    throw new InternalServerErrorException(error.message);
   }
 
   // === Additional Charges ===
@@ -1406,9 +2128,10 @@ export class ProviderService implements OnModuleInit {
     );
   }
 
-  async getAdditionalCharges(bookingId: string) {
+  async getAdditionalCharges(bookingId: string, providerId?: string) {
     return await this.request<any>(BOOKING_PATTERNS.GET_ADDITIONAL_CHARGES, {
       bookingId,
+      providerId,
     });
   }
 
@@ -1441,6 +2164,19 @@ export class ProviderService implements OnModuleInit {
 
   async submitReport(body: any) {
     return await this.request<any>(TRUST_PATTERNS.CREATE_PROVIDER_REPORT, body);
+  }
+
+  // === Review Responses ===
+  async createReviewResponse(body: any) {
+    return await this.request<any>(TRUST_PATTERNS.CREATE_REVIEW_RESPONSE, body);
+  }
+
+  async updateReviewResponse(body: any) {
+    return await this.request<any>(TRUST_PATTERNS.UPDATE_REVIEW_RESPONSE, body);
+  }
+
+  async getReviewWithResponse(body: any) {
+    return await this.request<any>(TRUST_PATTERNS.GET_REVIEW_WITH_RESPONSE, body);
   }
 }
 

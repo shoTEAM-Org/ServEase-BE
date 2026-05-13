@@ -1,4 +1,5 @@
 import { Logger, ServiceUnavailableException } from '@nestjs/common';
+import { RpcException } from '@nestjs/microservices';
 import { Observable, TimeoutError, lastValueFrom } from 'rxjs';
 import { timeout } from 'rxjs/operators';
 import { getCorrelationId } from '../tracing/correlation.js';
@@ -44,6 +45,22 @@ function isTimeoutError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   const message = String((error as any).message || '').toLowerCase();
   return message.includes('timeout');
+}
+
+function extractRpcErrorPayload(error: unknown) {
+  if (!error || typeof error !== 'object') return null;
+  const candidate = error as any;
+  const response = candidate.response;
+  const statusCode = Number(candidate.statusCode ?? response?.statusCode);
+  const message = String(
+    candidate.message ?? response?.message ?? 'Upstream service failed',
+  );
+
+  if (!Number.isInteger(statusCode) || statusCode < 400 || statusCode > 599) {
+    return null;
+  }
+
+  return { statusCode, message };
 }
 
 function sleep(ms: number) {
@@ -92,13 +109,8 @@ export async function sendKafkaRpcRequest<T>(
   sourceFactory: () => Observable<T>,
   options: KafkaRpcRequestOptions = {},
 ): Promise<T> {
-  const {
-    timeoutMs,
-    retryDelayMs,
-    context,
-    logger,
-    maxAttempts,
-  } = resolveKafkaRpcOptions(options);
+  const { timeoutMs, retryDelayMs, context, logger, maxAttempts } =
+    resolveKafkaRpcOptions(options);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -126,6 +138,11 @@ export async function sendKafkaRpcRequest<T>(
         throw new ServiceUnavailableException(
           `Upstream service timed out: ${context}`,
         );
+      }
+
+      const rpcPayload = extractRpcErrorPayload(error);
+      if (rpcPayload) {
+        throw new RpcException(rpcPayload);
       }
 
       throw error;

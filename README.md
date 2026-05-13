@@ -82,6 +82,9 @@ running:
 Build before running production commands:
 
 ```bash
+docker compose up -d kafka
+npm install
+npm run start:dev:all
 npm run build
 ```
 
@@ -186,6 +189,12 @@ npm run infra:up
 npm run infra:wait
 ```
 
+In a second terminal, run the gateway/Kafka smoke:
+
+```bash
+npm run test:golden
+```
+
 ## Admin integration endpoints (recently wired)
 
 The following admin workflows are now supported through gateway -> Kafka -> admin-service:
@@ -206,7 +215,7 @@ After pulling backend route/pattern updates, restart gateway and admin-service s
 
 ```bash
 npm run test
-npm run test:e2e
+npm run test:golden
 ```
 
 ## Microservice Isolation Guards

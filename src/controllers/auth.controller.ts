@@ -12,12 +12,15 @@ import {
   HttpCode,
   UnauthorizedException,
   InternalServerErrorException,
+  HttpException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
+import { catchError } from 'rxjs';
 import { sendWithTimeout } from '../utils/kafka-request.js';
 import { AUTH_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
+import { AdminRoleGuard } from '../guards/admin-role.guard.js';
 import 'multer';
 
 @Controller('api/auth')
@@ -31,14 +34,30 @@ export class AuthController implements OnModuleInit {
       AUTH_PATTERNS.REGISTER_PROVIDER,
       AUTH_PATTERNS.REFRESH,
       AUTH_PATTERNS.GET_ME,
+      AUTH_PATTERNS.GET_PROFILE,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Post('v1/register/customer')
   async register(@Body() dto: any) {
+    const payload = {
+      ...dto,
+      role: 'customer',
+    };
     return sendWithTimeout(
-      this.kafka.send(AUTH_PATTERNS.REGISTER_CUSTOMER, dto),
+      this.kafka.send(AUTH_PATTERNS.REGISTER_CUSTOMER, payload),
+    );
+  }
+
+  @Post('v1/register')
+  @UseGuards(SupabaseAuthGuard, AdminRoleGuard)
+  async registerAdmin(@Body() dto: any) {
+    const payload = {
+      ...dto,
+      role: 'admin',
+    };
+    return sendWithTimeout(
+      this.kafka.send(AUTH_PATTERNS.REGISTER_CUSTOMER, payload),
     );
   }
 
@@ -76,13 +95,18 @@ export class AuthController implements OnModuleInit {
   }
 
   @Post('v2/register')
-  @UseInterceptors(FileInterceptor('document_file'))
+  @UseInterceptors(
+    FileInterceptor('document_file', {
+      limits: { fileSize: 10 * 1024 * 1024 },
+    }),
+  )
   async registerProvider(
     @Body() dto: any,
     @UploadedFile() file: Express.Multer.File,
   ) {
     const payload = {
       ...dto,
+      role: 'provider',
       file: file
         ? {
             originalname: file.originalname,
@@ -92,7 +116,29 @@ export class AuthController implements OnModuleInit {
         : null,
     };
     return sendWithTimeout(
-      this.kafka.send(AUTH_PATTERNS.REGISTER_PROVIDER, payload),
+      this.kafka.send(AUTH_PATTERNS.REGISTER_PROVIDER, payload).pipe(
+        catchError((err) => {
+          console.error('KAFKA_ERROR_REGISTER_PROVIDER:', err);
+          const response =
+            err?.response && typeof err.response === 'object'
+              ? err.response
+              : err;
+          const statusCode = Number(response?.statusCode ?? err?.statusCode);
+          const rawMessage = response?.message ?? err?.message;
+          const message = Array.isArray(rawMessage)
+            ? rawMessage.join('; ')
+            : String(rawMessage || 'Provider registration failed.');
+
+          throw new HttpException(
+            message,
+            Number.isInteger(statusCode) &&
+              statusCode >= 400 &&
+              statusCode <= 599
+              ? statusCode
+              : 500,
+          );
+        }),
+      ),
     );
   }
 

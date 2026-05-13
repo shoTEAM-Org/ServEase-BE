@@ -4,6 +4,8 @@ import { SupabaseModule } from '@app/database';
 import { ProviderService } from './provider.service.js';
 import { ProviderKafkaController } from './provider.controller.js';
 
+const providerClientInstanceId = `${process.pid}-${Date.now()}`;
+
 @Module({
   imports: [
     SupabaseModule,
@@ -13,10 +15,12 @@ import { ProviderKafkaController } from './provider.controller.js';
         transport: Transport.KAFKA,
         options: {
           client: {
-            clientId: 'provider-service-client',
+            clientId: `provider-service-client-${providerClientInstanceId}`,
             brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
           },
-          consumer: { groupId: 'provider-service-client-consumer' },
+          consumer: {
+            groupId: `provider-service-client-consumer-${providerClientInstanceId}`,
+          },
         },
       },
     ]),

@@ -10,7 +10,7 @@ import { SupabaseClient } from '@supabase/supabase-js';
 @Injectable()
 export class UsersService {
   constructor(private readonly supabase: SupabaseClient) {}
-  private readonly addressSchemas = ['identity_and_user', 'identity_svc'] as const;
+  private readonly addressSchemas = ['identity_and_user'] as const;
 
   private toTrimmedString(value: unknown) {
     if (typeof value === 'string') return value.trim();
@@ -179,12 +179,10 @@ export class UsersService {
 
     this.assignIfPresent(payload, 'label', this.toNullableString(source.label));
 
-    const streetAddress = this.toNullableString(
-      source.street_address ?? source.street,
-    );
+    const streetAddress = this.toNullableString(source.address_line);
     if (streetAddress !== null) {
       if (legacyOnly) payload.street = streetAddress;
-      else payload.street_address = streetAddress;
+      else payload.address_line = streetAddress;
     }
 
     this.assignIfPresent(payload, 'city', this.toNullableString(source.city));
@@ -307,7 +305,7 @@ export class UsersService {
 
   async getProfile(userId: string) {
     const { data, error } = await this.supabase.schema('identity_and_user').from('users')
-      .select('id, full_name, email, contact_number, role, status, date_of_birth, created_at')
+      .select('id, full_name, email, contact_number, role, status, created_at')
       .eq('id', userId)
       .order('updated_at', { ascending: false })
       .limit(1)
@@ -409,7 +407,7 @@ export class UsersService {
   }
 
   async updateProfile(userId: string, updates: Record<string, any>) {
-    const allowed = ['full_name', 'contact_number', 'date_of_birth'];
+    const allowed = ['full_name', 'contact_number'];
     const filtered: Record<string, any> = {};
     for (const key of allowed) { if (updates[key] !== undefined) filtered[key] = updates[key]; }
     const { data, error } = await this.supabase
@@ -432,9 +430,7 @@ export class UsersService {
     if (!normalizedStatus) throw new BadRequestException('status is required');
 
     const allowedStatuses = new Set([
-      'pending',
       'active',
-      'rejected',
       'suspended',
       'inactive',
     ]);
@@ -632,11 +628,9 @@ export class UsersService {
     if (!normalizedUserId) throw new BadRequestException('userId is required');
 
     const source = body || {};
-    const normalizedStreetAddress = this.toTrimmedString(
-      source.street_address ?? source.street,
-    );
+    const normalizedStreetAddress = this.toTrimmedString(source.address_line);
     if (!normalizedStreetAddress) {
-      throw new BadRequestException('street_address is required');
+      throw new BadRequestException('address_line is required');
     }
 
     const payloadCandidates = this.buildAddressInsertPayloadCandidates(source);

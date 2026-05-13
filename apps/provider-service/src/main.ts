@@ -1,7 +1,9 @@
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { MicroserviceOptions, Transport } from '@nestjs/microservices';
 import { ProviderServiceModule } from './provider-service.module.js';
 import { enableMicroserviceTracing, ensureKafkaTopics } from '@app/common';
+import { RpcLoggingFilter } from './filters/rpc-logging.filter.js';
 
 async function bootstrap() {
   await ensureKafkaTopics();
@@ -14,6 +16,7 @@ async function bootstrap() {
     },
   });
   enableMicroserviceTracing(app, 'provider-service');
+  app.useGlobalFilters(new RpcLoggingFilter());
   await app.listen();
   console.log('Provider Service is listening on Kafka');
 }

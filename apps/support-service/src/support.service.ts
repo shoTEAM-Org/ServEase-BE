@@ -12,6 +12,7 @@ import {
   AUTH_PATTERNS,
   BOOKING_PATTERNS,
   NOTIFICATION_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 
@@ -28,7 +29,9 @@ export class SupportService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(NOTIFICATION_PATTERNS.SEND_BROADCAST);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_ID);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_IDS);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: SupportService.name,
+    });
   }
 
   private toTrimmedString(value: unknown) {
@@ -89,6 +92,32 @@ export class SupportService implements OnModuleInit {
     }
   }
 
+  private async emitNotifications(bookingId: string, type: string, metadata: any = {}) {
+    try {
+      const booking = await this.getBookingById(bookingId);
+      if (!booking) return;
+      
+      // Emit to customer
+      this.kafka.emit(type, {
+        userId: booking.customer_id,
+        bookingId,
+        type,
+        metadata,
+      });
+      
+      // Emit to provider
+      this.kafka.emit(type, {
+        userId: booking.provider_id,
+        bookingId,
+        type,
+        metadata,
+      });
+    } catch (error) {
+      // Silently fail, notifications are non-critical
+    }
+
+  }
+
   private async getBookingsByIds(bookingIds: unknown) {
     const normalizedIds = Array.from(
       new Set(
@@ -143,13 +172,27 @@ export class SupportService implements OnModuleInit {
     return { ticket: data };
   }
 
-  async createDispute(bookingId: string, userId: string, reason: string) {
+  async createDispute(
+    bookingId: string,
+    userId: string,
+    reason: string,
+    description?: string,
+  ) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     const normalizedUserId = this.toTrimmedString(userId);
     const normalizedReason = this.toTrimmedString(reason);
+    const normalizedDescription = this.toTrimmedString(description) || null;
     if (!normalizedBookingId) throw new BadRequestException('bookingId is required');
     if (!normalizedUserId) throw new BadRequestException('userId is required');
     if (!normalizedReason) throw new BadRequestException('reason is required');
+
+    const booking = await this.getBookingById(normalizedBookingId);
+    if (!booking) throw new NotFoundException('Booking not found');
+    const customerId = this.toTrimmedString(booking?.customer_id);
+    const providerId = this.toTrimmedString(booking?.provider_id);
+    if (normalizedUserId !== customerId && normalizedUserId !== providerId) {
+      throw new NotFoundException('Booking not found');
+    }
 
     const { data, error } = await this.supabase
       .schema('notification_and_support')
@@ -157,14 +200,23 @@ export class SupportService implements OnModuleInit {
       .insert([
         {
           booking_id: normalizedBookingId,
-          raised_by: normalizedUserId,
+          customer_id: customerId || null,
+          provider_id: providerId || null,
           reason: normalizedReason,
+          description: normalizedDescription,
           status: 'open',
         },
       ])
       .select()
       .single();
     if (error) throw new InternalServerErrorException(error.message);
+
+    // Emit notification for dispute creation
+    await this.emitNotifications(normalizedBookingId, NOTIFICATION_PATTERNS.DISPUTE_CREATED, {
+      raisedBy: normalizedUserId,
+      reason: normalizedReason,
+    });
+
     return { dispute: data };
   }
 
@@ -225,7 +277,8 @@ export class SupportService implements OnModuleInit {
               this.toTrimmedString(dispute?.booking_id),
             );
             return [
-              dispute?.raised_by,
+              dispute?.customer_id,
+              dispute?.provider_id,
               booking?.customer_id,
               booking?.provider_id,
             ];
@@ -254,9 +307,6 @@ export class SupportService implements OnModuleInit {
       const provider = usersById.get(
         this.toTrimmedString(booking?.provider_id),
       );
-      const raisedBy = usersById.get(
-        this.toTrimmedString(dispute?.raised_by),
-      );
 
       return {
         ...dispute,
@@ -267,11 +317,9 @@ export class SupportService implements OnModuleInit {
         customer_id: this.toTrimmedString(booking?.customer_id) || null,
         provider_id: this.toTrimmedString(booking?.provider_id) || null,
         customer_name:
-          this.toTrimmedString(customer?.full_name) ||
-          this.toTrimmedString(raisedBy?.full_name),
+          this.toTrimmedString(customer?.full_name),
         customer_email:
-          this.toTrimmedString(customer?.email) ||
-          this.toTrimmedString(raisedBy?.email),
+          this.toTrimmedString(customer?.email),
         provider_name: this.toTrimmedString(provider?.full_name),
         provider_email: this.toTrimmedString(provider?.email),
         amount: Number(dispute?.amount ?? booking?.total_amount ?? 0),
@@ -340,8 +388,8 @@ export class SupportService implements OnModuleInit {
       .schema('notification_and_support')
       .from('support_tickets')
       .update({ status: normalizedStatus })
-      .eq('id', normalizedId)
-      .select('id');
+      .eq('ticket_id', normalizedId)
+      .select('ticket_id');
     if (error) throw new BadRequestException(error.message);
     if (!data || data.length === 0) {
       throw new NotFoundException(`Support ticket ${normalizedId} not found`);

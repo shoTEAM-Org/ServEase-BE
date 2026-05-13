@@ -15,6 +15,7 @@ import {
   PAYMENT_PATTERNS,
   PROVIDER_PATTERNS,
   SUPPORT_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 
@@ -45,6 +46,7 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_ALL);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_ONGOING);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_ANALYTICS);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.UPDATE_STATUS);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.GET_DISPUTES);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.UPDATE_DISPUTE_STATUS);
@@ -78,7 +80,9 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_COMPLIANCE_REPORT);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.GET_COMMISSION);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.UPDATE_COMMISSION);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: AdminService.name,
+    });
   }
 
   private async request<T = any>(pattern: string, payload: unknown): Promise<T> {

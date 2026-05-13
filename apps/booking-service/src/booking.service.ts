@@ -2,6 +2,7 @@ import {
   Inject,
   Injectable,
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   InternalServerErrorException,
   Logger,
@@ -16,12 +17,22 @@ import {
   PAYMENT_PATTERNS,
   PricingEngine,
   SUPPORT_PATTERNS,
+  NOTIFICATION_PATTERNS,
+  calculatePricingQuote,
+  connectKafkaClientWithRetry,
+  type FuelFreshness,
+  type FuelType,
+  type JobComplexity,
+  type PricingMode,
+  type PricingUrgency,
+  type RadiusTier,
+  type VehicleType,
   sendKafkaRpcRequest,
 } from '@app/common';
 
 @Injectable()
 export class BookingService implements OnModuleInit {
-  private readonly availabilitySchemas = ['booking', 'booking_svc'] as const;
+  private readonly availabilitySchemas = ['booking'] as const;
   private readonly logger = new Logger(BookingService.name);
 
   constructor(
@@ -33,9 +44,47 @@ export class BookingService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_TRAVEL_PROFILE);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_LABOR_BASELINE);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PRICING_LOCATION);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROVIDER_SERVICE_FOR_BOOKING);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
-    await this.kafka.connect();
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.UPDATE_AMOUNT);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.GET_COMMISSION_RATE);
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: BookingService.name,
+      logger: this.logger,
+    });
+  }
+
+  private async emitNotifications(bookingId: string, type: string, metadata: any = {}) {
+    try {
+      const booking = await this.getBookingRowByIdentifier(
+        bookingId,
+        'id, customer_id, provider_id',
+      );
+      if (!booking) return;
+      
+      // Emit to customer
+      this.kafka.emit(type, {
+        userId: booking.customer_id,
+        bookingId,
+        type,
+        metadata,
+      });
+      
+      // Emit to provider
+      this.kafka.emit(type, {
+        userId: booking.provider_id,
+        bookingId,
+        type,
+        metadata,
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to emit notification for booking ${bookingId}:`, error);
+    }
   }
 
   private toTrimmedString(value: unknown) {
@@ -53,8 +102,9 @@ export class BookingService implements OnModuleInit {
   }
 
   private toNullableString(value: unknown): string | null {
-    const parsed = this.toTrimmedString(value);
-    return parsed || null;
+    if (typeof value === 'string') return value.trim() || null;
+    if (value === null || value === undefined) return null;
+    return String(value).trim() || null;
   }
   private toBoolean(value: unknown, fallback = false) {
     if (typeof value === 'boolean') return value;
@@ -65,6 +115,272 @@ export class BookingService implements OnModuleInit {
       if (['false', '0', 'no', 'n'].includes(normalized)) return false;
     }
     return fallback;
+  }
+
+  private normalizeFuelType(value: unknown): FuelType {
+    return this.toTrimmedString(value).toLowerCase() === 'diesel'
+      ? 'diesel'
+      : 'gasoline';
+  }
+
+  private normalizePricingMode(value: unknown): PricingMode {
+    return this.toTrimmedString(value).toLowerCase() === 'hourly'
+      ? 'hourly'
+      : 'flat';
+  }
+
+  private normalizeRadiusTier(value: unknown): RadiusTier {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['extended', 'far', 'outside'].includes(normalized)) {
+      return normalized as RadiusTier;
+    }
+    return 'base';
+  }
+
+  private normalizeJobComplexity(value: unknown): JobComplexity {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['simple', 'complex'].includes(normalized)) {
+      return normalized as JobComplexity;
+    }
+    return 'standard';
+  }
+
+  private normalizePricingUrgency(value: unknown): PricingUrgency {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['same_day', 'urgent'].includes(normalized)) {
+      return normalized as PricingUrgency;
+    }
+    return 'scheduled';
+  }
+
+  private normalizeVehicleType(value: unknown): VehicleType {
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (['car', 'van'].includes(normalized)) return normalized as VehicleType;
+    return 'motorcycle';
+  }
+
+  private async getFuelBaseline(fuelType: FuelType) {
+    const liveFuel = await this.fetchLiveFuelBaseline(fuelType);
+    if (liveFuel) return liveFuel;
+
+    const now = Date.now();
+    const { data } = await this.supabase
+      .schema('booking')
+      .from('fuel_price_cache')
+      .select('fuel_type, price_per_liter, source_name, source_url, fetched_at, valid_until')
+      .eq('country_code', 'PH')
+      .eq('fuel_type', fuelType)
+      .order('fetched_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (data) {
+      const fetchedAt = this.toTrimmedString(data.fetched_at) || new Date().toISOString();
+      const validUntil = this.toTrimmedString(data.valid_until);
+      const ageMs = now - new Date(fetchedAt).getTime();
+      const freshness: FuelFreshness =
+        validUntil && new Date(validUntil).getTime() >= now
+          ? 'fresh'
+          : ageMs <= 24 * 60 * 60 * 1000
+            ? 'cached'
+            : 'stale';
+
+      return {
+        fuelType,
+        pricePerLiter: Number(data.price_per_liter) || this.defaultFuelPrice(fuelType),
+        sourceName: this.toTrimmedString(data.source_name) || 'Fuel price cache',
+        sourceUrl: this.toTrimmedString(data.source_url) || undefined,
+        fetchedAt,
+        freshness,
+      };
+    }
+
+    return {
+      fuelType,
+      pricePerLiter: this.defaultFuelPrice(fuelType),
+      sourceName: 'ServEase default fuel baseline',
+      fetchedAt: new Date().toISOString(),
+      freshness: 'default' as FuelFreshness,
+    };
+  }
+
+  private async fetchLiveFuelBaseline(fuelType: FuelType) {
+    const url = this.toTrimmedString(process.env.SERVEASE_FUEL_PRICE_URL);
+    if (!url) return null;
+
+    try {
+      const response = await fetch(url, {
+        headers: { accept: 'application/json' },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (!response.ok) return null;
+      const payload = await response.json();
+      const price =
+        this.extractFuelPrice(payload, fuelType) ||
+        this.extractFuelPrice(payload?.prices, fuelType) ||
+        this.extractFuelPrice(payload?.data, fuelType);
+      if (!price) return null;
+
+      const fetchedAt =
+        this.toTrimmedString(payload?.fetched_at) ||
+        this.toTrimmedString(payload?.updated_at) ||
+        new Date().toISOString();
+      const sourceName =
+        this.toTrimmedString(payload?.source_name) || 'Configured live fuel source';
+      const sourceUrl = this.toTrimmedString(payload?.source_url) || url;
+
+      await this.supabase
+        .schema('booking')
+        .from('fuel_price_cache')
+        .insert([
+          {
+            country_code: 'PH',
+            fuel_type: fuelType,
+            price_per_liter: price,
+            currency: 'PHP',
+            source_name: sourceName,
+            source_url: sourceUrl,
+            fetched_at: fetchedAt,
+            valid_until: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+            raw_payload: payload,
+          },
+        ]);
+
+      return {
+        fuelType,
+        pricePerLiter: price,
+        sourceName,
+        sourceUrl,
+        fetchedAt,
+        freshness: 'fresh' as FuelFreshness,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `fuel price live fetch degraded: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      return null;
+    }
+  }
+
+  private extractFuelPrice(payload: any, fuelType: FuelType) {
+    if (!payload || typeof payload !== 'object') return null;
+    const keys =
+      fuelType === 'diesel'
+        ? ['diesel', 'diesel_price', 'diesel_php', 'diesel_price_per_liter']
+        : ['gasoline', 'gasoline_price', 'gasoline_php', 'gasoline_price_per_liter', 'petrol'];
+    for (const key of keys) {
+      const value = this.toNullableNumber(payload[key]);
+      if (value && value > 0) return value;
+    }
+    return null;
+  }
+
+  private defaultFuelPrice(fuelType: FuelType) {
+    const envKey =
+      fuelType === 'diesel'
+        ? 'SERVEASE_DEFAULT_DIESEL_PRICE_PHP'
+        : 'SERVEASE_DEFAULT_GASOLINE_PRICE_PHP';
+    const configured = this.toNullableNumber(process.env[envKey]);
+    return configured && configured > 0 ? configured : fuelType === 'diesel' ? 60 : 65;
+  }
+
+  private async getProviderTravelProfile(providerId: string) {
+    try {
+      const result = await sendKafkaRpcRequest<{ vehicleType: VehicleType; fuelType: FuelType; fuelEfficiencyKmPerLiter: number } | null>(
+        () => this.kafka.send(PROVIDER_PATTERNS.GET_TRAVEL_PROFILE, { provider_id: providerId }),
+        { context: PROVIDER_PATTERNS.GET_TRAVEL_PROFILE },
+      );
+      return result ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async getLaborBaseline(serviceId: string, pricingMode: PricingMode, hoursRequired: number) {
+    if (!serviceId) return undefined;
+    try {
+      const result = await sendKafkaRpcRequest<{ minLaborAmount: number; maxLaborAmount: number; typicalLaborAmount: number; sourceNote: string } | null>(
+        () => this.kafka.send(PROVIDER_PATTERNS.GET_LABOR_BASELINE, { service_id: serviceId, pricing_mode: pricingMode, hours_required: hoursRequired }),
+        { context: PROVIDER_PATTERNS.GET_LABOR_BASELINE },
+      );
+      return result ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async getProviderTravelContext(providerId: string, dto: any): Promise<{
+    radiusTier: RadiusTier;
+    distanceKm?: number;
+    serviceRadiusKm: number;
+    providerBaseMissing: boolean;
+    providerCoordinates?: { latitude: number; longitude: number };
+    serviceCoordinates?: { latitude: number; longitude: number };
+  }> {
+    const requestedTier = this.toTrimmedString(dto?.radius_tier);
+
+    let location: { service_radius_km?: unknown; home_latitude?: unknown; home_longitude?: unknown } | null = null;
+    try {
+      location = await sendKafkaRpcRequest<{
+        service_radius_km?: unknown;
+        home_latitude?: unknown;
+        home_longitude?: unknown;
+      } | null>(
+        () => this.kafka.send(PROVIDER_PATTERNS.GET_PRICING_LOCATION, { provider_id: providerId }),
+        { context: PROVIDER_PATTERNS.GET_PRICING_LOCATION },
+      );
+    } catch {
+      // fall through — null location triggers providerBaseMissing path below
+    }
+    const serviceRadius = this.toNullableNumber(location?.service_radius_km) || 10;
+    const providerLat = this.toNullableNumber(location?.home_latitude);
+    const providerLng = this.toNullableNumber(location?.home_longitude);
+    const serviceLat = this.toNullableNumber(dto?.service_latitude);
+    const serviceLng = this.toNullableNumber(dto?.service_longitude);
+    const providerBaseMissing = providerLat === null || providerLng === null;
+    const requestedRadiusTier = requestedTier ? this.normalizeRadiusTier(requestedTier) : null;
+
+    if (
+      providerBaseMissing ||
+      serviceLat === null ||
+      serviceLng === null
+    ) {
+      return {
+        radiusTier: requestedRadiusTier || 'base',
+        serviceRadiusKm: serviceRadius,
+        providerBaseMissing,
+        providerCoordinates: providerBaseMissing ? undefined : { latitude: providerLat as number, longitude: providerLng as number },
+        serviceCoordinates: serviceLat === null || serviceLng === null ? undefined : { latitude: serviceLat, longitude: serviceLng },
+      };
+    }
+
+    const distanceKm = this.haversineKm(providerLat, providerLng, serviceLat, serviceLng);
+    let radiusTier: RadiusTier = 'outside';
+    if (requestedRadiusTier) radiusTier = requestedRadiusTier;
+    else if (distanceKm <= serviceRadius) radiusTier = 'base';
+    else if (distanceKm <= serviceRadius * 2) radiusTier = 'extended';
+    else if (distanceKm <= serviceRadius * 3) radiusTier = 'far';
+    return {
+      radiusTier,
+      distanceKm,
+      serviceRadiusKm: serviceRadius,
+      providerBaseMissing: false,
+      providerCoordinates: { latitude: providerLat, longitude: providerLng },
+      serviceCoordinates: { latitude: serviceLat, longitude: serviceLng },
+    };
+  }
+
+  private haversineKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+    const toRad = (value: number) => (value * Math.PI) / 180;
+    const earthRadiusKm = 6371;
+    const deltaLat = toRad(lat2 - lat1);
+    const deltaLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(deltaLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) *
+        Math.cos(toRad(lat2)) *
+        Math.sin(deltaLon / 2) ** 2;
+    return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
   private allowUnverifiedProviderBooking() {
@@ -131,11 +447,151 @@ export class BookingService implements OnModuleInit {
 
   private resolveServiceTitle(booking: any) {
     return (
-      this.toTrimmedString(booking?.service_description) ||
       this.toTrimmedString(booking?.service_title) ||
       this.toTrimmedString(booking?.service_name) ||
+      this.toTrimmedString(booking?.service_description) ||
       ''
     );
+  }
+
+  private async getProviderServiceForBooking(
+    providerId: string,
+    providerServiceId: string,
+    serviceId: string,
+  ) {
+    try {
+      const result = await sendKafkaRpcRequest<Record<string, any> | null>(
+        () => this.kafka.send(PROVIDER_PATTERNS.GET_PROVIDER_SERVICE_FOR_BOOKING, {
+          provider_id: providerId,
+          provider_service_id: providerServiceId || undefined,
+          service_id: serviceId || undefined,
+        }),
+        { context: PROVIDER_PATTERNS.GET_PROVIDER_SERVICE_FOR_BOOKING },
+      );
+      return result ?? null;
+    } catch (error: any) {
+      throw new InternalServerErrorException(error?.message || 'Failed to fetch provider service');
+    }
+  }
+
+  private timeStringToMinutes(value: unknown): number | null {
+    const normalized = this.normalizeTime(value);
+    if (!normalized) return null;
+    const [hour, minute] = normalized.split(':').map(Number);
+    if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+    return hour * 60 + minute;
+  }
+
+  private rangesOverlap(
+    start: number,
+    end: number,
+    blockedStart: number,
+    blockedEnd: number,
+  ) {
+    return start < blockedEnd && end > blockedStart;
+  }
+
+  private getManilaScheduleParts(value: string) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Manila',
+      weekday: 'long',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }).formatToParts(date);
+
+    const byType = new Map(parts.map((part) => [part.type, part.value]));
+    const year = byType.get('year');
+    const month = byType.get('month');
+    const day = byType.get('day');
+    const weekday = byType.get('weekday') || '';
+    let hour = Number(byType.get('hour'));
+    const minute = Number(byType.get('minute'));
+
+    if (!year || !month || !day || !Number.isFinite(hour) || !Number.isFinite(minute)) {
+      return null;
+    }
+    if (hour === 24) hour = 0;
+
+    return {
+      date: `${year}-${month}-${day}`,
+      weekday,
+      minutes: hour * 60 + minute,
+    };
+  }
+
+  private async getAvailabilityBlockReason(
+    providerId: string,
+    scheduledAt: string,
+    hoursRequired: number,
+  ) {
+    const scheduleParts = this.getManilaScheduleParts(scheduledAt);
+    if (!scheduleParts) throw new BadRequestException('scheduled_at is invalid');
+
+    const { weeklySchedule, availabilityWindows, daysOff } = await this.getProviderAvailabilityWithClient(
+      this.supabase,
+      providerId,
+    );
+
+    const isDayOff = (daysOff || []).some(
+      (day: any) => this.normalizeOffDate(day?.off_date) === scheduleParts.date,
+    );
+    if (isDayOff) return 'Provider is unavailable on this date.';
+
+    const requestedStart = scheduleParts.minutes;
+    const requestedEnd = requestedStart + hoursRequired * 60;
+    const activeWindows = (availabilityWindows || []).filter(
+      (window: any) =>
+        this.normalizeWeekdayKey(window?.day_of_week) === scheduleParts.weekday &&
+        this.toBoolean(window?.is_active, true),
+    );
+
+    if (activeWindows.length) {
+      const fitsWindow = activeWindows.some((window: any) => {
+        const startTime = this.timeStringToMinutes(window?.start_time);
+        const endTime = this.timeStringToMinutes(window?.end_time);
+        return startTime !== null && endTime !== null && requestedStart >= startTime && requestedEnd <= endTime;
+      });
+      return fitsWindow ? null : 'Selected time is outside the provider schedule.';
+    }
+
+    if (!weeklySchedule?.length) return null;
+
+    const day = weeklySchedule.find(
+      (item: any) =>
+        this.normalizeWeekdayKey(item?.day_of_week) === scheduleParts.weekday,
+    );
+    if (!day || !this.toBoolean(day?.is_active, false)) {
+      return 'Provider is not accepting bookings on this day.';
+    }
+
+    const startTime = this.timeStringToMinutes(day?.start_time);
+    const endTime = this.timeStringToMinutes(day?.end_time);
+    if (startTime === null || endTime === null) {
+      return 'Provider schedule is incomplete for this day.';
+    }
+
+    if (requestedStart < startTime || requestedEnd > endTime) {
+      return 'Selected time is outside the provider schedule.';
+    }
+
+    const breakStart = this.timeStringToMinutes(day?.break_start_time);
+    const breakEnd = this.timeStringToMinutes(day?.break_end_time);
+    if (
+      breakStart !== null &&
+      breakEnd !== null &&
+      this.rangesOverlap(requestedStart, requestedEnd, breakStart, breakEnd)
+    ) {
+      return 'Selected time overlaps with the provider break.';
+    }
+
+    return null;
   }
 
   private normalizeStatusKey(value: unknown): string {
@@ -253,7 +709,17 @@ export class BookingService implements OnModuleInit {
   }
 
   private normalizeWeekdayKey(value: unknown): string {
-    return this.toTrimmedString(value).toLowerCase();
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    const weekdays: Record<string, string> = {
+      monday: 'Monday',
+      tuesday: 'Tuesday',
+      wednesday: 'Wednesday',
+      thursday: 'Thursday',
+      friday: 'Friday',
+      saturday: 'Saturday',
+      sunday: 'Sunday',
+    };
+    return weekdays[normalized] || '';
   }
 
   private normalizeOffDate(value: unknown): string | null {
@@ -317,13 +783,21 @@ export class BookingService implements OnModuleInit {
     const normalizedUserId = this.toTrimmedString(userId);
     if (!normalizedUserId) return null;
 
-    const response = await sendKafkaRpcRequest(
-      () =>
-        this.kafka.send(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS, {
-          userIds: [normalizedUserId],
-        }),
-      { context: PROVIDER_PATTERNS.GET_PROFILES_BY_IDS },
-    );
+    let response: any = null;
+    try {
+      response = await sendKafkaRpcRequest(
+        () =>
+          this.kafka.send(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS, {
+            userIds: [normalizedUserId],
+          }),
+        { context: PROVIDER_PATTERNS.GET_PROFILES_BY_IDS, timeoutMs: 2500, retries: 0 },
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `${PROVIDER_PATTERNS.GET_PROFILES_BY_IDS} degraded: ${this.toTrimmedString(error?.message)}`,
+      );
+      return null;
+    }
 
     const profiles =
       response && typeof response === 'object' && 'profiles' in response
@@ -369,6 +843,56 @@ export class BookingService implements OnModuleInit {
       .filter(Boolean) as Record<string, any>[];
   }
 
+  private normalizeAvailabilityWindowRows(userId: string, source: unknown) {
+    if (!Array.isArray(source)) return [] as Record<string, any>[];
+
+    return source.flatMap((row: any, dayIndex) => {
+      const dayOfWeek = this.normalizeWeekdayKey(row?.day_of_week ?? row?.dayOfWeek);
+      const isActive = this.toBoolean(row?.is_active ?? row?.isActive, true);
+      const windows = Array.isArray(row?.windows) ? row.windows : [];
+      if (!dayOfWeek || !isActive) return [];
+
+      return windows
+        .map((window: any, windowIndex: number) => ({
+          user_id: userId,
+          day_of_week: dayOfWeek,
+          start_time: this.normalizeTime(window?.start_time ?? window?.startTime),
+          end_time: this.normalizeTime(window?.end_time ?? window?.endTime),
+          is_active: this.toBoolean(window?.is_active ?? window?.isActive, true),
+          sort_order: Number.isFinite(Number(window?.sort_order ?? window?.sortOrder))
+            ? Number(window?.sort_order ?? window?.sortOrder)
+            : dayIndex * 10 + windowIndex,
+        }))
+        .filter((window: Record<string, any>) => window.start_time && window.end_time);
+    });
+  }
+
+  private buildWindowsFromLegacySchedule(weeklySchedule: any[]) {
+    return (weeklySchedule || []).flatMap((day: any) => {
+      const dayOfWeek = this.normalizeWeekdayKey(day?.day_of_week);
+      if (!dayOfWeek || !this.toBoolean(day?.is_active, false)) return [];
+
+      const startTime = this.normalizeTime(day?.start_time);
+      const endTime = this.normalizeTime(day?.end_time);
+      const breakStart = this.normalizeTime(day?.break_start_time);
+      const breakEnd = this.normalizeTime(day?.break_end_time);
+      if (!startTime || !endTime) return [];
+
+      if (breakStart && breakEnd) {
+        return [
+          { day_of_week: dayOfWeek, start_time: startTime, end_time: breakStart, is_active: true, sort_order: 0 },
+          { day_of_week: dayOfWeek, start_time: breakEnd, end_time: endTime, is_active: true, sort_order: 1 },
+        ].filter((window) => {
+          const start = this.timeStringToMinutes(window.start_time);
+          const end = this.timeStringToMinutes(window.end_time);
+          return start !== null && end !== null && end > start;
+        });
+      }
+
+      return [{ day_of_week: dayOfWeek, start_time: startTime, end_time: endTime, is_active: true, sort_order: 0 }];
+    });
+  }
+
   private async getProviderAvailabilityWithClient(
     client: SupabaseClient,
     userId: string,
@@ -376,7 +900,7 @@ export class BookingService implements OnModuleInit {
     let lastError: any = null;
 
     for (const schemaName of this.availabilitySchemas) {
-      const [weeklyResult, daysOffResult] = await Promise.all([
+      const [weeklyResult, windowsResult, daysOffResult] = await Promise.all([
         client
           .schema(schemaName)
           .from('provider_availability')
@@ -384,20 +908,32 @@ export class BookingService implements OnModuleInit {
           .eq('user_id', userId),
         client
           .schema(schemaName)
+          .from('provider_availability_windows')
+          .select('*')
+          .eq('user_id', userId)
+          .order('sort_order', { ascending: true })
+          .order('start_time', { ascending: true }),
+        client
+          .schema(schemaName)
           .from('provider_days_off')
           .select('*')
           .eq('user_id', userId),
       ]);
+      const windowsMissing = Boolean(windowsResult.error && this.isMissingRelationError(windowsResult.error));
 
-      if (!weeklyResult.error && !daysOffResult.error) {
+      if (!weeklyResult.error && !daysOffResult.error && (!windowsResult.error || windowsMissing)) {
         const normalizedDaysOff = (daysOffResult.data || []).map((row: any) => ({
           ...row,
           off_date: this.normalizeOffDate(row?.off_date) || row?.off_date,
         }));
-        return { weeklySchedule: weeklyResult.data || [], daysOff: normalizedDaysOff };
+        const weeklySchedule = weeklyResult.data || [];
+        const availabilityWindows = windowsMissing || !windowsResult.data?.length
+          ? this.buildWindowsFromLegacySchedule(weeklySchedule)
+          : windowsResult.data || [];
+        return { weeklySchedule, availabilityWindows, daysOff: normalizedDaysOff };
       }
 
-      const combinedErrors = [weeklyResult.error, daysOffResult.error].filter(Boolean);
+      const combinedErrors = [weeklyResult.error, windowsMissing ? null : windowsResult.error, daysOffResult.error].filter(Boolean);
       const permissionError = combinedErrors.find((error) =>
         this.isPermissionDeniedError(error),
       );
@@ -420,6 +956,7 @@ export class BookingService implements OnModuleInit {
     body: any,
   ) {
     const weeklyRows = this.normalizeWeeklyScheduleRows(userId, body?.weeklySchedule);
+    const windowRows = this.normalizeAvailabilityWindowRows(userId, body?.weeklySchedule);
     const daysOffRows = this.normalizeDaysOffRows(userId, body?.daysOff);
     const includesWeeklySchedule = body?.weeklySchedule !== undefined;
     const includesDaysOff = body?.daysOff !== undefined;
@@ -430,6 +967,40 @@ export class BookingService implements OnModuleInit {
       let operationError: any = null;
 
       if (includesWeeklySchedule) {
+        const existingWindowsResult = await client
+          .schema(schemaName)
+          .from('provider_availability_windows')
+          .select('id')
+          .eq('user_id', userId);
+
+        if (existingWindowsResult.error && !this.isMissingRelationError(existingWindowsResult.error)) {
+          operationError = existingWindowsResult.error;
+        }
+
+        if (!operationError && !existingWindowsResult.error) {
+          const existingWindowIds = (existingWindowsResult.data || [])
+            .map((row: any) => this.toTrimmedString(row?.id))
+            .filter(Boolean);
+
+          if (existingWindowIds.length) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_availability_windows')
+              .delete()
+              .in('id', existingWindowIds)
+              .eq('user_id', userId);
+            if (error) operationError = error;
+          }
+
+          if (!operationError && windowRows.length) {
+            const { error } = await client
+              .schema(schemaName)
+              .from('provider_availability_windows')
+              .insert(windowRows);
+            if (error) operationError = error;
+          }
+        }
+
         const existingAvailabilityResult = await client
           .schema(schemaName)
           .from('provider_availability')
@@ -950,6 +1521,11 @@ export class BookingService implements OnModuleInit {
         .single();
 
       if (!insertResult.error) {
+        // Add initial timeline event for booking creation (fire and forget)
+        this.addTimelineEventForStatusChange(insertResult.data.id, 'pending').catch(() => {
+          // Silently ignore timeline errors
+        });
+        
         return insertResult.data;
       }
 
@@ -1006,6 +1582,9 @@ export class BookingService implements OnModuleInit {
     const normalizedProviderId = this.toTrimmedString(dto?.provider_id);
     const normalizedCustomerId = this.toTrimmedString(customerId);
     const normalizedServiceId = this.toTrimmedString(dto?.service_id);
+    const normalizedProviderServiceId = this.toTrimmedString(
+      dto?.provider_service_id,
+    );
     const normalizedScheduledAt = this.toTrimmedString(dto?.scheduled_at);
     this.assertRequiredCreateBookingFields(
       normalizedProviderId,
@@ -1015,6 +1594,58 @@ export class BookingService implements OnModuleInit {
     );
     await this.ensureProviderCanBeBooked(normalizedProviderId);
 
+    const providerService = await this.getProviderServiceForBooking(
+      normalizedProviderId,
+      normalizedProviderServiceId,
+      normalizedServiceId,
+    );
+    const requestedPricingMode = this.toTrimmedString(
+      dto?.pricing_mode,
+    ).toLowerCase();
+    const providerPricingMode = this.toTrimmedString(
+      providerService?.pricing_mode,
+    ).toLowerCase();
+    const normalizedPricingMode = ['hourly', 'flat'].includes(
+      requestedPricingMode,
+    )
+      ? requestedPricingMode
+      : ['hourly', 'flat'].includes(providerPricingMode)
+        ? providerPricingMode
+        : 'flat';
+    const normalizedHoursRequired = Math.max(
+      1,
+      Number(this.toNullableNumber(dto?.hours_required) || 1),
+    );
+    const hourlyRate = this.toNullableNumber(dto?.hourly_rate);
+    const flatRate = this.toNullableNumber(dto?.flat_rate);
+    const providerPrice = this.toNullableNumber(providerService?.price);
+    const serviceAmountCandidate = this.toNullableNumber(dto?.service_amount);
+    const totalAmountCandidate = this.toNullableNumber(dto?.total_amount);
+    const unitAmount =
+      normalizedPricingMode === 'hourly'
+        ? (providerPrice ?? hourlyRate ?? flatRate ?? serviceAmountCandidate ?? 0)
+        : (providerPrice ?? flatRate ?? hourlyRate ?? serviceAmountCandidate ?? 0);
+    const computedAmount =
+      normalizedPricingMode === 'hourly'
+        ? unitAmount * normalizedHoursRequired
+        : unitAmount;
+    const serviceAmount = providerService
+      ? computedAmount
+      : serviceAmountCandidate ?? computedAmount;
+    const totalAmount = providerService
+      ? serviceAmount
+      : totalAmountCandidate ?? serviceAmount;
+    const pricingQuoteResult = await this.getPricingQuote({
+      ...dto,
+      provider_id: normalizedProviderId,
+      provider_service_id: normalizedProviderServiceId,
+      service_id: normalizedServiceId,
+      hours_required: normalizedHoursRequired,
+      booking_amount: totalAmount,
+      service_latitude: dto?.service_latitude,
+      service_longitude: dto?.service_longitude,
+    });
+    const pricingSnapshot = pricingQuoteResult?.pricing_quote ?? PricingEngine.quote(dto || {});
     const pricingQuote = PricingEngine.quote(dto || {});
     const normalizedServiceLocationType =
       this.toTrimmedString(dto?.service_location_type).toLowerCase() ===
@@ -1024,11 +1655,29 @@ export class BookingService implements OnModuleInit {
     const normalizedPaymentMethod =
       this.toTrimmedString(dto?.payment_method).toLowerCase() ||
       'cash_on_service';
+    const serviceTitle =
+      this.toNullableString(dto?.service_title) ||
+      this.toNullableString(dto?.service_name) ||
+      this.toNullableString(providerService?.title) ||
+      this.toNullableString(dto?.service_description) ||
+      'Service booking';
     const serviceDescription =
-      this.toTrimmedString(
-        dto?.service_description || dto?.service_name || dto?.service_title,
-      ) || null;
-    const bookingRef = `BKG-${randomUUID().slice(0, 8).toUpperCase()}`;
+      this.toNullableString(dto?.service_description) ||
+      this.toNullableString(providerService?.description) ||
+      serviceTitle;
+
+    const availability = await this.checkAvailability(
+      normalizedProviderId,
+      normalizedScheduledAt,
+      String(normalizedHoursRequired),
+    );
+    if (!availability.available) {
+      throw new BadRequestException(
+        availability.reason || 'Selected time is unavailable.',
+      );
+    }
+
+    const bookingRef = `BKG-${Math.floor(100000 + Math.random() * 900000)}`;
 
     const baseInsertPayload: Record<string, any> = {
       id: randomUUID(),
@@ -1036,17 +1685,24 @@ export class BookingService implements OnModuleInit {
       customer_id: normalizedCustomerId,
       provider_id: normalizedProviderId,
       service_id: normalizedServiceId,
+      service_title: serviceTitle,
+      service_name: serviceTitle,
       service_description: serviceDescription,
       service_address: this.toTrimmedString(dto?.service_address),
       service_location_type: normalizedServiceLocationType,
       scheduled_at: normalizedScheduledAt,
-      pricing_mode: pricingQuote.pricing_mode,
-      hourly_rate: pricingQuote.hourly_rate,
-      flat_rate: pricingQuote.flat_rate,
-      hours_required: pricingQuote.hours_required,
-      total_amount: pricingQuote.total_amount,
+      hours_required: normalizedHoursRequired,
+      service_amount: serviceAmount,
+      additional_amount: 0,
+      total_amount: totalAmount,
+      pricing_mode: normalizedPricingMode,
+      hourly_rate: hourlyRate ?? null,
+      flat_rate: flatRate ?? null,
       payment_method: normalizedPaymentMethod,
       customer_notes: this.toNullableString(dto?.customer_notes),
+      service_latitude: this.toNullableNumber(dto?.service_latitude),
+      service_longitude: this.toNullableNumber(dto?.service_longitude),
+      pricing_snapshot: pricingSnapshot,
       status: 'pending',
     };
 
@@ -1057,9 +1713,120 @@ export class BookingService implements OnModuleInit {
 
     return {
       message: 'Booking successfully created!',
-      booking: newBooking,
-      pricing: pricingQuote,
-      payment: paymentResult?.payment || null,
+      booking: {
+        ...newBooking,
+        provider_service_id:
+          normalizedProviderServiceId || this.toTrimmedString(providerService?.id),
+        pricing_mode: normalizedPricingMode,
+        pricing_snapshot: pricingSnapshot,
+        service_title: this.resolveServiceTitle(newBooking) || serviceTitle,
+        service_name: this.resolveServiceTitle(newBooking) || serviceTitle,
+      },
+    };
+  }
+
+  async getPricingQuote(dto: any) {
+    const normalizedProviderId = this.toTrimmedString(dto?.provider_id);
+    const normalizedServiceId = this.toTrimmedString(dto?.service_id);
+    const normalizedProviderServiceId = this.toTrimmedString(dto?.provider_service_id);
+    if (!normalizedProviderId) throw new BadRequestException('provider_id is required');
+    if (!normalizedServiceId && !normalizedProviderServiceId) {
+      throw new BadRequestException('service_id or provider_service_id is required');
+    }
+
+    const providerService = await this.getProviderServiceForBooking(
+      normalizedProviderId,
+      normalizedProviderServiceId,
+      normalizedServiceId,
+    );
+    if (!providerService) throw new NotFoundException('Provider service not found');
+
+    const pricingMode = this.normalizePricingMode(providerService.pricing_mode);
+    const providerPrice = this.toNullableNumber(providerService.price) || 0;
+    const hoursRequired = Math.max(1, Number(this.toNullableNumber(dto?.hours_required) || 1));
+    const laborAmount = pricingMode === 'hourly' ? providerPrice * hoursRequired : providerPrice;
+    const vehicle = await this.getProviderTravelProfile(normalizedProviderId);
+    const fuelType = this.normalizeFuelType(vehicle?.fuelType);
+    const fuel = await this.getFuelBaseline(fuelType);
+    const travelContext = await this.getProviderTravelContext(normalizedProviderId, dto);
+    const laborBaseline = await this.getLaborBaseline(
+      this.toTrimmedString(providerService.service_id) || normalizedServiceId,
+      pricingMode,
+      hoursRequired,
+    );
+
+    const pricingQuote = calculatePricingQuote({
+      pricingMode,
+      providerPrice,
+      hoursRequired,
+      bookingAmount: this.toNullableNumber(dto?.booking_amount) ?? laborAmount,
+      radiusTier: travelContext.radiusTier,
+      distanceKm: travelContext.distanceKm,
+      serviceRadiusKm: travelContext.serviceRadiusKm,
+      providerCoordinates: travelContext.providerCoordinates,
+      serviceCoordinates: travelContext.serviceCoordinates,
+      jobComplexity: this.normalizeJobComplexity(dto?.job_complexity),
+      urgency: this.normalizePricingUrgency(dto?.urgency),
+      vehicle,
+      fuel,
+      laborBaseline,
+      providerBaseMissing: travelContext.providerBaseMissing,
+    });
+    if (travelContext.providerBaseMissing) {
+      pricingQuote.assumptions.push('Provider service base is not set; travel tier uses base-radius fallback.');
+    }
+
+    const bookingId = this.toTrimmedString(dto?.booking_id);
+    if (bookingId) {
+      const materialsAmount = this.toNullableNumber(dto?.materials_amount) ?? 0;
+      const baseBookingFee = this.toNullableNumber(providerService.base_booking_fee) ?? 50.00;
+      this.kafka.emit(PAYMENT_PATTERNS.SAVE_PRICE_QUOTE, {
+        booking_id: bookingId,
+        service_id: this.toTrimmedString(providerService.id) || null,
+        base_booking_fee: baseBookingFee,
+        effort_amount: pricingQuote.laborAmount,
+        travel_fee: pricingQuote.travelAdjustment,
+        fuel_adjustment: pricingQuote.operatingBuffer,
+        materials_amount: materialsAmount,
+        base_effort_pool: baseBookingFee + pricingQuote.laborAmount,
+        total_amount: (baseBookingFee + pricingQuote.laborAmount) + pricingQuote.travelAdjustment + pricingQuote.operatingBuffer + materialsAmount,
+        units: hoursRequired,
+        distance_km: pricingQuote.distanceKm ?? null,
+        expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        is_used: false,
+      });
+    }
+
+    const DEFAULT_COMMISSION_RATE = 0.15;
+    let commissionRate = DEFAULT_COMMISSION_RATE;
+    try {
+      const rateResponse = await sendKafkaRpcRequest<{ commission_rate: number }>(
+        () => this.kafka.send(PAYMENT_PATTERNS.GET_COMMISSION_RATE, {}),
+        { context: PAYMENT_PATTERNS.GET_COMMISSION_RATE },
+      );
+      const parsed = this.toNullableNumber(rateResponse?.commission_rate);
+      if (parsed !== null && parsed > 0) commissionRate = parsed;
+    } catch {
+      this.logger.warn('Failed to fetch commission_rate via Kafka; using default 0.15');
+    }
+
+    const baseBookingFeeForCommission = this.toNullableNumber(providerService?.base_booking_fee) ?? 50.00;
+    const baseEffortPool = Math.round((baseBookingFeeForCommission + pricingQuote.laborAmount) * 100) / 100;
+    const totalAmount = pricingQuote.fairEstimate;
+    const serveaseIncome = Math.round(baseEffortPool * commissionRate * 100) / 100;
+    const providerEarnings = Math.round((totalAmount - serveaseIncome) * 100) / 100;
+    const providerSharePct = totalAmount > 0 ? Math.round((providerEarnings / totalAmount) * 100 * 100) / 100 : 0;
+    const platformSharePct = totalAmount > 0 ? Math.round((serveaseIncome / totalAmount) * 100 * 100) / 100 : 0;
+
+    return {
+      pricing_quote: pricingQuote,
+      commission: {
+        rate: commissionRate,
+        servease_income: serveaseIncome,
+        provider_earnings: providerEarnings,
+        provider_share_pct: providerSharePct,
+        platform_share_pct: platformSharePct,
+      },
     };
   }
 
@@ -1072,38 +1839,43 @@ export class BookingService implements OnModuleInit {
       .order('created_at', { ascending: false });
     if (error) throw new InternalServerErrorException(error.message);
 
-    const providerIds = [...new Set(
-      (data || [])
-        .map((booking: any) => this.toTrimmedString(booking?.provider_id))
-        .filter(Boolean),
-    )];
+    const bookingRows = data || [];
+    const bookingIds = bookingRows
+      .map((booking: any) => this.toTrimmedString(booking?.id))
+      .filter(Boolean);
+    let timelineByBookingId = new Map<string, any[]>();
 
-    const providerEntries = await Promise.all(
-      providerIds.map(async (providerId) => {
-        const providerUser = await this.getUserProfileFromAuth(providerId);
+    if (bookingIds.length) {
+      const { data: timelineRows, error: timelineError } = await this.withQueryTimeout(
+        this.supabase
+          .schema('booking')
+          .from('booking_timeline_events')
+          .select('booking_id, event_type, label, icon, created_at')
+          .in('booking_id', bookingIds)
+          .order('created_at', { ascending: true }),
+        3000,
+        'booking.get-provider timeline query',
+      );
 
-        return [
-          providerId,
-          {
-            full_name: this.toTrimmedString(providerUser?.full_name) || null,
-            contact_number:
-              this.toTrimmedString(providerUser?.contact_number) || null,
-            business_name: null as string | null,
-            average_rating: null as number | null,
-            total_reviews: null as number | null,
-          },
-        ] as const;
-      }),
-    );
-    const providerById = new Map(providerEntries);
+      if (timelineError) {
+        this.logger.warn(`booking.get-provider timeline degraded: ${this.toTrimmedString(timelineError.message)}`);
+      } else {
+        timelineByBookingId = (timelineRows || []).reduce((acc: Map<string, any[]>, row: any) => {
+          const rowBookingId = this.toTrimmedString(row?.booking_id);
+          if (!rowBookingId) return acc;
+          const events = acc.get(rowBookingId) || [];
+          events.push(row);
+          acc.set(rowBookingId, events);
+          return acc;
+        }, new Map<string, any[]>());
+      }
+    }
 
-      const bookings = (data || []).map((booking: any) => {
-        const providerId = this.toTrimmedString(booking?.provider_id);
-        return this.decorateCustomerFacingBooking({
-          ...booking,
-          provider: providerById.get(providerId) || {},
-        });
-      });
+    const bookings = bookingRows.map((booking: any) => ({
+      ...booking,
+      service_title: this.resolveServiceTitle(booking),
+      timeline: timelineByBookingId.get(this.toTrimmedString(booking?.id)) || [],
+    }));
 
     return { bookings };
   }
@@ -1113,50 +1885,46 @@ export class BookingService implements OnModuleInit {
     if (!normalizedProviderId)
       throw new BadRequestException('providerId is required');
 
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('*')
-      .eq('provider_id', normalizedProviderId)
-      .order('created_at', { ascending: false });
-    if (error) throw new InternalServerErrorException(error.message);
-
-    const customerIds = [
-      ...new Set(
-        (data || [])
-          .map((booking: any) => this.toTrimmedString(booking?.customer_id))
-          .filter(Boolean),
-      ),
-    ];
-    const customerEntries = await Promise.all(
-      customerIds.map(async (customerId) => [
-        customerId,
-        await this.getUserProfileFromAuth(customerId),
-      ] as const),
+    const { data, error } = await this.withQueryTimeout(
+      this.supabase
+        .schema('booking')
+        .from('bookings')
+        .select('*')
+        .eq('provider_id', normalizedProviderId)
+        .order('created_at', { ascending: false }),
+      3000,
+      'booking.get-provider query',
     );
-    const customerById = new Map(customerEntries);
+    if (error) {
+      this.logger.warn(`booking.get-provider degraded: ${this.toTrimmedString(error.message)}`);
+      return { bookings: [] };
+    }
 
-    const bookings = (data || []).map((booking: any) => {
-      const customerId = this.toTrimmedString(booking?.customer_id);
-      const customer = customerById.get(customerId);
-      return {
-        ...booking,
-        customer_name: this.toTrimmedString(customer?.full_name),
-        customer_contact: this.toTrimmedString(customer?.contact_number),
-        service_title: this.resolveServiceTitle(booking),
-      };
-    });
+    // Return bookings without timeline events for performance - timeline will be fetched on-demand
+    const bookings = (data || []).map((booking: any) => ({
+      ...booking,
+      service_title: this.resolveServiceTitle(booking),
+      timeline: [], // Empty timeline for list view
+    }));
 
     return { bookings };
   }
 
-  async getProviderBookingById(bookingId: string) {
+  async getProviderBookingById(bookingId: string, providerId?: string) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId)
       throw new BadRequestException('bookingId is required');
 
     const data = await this.getBookingRowByIdentifier(normalizedBookingId);
     if (!data) throw new NotFoundException('Booking not found');
+
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (
+      normalizedProviderId &&
+      this.toTrimmedString(data.provider_id) !== normalizedProviderId
+    ) {
+      throw new NotFoundException('Booking not found');
+    }
 
     const customerId = this.toTrimmedString(data.customer_id);
     const customerUser = await this.getUserProfileFromAuth(customerId);
@@ -1180,16 +1948,21 @@ export class BookingService implements OnModuleInit {
     const normalizedRole = this.toTrimmedString(role).toLowerCase();
     const actorColumn = normalizedRole === 'provider' ? 'provider_id' : 'customer_id';
 
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('*')
-      .eq(actorColumn, normalizedUserId)
-      .in('status', ['confirmed', 'in_progress', 'completed'])
-      .order('created_at', { ascending: false });
+    const { data, error } = await this.withQueryTimeout(
+      this.supabase
+        .schema('booking')
+        .from('bookings')
+        .select('*')
+        .eq(actorColumn, normalizedUserId)
+        .in('status', ['pending', 'confirmed', 'in_progress', 'completed'])
+        .order('created_at', { ascending: false }),
+      3000,
+      'booking.chat.get-bookings query',
+    );
 
     if (error) {
-      throw new InternalServerErrorException(error.message);
+      this.logger.warn(`booking.chat.get-bookings degraded: ${this.toTrimmedString(error.message)}`);
+      return { bookings: [] };
     }
 
     return { bookings: data || [] };
@@ -1265,13 +2038,16 @@ export class BookingService implements OnModuleInit {
           this.toTrimmedString(booking.booking_reference) ||
           this.toTrimmedString(booking.id),
         status: this.toTrimmedString(booking.status) || 'pending',
-        payment_status: this.toTrimmedString(booking.payment_status) || 'pending',
-        amount: Number(booking.amount || booking.total_amount || 0),
+        amount: Number(booking.total_amount || 0),
         scheduled_at: booking.scheduled_at || null,
         created_at: booking.created_at || null,
         customer_id: customerId || null,
         provider_id: providerId || null,
         service_id: this.toTrimmedString(booking?.service_id) || null,
+        service_latitude:
+          booking.service_latitude == null ? null : Number(booking.service_latitude),
+        service_longitude:
+          booking.service_longitude == null ? null : Number(booking.service_longitude),
         service_description:
           this.toTrimmedString(booking.service_description) || null,
         customer_name: this.toTrimmedString(customer?.full_name),
@@ -1316,6 +2092,9 @@ export class BookingService implements OnModuleInit {
     const userById = new Map(
       users.map((user: any) => [this.toTrimmedString(user?.id), user]),
     );
+    const latestLocationByBooking = await this.getLatestLocationsForBookings(
+      bookings.map((booking: any) => this.toTrimmedString(booking?.id)),
+    );
 
     const enriched = bookings.map((booking: any) => {
       const provider = userById.get(this.toTrimmedString(booking?.provider_id));
@@ -1324,6 +2103,8 @@ export class BookingService implements OnModuleInit {
         ...booking,
         provider_name: this.toTrimmedString(provider?.full_name),
         customer_name: this.toTrimmedString(customer?.full_name),
+        latest_location:
+          latestLocationByBooking.get(this.toTrimmedString(booking?.id)) || null,
       };
     });
 
@@ -1479,13 +2260,34 @@ export class BookingService implements OnModuleInit {
     scheduledAt: string,
     hoursRequired: string,
   ) {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
     const normalizedScheduledAt = this.toTrimmedString(scheduledAt);
     if (!normalizedScheduledAt) throw new BadRequestException('scheduledAt is required');
+    const requestedStart = new Date(normalizedScheduledAt).getTime();
+    if (Number.isNaN(requestedStart)) {
+      throw new BadRequestException('scheduledAt is invalid');
+    }
+    const normalizedHoursRequired = Math.max(
+      1,
+      Number(this.toNullableNumber(hoursRequired) || 1),
+    );
+
+    const blockReason = await this.getAvailabilityBlockReason(
+      normalizedProviderId,
+      normalizedScheduledAt,
+      normalizedHoursRequired,
+    );
+    if (blockReason) {
+      return {
+        available: false,
+        reason: blockReason,
+      };
+    }
 
     const date = normalizedScheduledAt.slice(0, 10);
-    const slots = (await this.getReservedSlots(providerId, date)).reservedSlots;
-    const requestedStart = new Date(normalizedScheduledAt).getTime();
-    const requestedEnd = requestedStart + Number(hoursRequired || 1) * 3600000;
+    const slots = (await this.getReservedSlots(normalizedProviderId, date)).reservedSlots;
+    const requestedEnd = requestedStart + normalizedHoursRequired * 3600000;
 
     for (const slot of slots) {
       const slotStart = new Date(slot.scheduled_at).getTime();
@@ -1500,97 +2302,21 @@ export class BookingService implements OnModuleInit {
     return { available: true };
   }
 
-  async createRescheduleRequest(body: any) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('booking_reschedule_requests')
-      .insert([
-        {
-          booking_id: body.bookingId,
-          provider_id: body.providerId,
-          reason: body.reason,
-          explanation: body.explanation,
-          proposed_date: body.proposedDate,
-          proposed_time: body.proposedTime,
-          status: 'pending',
-        },
-      ])
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
-    return { request: data };
-  }
-
-  async getRescheduleRequests(bookingId: string) {
-    const normalizedBookingId = this.toTrimmedString(bookingId);
-    if (!normalizedBookingId) return { requests: [] };
-
-    try {
-      const result = await this.withQueryTimeout<any>(
-        this.supabase
-          .schema('booking')
-          .from('booking_reschedule_requests')
-          .select('*')
-          .eq('booking_id', normalizedBookingId)
-          .order('created_at', { ascending: false }),
-        4500,
-        'booking.get-reschedules query',
-      );
-      const { data, error } = result || {};
-      if (error) {
-        this.logger.warn(
-          `booking.get-reschedules degraded: ${this.toTrimmedString(error?.message) || 'query error'}`,
-        );
-        return { requests: [] };
-      }
-      return { requests: data || [] };
-    } catch (error) {
-      if (this.isTimeoutLikeError(error)) {
-        this.logger.warn(
-          `booking.get-reschedules degraded: query timed out for bookingId=${normalizedBookingId}`,
-        );
-        return { requests: [] };
-      }
-      throw new InternalServerErrorException(
-        this.toTrimmedString((error as { message?: unknown })?.message) ||
-          'Failed to fetch reschedule requests',
-      );
-    }
-  }
-
-  async reviewRescheduleRequest(requestId: string, body: any) {
-    const updates: any = {
-      status: body.decision,
-      reviewed_at: new Date().toISOString(),
-    };
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('booking_reschedule_requests')
-      .update(updates)
-      .eq('id', requestId)
-      .select()
-      .single();
-    if (error) throw new InternalServerErrorException(error.message);
-
-    if (body.decision === 'approved' && data) {
-      const req = data as Record<string, unknown>;
-      const proposedDate = this.toTrimmedString(req.proposed_date);
-      const proposedTime = this.toTrimmedString(req.proposed_time);
-      if (proposedDate && proposedTime) {
-        await this.supabase
-          .schema('booking')
-          .from('bookings')
-          .update({ scheduled_at: `${proposedDate}T${proposedTime}` })
-          .eq('id', this.toTrimmedString(req.booking_id));
-      }
-    }
-    return { request: data };
-  }
-
   async createAdditionalCharges(body: any) {
+    const bookingId = this.toTrimmedString(body?.bookingId);
+    const providerId = this.toTrimmedString(body?.providerId);
+    if (!bookingId) throw new BadRequestException('bookingId is required');
+    if (!providerId) throw new BadRequestException('providerId is required');
+
+    const booking = await this.getBookingRowByIdentifier(bookingId, 'id, provider_id');
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (this.toTrimmedString(booking.provider_id) !== providerId) {
+      throw new BadRequestException('Booking does not belong to provider');
+    }
+
     const items = (body.items || []).map((item: any) => ({
-      booking_id: body.bookingId,
-      requested_by: body.providerId,
+      booking_id: bookingId,
+      requested_by: providerId,
       description: item.description,
       amount: item.amount,
       justification: body.justification,
@@ -1605,9 +2331,21 @@ export class BookingService implements OnModuleInit {
     return { charges: data || [] };
   }
 
-  async getAdditionalCharges(bookingId: string) {
+  async getAdditionalCharges(bookingId: string, providerId?: string) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId) return { charges: [] };
+
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (normalizedProviderId) {
+      const booking = await this.getBookingRowByIdentifier(
+        normalizedBookingId,
+        'id, provider_id',
+      );
+      if (!booking) throw new NotFoundException('Booking not found');
+      if (this.toTrimmedString(booking.provider_id) !== normalizedProviderId) {
+        throw new NotFoundException('Booking not found');
+      }
+    }
 
     const { data, error } = await this.supabase
       .schema('booking')
@@ -1624,77 +2362,330 @@ export class BookingService implements OnModuleInit {
   }
 
   async reviewAdditionalCharges(body: any) {
-    const { chargeIds, decision } = body;
+    const bookingId = this.toTrimmedString(body?.bookingId);
+    const providerId = this.toTrimmedString(body?.providerId);
+    const requesterId = this.toTrimmedString(body?.requesterId ?? body?.customerId);
+    const chargeIds = Array.isArray(body?.chargeIds)
+      ? body.chargeIds
+          .map((chargeId: unknown) => this.toTrimmedString(chargeId))
+          .filter(Boolean)
+      : [];
+    const rawDecision = this.toTrimmedString(body?.decision).toLowerCase();
+    const decision = rawDecision === 'rejected' ? 'declined' : rawDecision;
+
+    if (!bookingId) throw new BadRequestException('bookingId is required');
+    if (!chargeIds.length) throw new BadRequestException('chargeIds is required');
+    if (!['approved', 'declined'].includes(decision)) {
+      throw new BadRequestException('decision must be approved or declined');
+    }
+
+    const booking = await this.getBookingRowByIdentifier(
+      bookingId,
+      'id, customer_id, provider_id, total_amount, additional_amount',
+    );
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (providerId && this.toTrimmedString(booking.provider_id) !== providerId) {
+      throw new BadRequestException('Booking does not belong to provider');
+    }
+    if (requesterId && this.toTrimmedString(booking.customer_id) !== requesterId) {
+      throw new NotFoundException('Booking not found');
+    }
+
     const { data, error } = await this.supabase
       .schema('booking')
       .from('additional_charges')
       .update({
         status: decision,
         reviewed_at: new Date().toISOString(),
+        reviewed_by: requesterId || null,
       })
+      .eq('booking_id', this.toTrimmedString(booking.id))
       .in('id', chargeIds)
       .select();
     if (error) throw new InternalServerErrorException(error.message);
 
-    if (decision === 'approved' && data?.length && body.bookingId) {
+    if (decision === 'approved' && data?.length) {
       const totalAdditional = data.reduce(
         (acc: number, charge: any) => acc + Number(charge.amount),
         0,
       );
-      const { data: booking } = await this.supabase
-        .schema('booking')
-        .from('bookings')
-        .select('total_amount')
-        .eq('id', body.bookingId)
-        .single();
       if (booking) {
+        const nextAdditionalAmount =
+          Number(booking.additional_amount || 0) + totalAdditional;
+        const nextTotalAmount = Number(booking.total_amount || 0) + totalAdditional;
         await this.supabase
           .schema('booking')
           .from('bookings')
           .update({
-            total_amount: Number(booking.total_amount) + totalAdditional,
+            additional_amount: nextAdditionalAmount,
+            total_amount: nextTotalAmount,
           })
-          .eq('id', body.bookingId);
+          .eq('id', this.toTrimmedString(booking.id));
+        await sendKafkaRpcRequest(
+          () =>
+            this.kafka.send(PAYMENT_PATTERNS.UPDATE_AMOUNT, {
+              bookingId: this.toTrimmedString(booking.id),
+              amount: nextTotalAmount,
+            }),
+          { context: PAYMENT_PATTERNS.UPDATE_AMOUNT, logger: this.logger },
+        );
       }
     }
     return { charges: data || [] };
   }
 
-  async getHistory() {
+  private async ensureProviderCanMutateBooking(providerId: string) {
+    const profileRecord = await this.getProviderProfileSummary(providerId);
+    if (!profileRecord) {
+      throw new ForbiddenException({
+        code: 'provider_profile_missing',
+        message: 'Provider profile not found. Please complete your onboarding.',
+        verification_status: null,
+      });
+    }
+    const verificationStatus = this.toTrimmedString(
+      profileRecord?.verification_status,
+    ).toLowerCase();
+    if (verificationStatus !== 'approved') {
+      throw new ForbiddenException({
+        code: 'provider_not_verified',
+        message: 'Your account has not been verified yet. Please complete the verification process.',
+        verification_status: verificationStatus || 'pending',
+      });
+    }
+  }
+
+  private assertValidCoordinates(latitude: unknown, longitude: unknown) {
+    const lat = this.toNullableNumber(latitude);
+    const lng = this.toNullableNumber(longitude);
+    if (lat === null || lng === null) {
+      throw new BadRequestException('latitude and longitude are required');
+    }
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      throw new BadRequestException('Invalid latitude or longitude');
+    }
+    return { latitude: lat, longitude: lng };
+  }
+
+  private async getBookingForParticipantCheck(bookingIdentifier: string) {
+    const booking = await this.getBookingRowByIdentifier(
+      bookingIdentifier,
+      'id, customer_id, provider_id, status',
+    );
+    if (!booking) throw new NotFoundException('Booking not found');
+    return booking;
+  }
+
+  private assertBookingParticipant(booking: any, userId: string) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const customerId = this.toTrimmedString(booking?.customer_id);
+    const providerId = this.toTrimmedString(booking?.provider_id);
+    if (!normalizedUserId || (normalizedUserId !== customerId && normalizedUserId !== providerId)) {
+      throw new NotFoundException('Booking not found');
+    }
+  }
+
+  private async getLatestLocationsForBookings(bookingIds: string[]) {
+    const normalizedIds = Array.from(
+      new Set(bookingIds.map((id) => this.toTrimmedString(id)).filter(Boolean)),
+    );
+    if (!normalizedIds.length) return new Map<string, any>();
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('booking_location_pings')
+      .select('booking_id, latitude, longitude, reported_at, source')
+      .in('booking_id', normalizedIds)
+      .order('reported_at', { ascending: false });
+    if (error) throw new InternalServerErrorException(error.message);
+
+    const latestByBooking = new Map<string, any>();
+    for (const ping of data || []) {
+      const bookingId = this.toTrimmedString((ping as any).booking_id);
+      if (!bookingId || latestByBooking.has(bookingId)) continue;
+      latestByBooking.set(bookingId, {
+        latitude: Number((ping as any).latitude),
+        longitude: Number((ping as any).longitude),
+        reported_at: (ping as any).reported_at,
+        source: (ping as any).source,
+      });
+    }
+    return latestByBooking;
+  }
+
+  async saveLocationPing(
+    bookingId: string,
+    providerId: string,
+    latitude: unknown,
+    longitude: unknown,
+  ) {
+    const normalizedBookingId = this.toTrimmedString(bookingId);
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (!normalizedBookingId) throw new BadRequestException('bookingId is required');
+    if (!normalizedProviderId) throw new BadRequestException('providerId is required');
+
+    const booking = await this.getBookingForParticipantCheck(normalizedBookingId);
+    if (this.toTrimmedString(booking.provider_id) !== normalizedProviderId) {
+      throw new NotFoundException('Booking not found');
+    }
+    const status = this.toTrimmedString(booking.status).toLowerCase();
+    if (!['confirmed', 'in_progress'].includes(status)) {
+      throw new BadRequestException(
+        'Location pings are only accepted after the provider accepts the booking',
+      );
+    }
+    await this.ensureProviderCanMutateBooking(normalizedProviderId);
+
+    const coords = this.assertValidCoordinates(latitude, longitude);
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('booking_location_pings')
+      .insert([
+        {
+          booking_id: this.toTrimmedString(booking.id),
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          source: 'provider',
+        },
+      ])
+      .select('id, booking_id, latitude, longitude, reported_at, source')
+      .single();
+    if (error) throw new BadRequestException(error.message);
+
+    return {
+      location: {
+        id: data.id,
+        booking_id: data.booking_id,
+        latitude: Number(data.latitude),
+        longitude: Number(data.longitude),
+        reported_at: data.reported_at,
+        source: data.source,
+      },
+    };
+  }
+
+  async getLatestLocation(bookingId: string, requesterId: string) {
+    const booking = await this.getBookingForParticipantCheck(bookingId);
+    this.assertBookingParticipant(booking, requesterId);
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('booking_location_pings')
+      .select('id, booking_id, latitude, longitude, reported_at, source')
+      .eq('booking_id', this.toTrimmedString(booking.id))
+      .order('reported_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw new InternalServerErrorException(error.message);
+    if (!data) return { location: null };
+
+    return {
+      location: {
+        id: data.id,
+        booking_id: data.booking_id,
+        latitude: Number(data.latitude),
+        longitude: Number(data.longitude),
+        reported_at: data.reported_at,
+        source: data.source,
+      },
+    };
+  }
+
+  async getLocationTrail(bookingId: string, requesterId: string, limit = 50) {
+    const booking = await this.getBookingForParticipantCheck(bookingId);
+    this.assertBookingParticipant(booking, requesterId);
+    const normalizedLimit = Number.isFinite(Number(limit))
+      ? Math.min(200, Math.max(1, Number(limit)))
+      : 50;
+
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('booking_location_pings')
+      .select('id, booking_id, latitude, longitude, reported_at, source')
+      .eq('booking_id', this.toTrimmedString(booking.id))
+      .order('reported_at', { ascending: false })
+      .limit(normalizedLimit);
+    if (error) throw new InternalServerErrorException(error.message);
+
+    return {
+      trail: (data || []).map((ping: any) => ({
+        id: ping.id,
+        booking_id: ping.booking_id,
+        latitude: Number(ping.latitude),
+        longitude: Number(ping.longitude),
+        reported_at: ping.reported_at,
+        source: ping.source,
+      })),
+    };
+  }
+
+  async getHistory(requesterId?: string) {
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
       .select('*')
       .in('status', ['completed', 'cancelled', 'disputed']);
     if (error) throw new BadRequestException(error.message);
-    return { history: data };
+
+    const normalizedRequesterId = this.toTrimmedString(requesterId);
+    const history = normalizedRequesterId
+      ? (data || []).filter((booking: any) => {
+          const bookingCustomerId = this.toTrimmedString(booking?.customer_id);
+          const bookingProviderId = this.toTrimmedString(booking?.provider_id);
+          return (
+            bookingCustomerId === normalizedRequesterId ||
+            bookingProviderId === normalizedRequesterId
+          );
+        })
+      : data || [];
+
+    return { history };
   }
 
-  async getRequests() {
+  async getRequests(providerId?: string) {
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
       .select('*')
       .eq('status', 'pending');
     if (error) throw new BadRequestException(error.message);
-    return { requests: data };
+
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    const requests = normalizedProviderId
+      ? (data || []).filter((booking: any) => {
+          return this.toTrimmedString(booking?.provider_id) === normalizedProviderId;
+        })
+      : data || [];
+
+    return { requests };
   }
 
-  async getBookingById(id: string) {
+  async getBookingById(id: string, requesterId?: string) {
     const data = await this.getBookingRowByIdentifier(id);
     if (!data) throw new NotFoundException('Booking not found');
 
+    const normalizedRequesterId = this.toTrimmedString(requesterId);
+    if (normalizedRequesterId) {
+      const providerId = this.toTrimmedString(data.provider_id);
+      const customerId = this.toTrimmedString(data.customer_id);
+      if (normalizedRequesterId !== providerId && normalizedRequesterId !== customerId) {
+        throw new NotFoundException('Booking not found');
+      }
+    }
+
     const providerId = this.toTrimmedString(data.provider_id);
     const customerId = this.toTrimmedString(data.customer_id);
-    const [providerUser, customerUser] = await Promise.all([
+    const [providerUser, customerUser, timelineEvents] = await Promise.all([
       this.getUserProfileFromAuth(providerId),
       this.getUserProfileFromAuth(customerId),
+      this.getBookingTimelineEvents(id),
     ]);
 
     return {
       booking: this.decorateCustomerFacingBooking({
         ...data,
         service_title: this.resolveServiceTitle(data),
+        timeline: timelineEvents,
         provider: {
           full_name: this.toTrimmedString(providerUser?.full_name),
           contact_number: this.toTrimmedString(providerUser?.contact_number),
@@ -1709,109 +2700,206 @@ export class BookingService implements OnModuleInit {
     };
   }
 
-  async getBookingsByIds(ids: unknown) {
-    const normalizedIds = Array.from(
-      new Set(
-        (Array.isArray(ids) ? ids : [])
-          .map((id) => this.toTrimmedString(id))
-          .filter(Boolean),
-      ),
-    );
-    if (!normalizedIds.length) return { bookings: [] };
+  async getFuelBaselineData(fuelType: FuelType) {
+    return this.getFuelBaseline(fuelType);
+  }
 
+  async addProviderStatusEvents(providerId: string, status: string) {
+    try {
+      const { data: bookings, error: bookingsError } = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .select('id')
+        .eq('provider_id', providerId)
+        .in('status', ['confirmed', 'in_progress']);
+
+      if (bookingsError || !bookings || bookings.length === 0) return;
+
+      const statusLabels: Record<string, string> = {
+        online: 'Provider is online',
+        on_the_way: 'Provider is on the way',
+        arrived: 'Provider has arrived',
+        busy: 'Provider started your service',
+        offline: 'Provider is offline',
+      };
+      const label = statusLabels[status] || `Provider status: ${status}`;
+
+      const { error: insertError } = await this.supabase
+        .schema('booking')
+        .from('booking_timeline_events')
+        .insert(bookings.map(b => ({ booking_id: b.id, event_type: 'provider-status', label, icon: status })));
+
+      if (insertError) {
+        this.logger.warn(`addProviderStatusEvents insert failed: ${insertError.message}`);
+      }
+    } catch (error: any) {
+      this.logger.warn(`addProviderStatusEvents failed: ${error?.message}`);
+    }
+  }
+
+  async getBookingsByIds(ids: string[]) {
+    if (!ids.length) return { bookings: [] };
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
-      .select('*')
-      .in('id', normalizedIds);
+      .select('id, booking_reference, service_title, service_name, scheduled_at')
+      .in('id', ids);
     if (error) throw new InternalServerErrorException(error.message);
     return { bookings: data || [] };
   }
 
-  async updateStatus(id: string, status: string, metadata?: Record<string, unknown>) {
-    const booking = await this.getBookingRowByIdentifier(id, 'id, provider_id');
-    if (!booking?.id) {
-      throw new NotFoundException(`Booking with id ${id} not found`);
+  private async getBookingTimelineEvents(bookingId: string) {
+    try {
+      // Set a short timeout for timeline events
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Timeline timeout')), 2000)
+      );
+
+      const queryPromise = this.supabase
+        .schema('booking')
+        .from('booking_timeline_events')
+        .select('event_type, label, icon, created_at')
+        .eq('booking_id', bookingId)
+        .order('created_at', { ascending: true });
+
+      const { data: events, error } = await Promise.race([queryPromise, timeoutPromise]) as any;
+
+      if (error) {
+        return [];
+      }
+
+      return (events || []).map(event => ({
+        type: event.event_type,
+        label: event.label,
+        icon: event.icon,
+        at: event.created_at
+      }));
+    } catch {
+      // Return empty array if timeline events can't be fetched
+      return [];
+    }
+  }
+
+  async updateStatus(id: string, status: string, providerId?: string) {
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+    const allowedStatuses = new Set([
+      'pending',
+      'confirmed',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ]);
+    if (!allowedStatuses.has(normalizedStatus)) {
+      throw new BadRequestException('Unsupported booking status');
     }
 
-    const bookingId = this.toTrimmedString(booking.id);
-    const normalizedStatus = this.normalizeStatusKey(status);
-    const actorId = this.toTrimmedString(metadata?.actorId);
-    const actorRole = this.normalizeStatusKey(metadata?.actorRole);
-    const providerId = this.toTrimmedString(booking.provider_id);
-    const nowIso = new Date().toISOString();
-
-    const isProviderRejection =
-      normalizedStatus === 'rejected' &&
-      actorRole === 'provider' &&
-      actorId &&
-      actorId === providerId;
-
-    const basePayload: Record<string, unknown> = {
-      status,
+    const validTransitions: Record<string, string[]> = {
+      pending: ['confirmed', 'cancelled'],
+      confirmed: ['in_progress', 'cancelled'],
+      in_progress: ['completed', 'cancelled'],
+      completed: [],
+      cancelled: [],
     };
 
-    if (normalizedStatus === 'cancelled' && actorId) {
-      basePayload.cancelled_at = nowIso;
-      basePayload.cancelled_by = actorId;
-    }
-
-    if (isProviderRejection) {
-      const rejectionPayload: Record<string, unknown> = {
-        status: 'rejected',
-        cancellation_reason: 'provider_rejected',
-        cancelled_at: nowIso,
-        cancelled_by: actorId,
-      };
-
-      try {
-        const data = await this.updateBookingWithSchemaFallback(
-          bookingId,
-          rejectionPayload,
-        );
-        return {
-          message: 'Booking rejected successfully.',
-          booking: this.decorateCustomerFacingBooking(data),
-        };
-      } catch (error: any) {
-        const fallbackPayload: Record<string, unknown> = {
-          status: 'cancelled',
-          cancellation_reason: 'provider_rejected',
-          cancelled_at: nowIso,
-          cancelled_by: actorId,
-        };
-
-        try {
-          const data = await this.updateBookingWithSchemaFallback(
-            bookingId,
-            fallbackPayload,
-          );
-          return {
-            message: 'Booking rejected successfully.',
-            booking: this.decorateCustomerFacingBooking(data),
-          };
-        } catch (fallbackError: any) {
-          const finalError = fallbackError?.message ? fallbackError : error;
-          throw new BadRequestException(
-            this.toTrimmedString(finalError?.message) ||
-              'Failed to reject booking',
-          );
-        }
-      }
-    }
-
-    try {
-      const data = await this.updateBookingWithSchemaFallback(
-        bookingId,
-        basePayload,
-      );
-      return { message: 'Booking status updated successfully.', booking: data };
-    } catch (error: any) {
-      if (error?.code === 'PGRST116') {
+    const normalizedProviderId = this.toTrimmedString(providerId);
+    if (normalizedProviderId) {
+      const booking = await this.getBookingRowByIdentifier(id, 'id, provider_id, status');
+      if (!booking) throw new NotFoundException(`Booking with id ${id} not found`);
+      if (this.toTrimmedString(booking.provider_id) !== normalizedProviderId) {
         throw new NotFoundException(`Booking with id ${id} not found`);
       }
+      const currentStatus = this.toTrimmedString(booking.status).toLowerCase();
+      const allowed = validTransitions[currentStatus] ?? [];
+      if (!allowed.includes(normalizedStatus)) {
+        throw new BadRequestException(
+          `Cannot transition booking from '${currentStatus}' to '${normalizedStatus}'`,
+        );
+      }
+      if (['confirmed', 'in_progress'].includes(normalizedStatus)) {
+        await this.ensureProviderCanMutateBooking(normalizedProviderId);
+      }
+    }
+
+    const now = new Date().toISOString();
+    const updates: Record<string, unknown> = {
+      status: normalizedStatus,
+      updated_at: now,
+    };
+    if (normalizedStatus === 'in_progress') {
+      updates.started_at = now;
+    }
+    if (normalizedStatus === 'completed') {
+      updates.completed_at = now;
+    }
+    // Perform DB update for booking status
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .single();
+    if (error) {
+      if (error.code === 'PGRST116') throw new NotFoundException(`Booking with id ${id} not found`);
       throw new BadRequestException(
         this.toTrimmedString(error?.message) || 'Failed to update booking',
+      );
+    }
+
+    // Add timeline event for status change (fire and forget)
+    this.addTimelineEventForStatusChange(id, normalizedStatus).catch(() => {
+      // Silently ignore timeline errors
+    });
+
+    // Emit notification for status change
+    const notificationPattern =
+      normalizedStatus === 'confirmed'
+        ? NOTIFICATION_PATTERNS.BOOKING_CONFIRMED
+        : normalizedStatus === 'in_progress'
+        ? NOTIFICATION_PATTERNS.BOOKING_IN_PROGRESS
+        : normalizedStatus === 'completed'
+        ? NOTIFICATION_PATTERNS.BOOKING_COMPLETED
+        : null;
+
+    if (notificationPattern) {
+      await this.emitNotifications(id, notificationPattern, {
+        status: normalizedStatus,
+      });
+    }
+
+    return { message: 'Booking status updated successfully.', booking: data };
+  }
+
+  private async addTimelineEventForStatusChange(bookingId: string, status: string) {
+    const statusLabels: Record<string, string> = {
+      'pending': 'Request created',
+      'confirmed': 'Provider accepted your booking',
+      'in_progress': 'Provider started your service',
+      'completed': 'Service completed',
+      'cancelled': 'Booking cancelled'
+    };
+
+    const label = statusLabels[status] || `Status: ${status}`;
+
+    try {
+      const { error } = await this.supabase
+        .schema('booking')
+        .from('booking_timeline_events')
+        .insert({
+          booking_id: bookingId,
+          event_type: 'status-change',
+          label,
+          icon: status
+        });
+
+      if (error) {
+        // Log error but don't throw - timeline events are non-critical
+        this.logger.warn(`Failed to create timeline event: ${error.message}`);
+      }
+    } catch (error) {
+      // Log error but don't throw - timeline events are non-critical
+      this.logger.warn(
+        `Failed to create timeline event: ${this.toTrimmedString((error as any)?.message)}`,
       );
     }
   }
@@ -1822,15 +2910,36 @@ export class BookingService implements OnModuleInit {
     reason: string,
     explanation: string,
   ) {
-    const booking = await this.getBookingRowByIdentifier(id, 'id');
-    if (!booking?.id) throw new NotFoundException('Booking not found');
+    const booking = await this.getBookingRowByIdentifier(
+      id,
+      'id, customer_id, provider_id',
+    );
+    if (!booking) throw new NotFoundException(`Booking with id ${id} not found`);
 
-    const bookingId = this.toTrimmedString(booking.id);
+    const normalizedUserId = this.toTrimmedString(userId);
+    const canCancel =
+      normalizedUserId === this.toTrimmedString(booking.customer_id) ||
+      normalizedUserId === this.toTrimmedString(booking.provider_id);
+    if (!canCancel) {
+      throw new NotFoundException(`Booking with id ${id} not found`);
+    }
+
+    const canonicalBookingId = this.toTrimmedString(booking.id);
+    const normalizedReason = this.toNullableString(reason);
+    const normalizedExplanation = this.toNullableString(explanation);
+    const cancelledAt = new Date().toISOString();
+
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
-      .update({ status: 'cancelled' })
-      .eq('id', bookingId)
+      .update({
+        status: 'cancelled',
+        cancelled_by: normalizedUserId,
+        cancel_reason: normalizedReason,
+        cancel_explanation: normalizedExplanation,
+        cancelled_at: cancelledAt,
+      })
+      .eq('id', canonicalBookingId)
       .select()
       .single();
     if (error) throw new BadRequestException(error.message);
@@ -1840,24 +2949,57 @@ export class BookingService implements OnModuleInit {
       .from('bookings_cancellations')
       .insert([
         {
-          booking_id: bookingId,
-          cancelled_by: userId,
-          reason,
-          detailed_explanation: explanation,
+          booking_id: canonicalBookingId,
+          cancelled_by: normalizedUserId,
+          reason: normalizedReason,
+          detailed_explanation: normalizedExplanation,
         },
       ]);
     if (cancellationError) {
       this.logger.warn(
-        `Booking ${bookingId} was cancelled, but cancellation audit insert failed: ${cancellationError.message}`,
+        `Booking ${canonicalBookingId} was cancelled, but cancellation audit insert failed: ${cancellationError.message}`,
       );
     }
+
+    // Emit notification for cancellation
+    await this.emitNotifications(canonicalBookingId, NOTIFICATION_PATTERNS.BOOKING_CANCELLED, {
+      cancelledBy: normalizedUserId,
+      reason: normalizedReason,
+    });
+    await sendKafkaRpcRequest(
+      () =>
+        this.kafka.send(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT, {
+          bookingId: canonicalBookingId,
+        }),
+      {
+        context: PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT,
+        logger: this.logger,
+      },
+    );
 
     return { booking: data };
   }
 
-  async getAttachments(bookingId: string, accessToken?: string) {
+  async getAttachments(
+    bookingId: string,
+    userId?: string,
+    accessToken?: string,
+  ) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId) return { attachments: [] };
+
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (normalizedUserId) {
+      const booking = await this.getBookingRowByIdentifier(
+        normalizedBookingId,
+        'id, customer_id, provider_id',
+      );
+      if (!booking) throw new NotFoundException('Booking not found');
+      const ownerMatches =
+        normalizedUserId === this.toTrimmedString(booking.customer_id) ||
+        normalizedUserId === this.toTrimmedString(booking.provider_id);
+      if (!ownerMatches) throw new NotFoundException('Booking not found');
+    }
 
     let tableResult: { attachments: any[] } | null = null;
     let lastError: any = null;
@@ -1911,10 +3053,24 @@ export class BookingService implements OnModuleInit {
   async saveAttachments(
     bookingId: string,
     attachments: any[],
+    userId?: string,
     accessToken?: string,
   ) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId) return { attachments: [] };
+
+    const normalizedUserId = this.toTrimmedString(userId);
+    if (normalizedUserId) {
+      const booking = await this.getBookingRowByIdentifier(
+        normalizedBookingId,
+        'id, customer_id, provider_id',
+      );
+      if (!booking) throw new NotFoundException('Booking not found');
+      const ownerMatches =
+        normalizedUserId === this.toTrimmedString(booking.customer_id) ||
+        normalizedUserId === this.toTrimmedString(booking.provider_id);
+      if (!ownerMatches) throw new NotFoundException('Booking not found');
+    }
 
     try {
       return await this.saveAttachmentsWithClient(
@@ -1962,8 +3118,18 @@ export class BookingService implements OnModuleInit {
     if (!normalizedUserId) throw new BadRequestException('userId is required');
     if (!normalizedReason) throw new BadRequestException('reason is required');
 
+    const booking = await this.getBookingRowByIdentifier(
+      normalizedBookingId,
+      'id, customer_id, provider_id',
+    );
+    if (!booking) throw new NotFoundException('Booking not found');
+    const ownerMatches =
+      normalizedUserId === this.toTrimmedString(booking.customer_id) ||
+      normalizedUserId === this.toTrimmedString(booking.provider_id);
+    if (!ownerMatches) throw new NotFoundException('Booking not found');
+
     try {
-      return await sendKafkaRpcRequest(
+      const result = await sendKafkaRpcRequest(
         () =>
           this.kafka.send(SUPPORT_PATTERNS.CREATE_DISPUTE, {
             bookingId: normalizedBookingId,
@@ -1972,6 +3138,14 @@ export class BookingService implements OnModuleInit {
           }),
         { context: SUPPORT_PATTERNS.CREATE_DISPUTE },
       );
+
+      // Emit notification for dispute creation
+      await this.emitNotifications(normalizedBookingId, NOTIFICATION_PATTERNS.DISPUTE_CREATED, {
+        raisedBy: normalizedUserId,
+        reason: normalizedReason,
+      });
+
+      return result;
     } catch (error: any) {
       throw new InternalServerErrorException(
         this.toTrimmedString(error?.message) || 'Failed to create dispute',

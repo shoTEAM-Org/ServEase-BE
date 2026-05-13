@@ -1,0 +1,66 @@
+[
+  {
+    "slug": "home-cleaning",
+    "pricingMode": "flat",
+    "minLaborAmount": 800,
+    "maxLaborAmount": 1500,
+    "typicalLaborAmount": 1100,
+    "sourceNote": "Initial ServEase baseline"
+  },
+  {
+    "slug": "plumbing",
+    "pricingMode": "flat",
+    "minLaborAmount": 900,
+    "maxLaborAmount": 1800,
+    "typicalLaborAmount": 1300,
+    "sourceNote": "Initial ServEase baseline"
+  },
+  {
+    "slug": "electrical",
+    "pricingMode": "flat",
+    "minLaborAmount": 900,
+    "maxLaborAmount": 2000,
+    "typicalLaborAmount": 1400,
+    "sourceNote": "Initial ServEase baseline"
+  },
+  {
+    "slug": "aircon-services",
+    "pricingMode": "flat",
+    "minLaborAmount": 1000,
+    "maxLaborAmount": 2500,
+    "typicalLaborAmount": 1600,
+    "sourceNote": "Initial ServEase baseline"
+  },
+  {
+    "slug": "carpentry",
+    "pricingMode": "flat",
+    "minLaborAmount": 1000,
+    "maxLaborAmount": 2600,
+    "typicalLaborAmount": 1700,
+    "sourceNote": "Initial ServEase baseline"
+  },
+  {
+    "slug": "painting",
+    "pricingMode": "flat",
+    "minLaborAmount": 1200,
+    "maxLaborAmount": 3000,
+    "typicalLaborAmount": 2000,
+    "sourceNote": "Initial ServEase baseline"
+  },
+  {
+    "slug": "pest-control",
+    "pricingMode": "flat",
+    "minLaborAmount": 1200,
+    "maxLaborAmount": 2800,
+    "typicalLaborAmount": 1900,
+    "sourceNote": "Initial ServEase baseline"
+  },
+  {
+    "slug": "gardening",
+    "pricingMode": "flat",
+    "minLaborAmount": 800,
+    "maxLaborAmount": 1800,
+    "typicalLaborAmount": 1200,
+    "sourceNote": "Initial ServEase baseline"
+  }
+]

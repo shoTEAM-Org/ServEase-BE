@@ -89,7 +89,10 @@ function getKafkaClientFromApp(app: unknown): unknown {
   }
 }
 
-export function enableGatewayTracing(app: unknown, sourceName = 'gateway'): void {
+export function enableGatewayTracing(
+  app: unknown,
+  sourceName = 'gateway',
+): void {
   const kafkaClient = getKafkaClientFromApp(app);
   patchKafkaClientTracing(kafkaClient, sourceName);
 }

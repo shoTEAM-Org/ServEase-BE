@@ -2,24 +2,26 @@ import {
   Inject,
   Injectable,
   BadRequestException,
-  InternalServerErrorException,
   OnModuleInit,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
-import { SupabaseClient } from '@supabase/supabase-js';
-import { BOOKING_PATTERNS, sendKafkaRpcRequest } from '@app/common';
+import {
+  AUTH_PATTERNS,
+  BOOKING_PATTERNS,
+  connectKafkaClientWithRetry,
+  sendKafkaRpcRequest,
+} from '@app/common';
 
 @Injectable()
 export class CustomerService implements OnModuleInit {
-  constructor(
-    private readonly supabase: SupabaseClient,
-    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
-  ) {}
-  private readonly identitySchemas = ['identity_and_user', 'identity_svc'] as const;
+  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
 
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_CUSTOMER_BOOKINGS);
-    await this.kafka.connect();
+    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_CUSTOMER_PROFILE);
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: CustomerService.name,
+    });
   }
 
   private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
@@ -27,6 +29,15 @@ export class CustomerService implements OnModuleInit {
       () => this.kafka.send<T, unknown>(pattern, payload),
       { context: pattern },
     );
+  }
+
+  private async emit(pattern: string, payload: unknown): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+      this.kafka.emit(pattern, payload).subscribe({
+        complete: () => resolve(),
+        error: (error) => reject(error),
+      });
+    });
   }
 
   private toTrimmedString(value: unknown) {
@@ -45,7 +56,7 @@ export class CustomerService implements OnModuleInit {
   }
 
   private pickUserProfileUpdates(source: Record<string, any>) {
-    const allowed = ['full_name', 'contact_number', 'date_of_birth'];
+    const allowed = ['full_name', 'contact_number'];
     const filtered: Record<string, any> = {};
     for (const key of allowed) {
       if (source[key] !== undefined) filtered[key] = source[key];
@@ -56,6 +67,7 @@ export class CustomerService implements OnModuleInit {
   private pickCustomerProfileUpdates(source: Record<string, any>) {
     const allowed = [
       'address',
+      'date_of_birth',
       'city',
       'province',
       'region',
@@ -106,20 +118,9 @@ export class CustomerService implements OnModuleInit {
     const normalizedUserId = this.toTrimmedString(userId);
     if (!normalizedUserId) throw new BadRequestException('userId is required');
 
-    let lastError: any = null;
-    for (const schemaName of this.identitySchemas) {
-      const { data, error } = await this.supabase
-        .schema(schemaName)
-        .from('customer_profiles')
-        .select('*')
-        .eq('user_id', normalizedUserId)
-        .maybeSingle();
-      if (!error) return data || { user_id: normalizedUserId };
-      lastError = error;
-      if (!this.isMissingRelationError(error)) break;
-    }
-
-    throw new InternalServerErrorException(lastError?.message || 'Failed to fetch customer profile');
+    return await this.request<any>(AUTH_PATTERNS.GET_CUSTOMER_PROFILE, {
+      userId: normalizedUserId,
+    });
   }
 
   async updateProfile(userId: string, updates: Record<string, any>) {
@@ -135,64 +136,23 @@ export class CustomerService implements OnModuleInit {
     }
 
     if (Object.keys(userUpdates).length > 0) {
-      let userUpdateError: any = null;
-      for (const schemaName of this.identitySchemas) {
-        const { error } = await this.supabase
-          .schema(schemaName)
-          .from('users')
-          .update(userUpdates)
-          .eq('id', normalizedUserId);
-        if (!error) {
-          userUpdateError = null;
-          break;
-        }
-        userUpdateError = error;
-        if (!this.isMissingRelationError(error)) break;
-      }
-
-      if (userUpdateError) {
-        throw new InternalServerErrorException(userUpdateError.message);
-      }
+      await this.emit(AUTH_PATTERNS.UPDATE_PROFILE, {
+        userId: normalizedUserId,
+        ...userUpdates,
+      });
     }
 
-    if (Object.keys(profileUpdates).length === 0) {
-      return { user_id: normalizedUserId };
+    if (Object.keys(profileUpdates).length > 0) {
+      await this.emit(AUTH_PATTERNS.UPDATE_CUSTOMER_PROFILE, {
+        userId: normalizedUserId,
+        ...profileUpdates,
+      });
     }
 
-    let lastProfileError: any = null;
-    for (const schemaName of this.identitySchemas) {
-      const { data: updatedProfile, error: updateError } = await this.supabase
-        .schema(schemaName)
-        .from('customer_profiles')
-        .update(profileUpdates)
-        .eq('user_id', normalizedUserId)
-        .select()
-        .maybeSingle();
-
-      if (!updateError && updatedProfile) return updatedProfile;
-      if (!updateError && !updatedProfile) {
-        const { data: insertedProfile, error: insertError } = await this.supabase
-          .schema(schemaName)
-          .from('customer_profiles')
-          .insert([{ user_id: normalizedUserId, ...profileUpdates }])
-          .select()
-          .single();
-        if (!insertError) return insertedProfile;
-        lastProfileError = insertError;
-        if (this.isMissingRelationError(insertError)) continue;
-        throw new InternalServerErrorException(insertError.message);
-      }
-
-      const resolvedUpdateError = updateError || { message: 'Unknown error' };
-      lastProfileError = resolvedUpdateError;
-      if (this.isMissingRelationError(resolvedUpdateError)) continue;
-      throw new InternalServerErrorException(resolvedUpdateError.message);
-    }
-
-    if (lastProfileError) {
-      throw new InternalServerErrorException(lastProfileError.message);
-    }
-
-    return { user_id: normalizedUserId, ...profileUpdates };
+    return {
+      user_id: normalizedUserId,
+      ...userUpdates,
+      ...profileUpdates,
+    };
   }
 }

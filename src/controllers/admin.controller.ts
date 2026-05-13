@@ -21,9 +21,10 @@ import { ClientKafka } from '@nestjs/microservices';
 import { sendWithTimeout } from '../utils/kafka-request.js';
 import { ADMIN_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
+import { AdminRoleGuard } from '../guards/admin-role.guard.js';
 
 @Controller('api/admin')
-@UseGuards(SupabaseAuthGuard)
+@UseGuards(SupabaseAuthGuard, AdminRoleGuard)
 export class AdminController implements OnModuleInit {
   constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
 
@@ -100,18 +101,17 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.GET_COMMISSION,
       ADMIN_PATTERNS.UPDATE_COMMISSION,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   // ── Existing ──────────────────────────────────────────────
   @Patch('v2/documents/status/:id')
-  @HttpCode(202)
-  updateDocumentStatus(@Param('id') id: string, @Body() dto: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS, {
-      documentId: id,
-      ...dto,
-    });
-    return { status: 'accepted' };
+  async updateDocumentStatus(@Param('id') id: string, @Body() dto: any) {
+    return await sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS, {
+        ...dto,
+        documentId: id,
+      }),
+    );
   }
 
   // ── USER MANAGEMENT ───────────────────────────────────────
@@ -195,8 +195,8 @@ export class AdminController implements OnModuleInit {
   @HttpCode(202)
   updateProviderApplicationStatus(@Param('id') id: string, @Body() body: any) {
     this.kafka.emit(ADMIN_PATTERNS.UPDATE_PROVIDER_APPLICATION_STATUS, {
-      id,
       ...body,
+      id,
     });
     return { status: 'accepted' };
   }
@@ -228,12 +228,17 @@ export class AdminController implements OnModuleInit {
     );
   }
 
+  @Get('v1/account/activity-log')
+  getActivityLog(@Query('page') page = '1', @Query('limit') limit = '50') {
+    return { logs: [], total: 0, page: +page, limit: +limit };
+  }
+
   @Patch('v1/account/profile')
   @HttpCode(202)
   updateAdminProfile(@Request() req: any, @Body() body: any) {
     this.kafka.emit(ADMIN_PATTERNS.UPDATE_ADMIN_PROFILE, {
-      userId: req['user'].id,
       ...body,
+      userId: req['user'].id,
     });
     return { status: 'accepted' };
   }
@@ -429,9 +434,8 @@ export class AdminController implements OnModuleInit {
 
   @Patch('v1/marketplace/categories/:id')
   updateCategory(@Param('id') id: string, @Body() body: any) {
-    return sendWithTimeout(
-      this.kafka.send(ADMIN_PATTERNS.UPDATE_CATEGORY, { id, ...body }),
-    );
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_CATEGORY, { ...body, id });
+    return { status: 'accepted' };
   }
 
   @Delete('v1/marketplace/categories/:id')
@@ -459,14 +463,10 @@ export class AdminController implements OnModuleInit {
   }
 
   @Patch('v1/marketplace/services/:id')
-  async updateService(@Param('id') id: string, @Body() body: any) {
-    try {
-      return await sendWithTimeout(
-        this.kafka.send(ADMIN_PATTERNS.UPDATE_SERVICE, { id, ...body }),
-      );
-    } catch (error) {
-      throw this.buildAdminHttpError(error, 'Failed to update service');
-    }
+  @HttpCode(202)
+  updateService(@Param('id') id: string, @Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_SERVICE, { ...body, id });
+    return { status: 'accepted' };
   }
 
   @Delete('v1/marketplace/services/:id')
@@ -493,7 +493,7 @@ export class AdminController implements OnModuleInit {
   @Patch('v1/marketplace/service-areas/:id')
   @HttpCode(202)
   updateServiceArea(@Param('id') id: string, @Body() body: any) {
-    this.kafka.emit(ADMIN_PATTERNS.UPDATE_SERVICE_AREA, { id, ...body });
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_SERVICE_AREA, { ...body, id });
     return { status: 'accepted' };
   }
 

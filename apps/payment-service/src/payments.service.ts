@@ -3,6 +3,8 @@ import {
   Injectable,
   InternalServerErrorException,
   BadRequestException,
+  ConflictException,
+  ForbiddenException,
   NotFoundException,
   OnModuleInit,
   Logger,
@@ -15,6 +17,7 @@ import {
   BOOKING_PATTERNS,
   PricingEngine,
   PROVIDER_PATTERNS,
+  connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
 
@@ -32,7 +35,10 @@ export class PaymentService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_IDS);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
-    await this.kafka.connect();
+    await connectKafkaClientWithRetry(this.kafka, {
+      context: PaymentService.name,
+      logger: this.logger,
+    });
   }
 
   private toTrimmedString(value: unknown) {
@@ -311,7 +317,26 @@ export class PaymentService implements OnModuleInit {
     return { status: 'success', data: { provider_id: providerId, total_earnings: total } };
   }
 
-  async getPaymentByBookingId(bookingId: string) {
+  async getPaymentByBookingId(bookingId: string, requesterId?: string) {
+    const normalizedRequesterId = this.toTrimmedString(requesterId);
+    if (normalizedRequesterId) {
+      const bookingResponse = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
+        id: bookingId,
+        requesterId: normalizedRequesterId,
+      });
+      const booking = bookingResponse?.booking;
+      if (!booking) throw new NotFoundException('Payment not found');
+
+      const bookingCustomerId = this.toTrimmedString(booking.customer_id);
+      const bookingProviderId = this.toTrimmedString(booking.provider_id);
+      if (
+        normalizedRequesterId !== bookingCustomerId &&
+        normalizedRequesterId !== bookingProviderId
+      ) {
+        throw new NotFoundException('Payment not found');
+      }
+    }
+
     const payment = await this.getLatestPaymentByBookingId(bookingId);
     return { payment };
   }
@@ -322,28 +347,49 @@ export class PaymentService implements OnModuleInit {
       .eq('provider_id', providerId).order('created_at', { ascending: false });
     if (error) throw new InternalServerErrorException(error.message);
 
-    const payments = await Promise.all((data || []).map(async (p: any) => {
-      let booking: any = null;
-      try {
-        const bookingResponse = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
-          id: p.booking_id,
-        });
-        booking = bookingResponse?.booking || null;
-      } catch {
-        booking = null;
-      }
+    const paymentRows = data || [];
+    const bookingIds = Array.from(
+      new Set(
+        paymentRows
+          .map((payment: any) => this.toTrimmedString(payment?.booking_id))
+          .filter(Boolean),
+      ),
+    );
+    let bookingsById = new Map<string, any>();
 
+    if (bookingIds.length) {
+      try {
+        const response = await this.request<{ bookings: any[] }>(
+          BOOKING_PATTERNS.GET_BY_IDS,
+          { ids: bookingIds },
+        );
+        bookingsById = new Map(
+          (response?.bookings || []).map((booking: any) => [
+            this.toTrimmedString(booking?.id),
+            booking,
+          ]),
+        );
+      } catch {
+        this.logger.warn('payment.provider-history: booking enrichment degraded');
+      }
+    }
+
+    const payments = paymentRows.map((p: any) => {
+      const booking = bookingsById.get(this.toTrimmedString(p?.booking_id));
       const platformFee = Number(p.amount) * 0.1;
       return {
         ...p,
         booking_reference: booking?.booking_reference || '',
-        customer_name: this.toTrimmedString(booking?.customer?.full_name) || '',
-        service_title: this.toTrimmedString(booking?.service_title) || '',
+        customer_name: '',
+        service_title:
+          this.toTrimmedString(booking?.service_title) ||
+          this.toTrimmedString(booking?.service_name) ||
+          '',
         scheduled_at: booking?.scheduled_at,
         platform_fee: platformFee,
         net_earnings: Number(p.amount) - platformFee,
       };
-    }));
+    });
 
     return { payments };
   }
@@ -363,13 +409,24 @@ export class PaymentService implements OnModuleInit {
     return { total_earnings: total, net_earnings: total - platformFees, platform_fees: platformFees, monthly_earnings: monthlyTotal, completed_payments: completed.length };
   }
 
-  async ensureBookingPayment(body: any) {
-    const bookingIdCandidate = this.toTrimmedString(body?.bookingId);
-    const booking = body?.skipBookingLookup
-      ? null
-      : await this.getBookingForPricing(bookingIdCandidate);
+  async ensureBookingPayment(body: any, requesterId?: string) {
     const { bookingId, customerId, providerId, amount, method, quote } =
-      this.normalizeEnsurePaymentInput(body, booking);
+      this.normalizeEnsurePaymentInput(body);
+
+    let booking: any;
+    try {
+      const response = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, { id: bookingId });
+      booking = response?.booking;
+    } catch {
+      throw new InternalServerErrorException('Failed to fetch booking');
+    }
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (this.toTrimmedString(booking.customer_id) !== customerId) {
+      throw new NotFoundException('Booking not found');
+    }
+    if (this.toTrimmedString(booking.provider_id) !== providerId) {
+      throw new NotFoundException('Booking not found');
+    }
 
     const existing = await this.getLatestPaymentByBookingId(bookingId);
     if (existing) {
@@ -413,9 +470,168 @@ export class PaymentService implements OnModuleInit {
     return { payment: insertedRows[0], pricing: quote };
   }
 
+  async savePriceQuote(data: any) {
+    const { error } = await this.supabase
+      .schema('payment')
+      .from('price_quotes')
+      .insert([{
+        booking_id: data.booking_id,
+        service_id: data.service_id ?? null,
+        base_booking_fee: data.base_booking_fee,
+        effort_amount: data.effort_amount,
+        travel_fee: data.travel_fee,
+        fuel_adjustment: data.fuel_adjustment,
+        materials_amount: data.materials_amount,
+        base_effort_pool: data.base_effort_pool,
+        total_amount: data.total_amount,
+        units: data.units ?? null,
+        distance_km: data.distance_km ?? null,
+        expires_at: data.expires_at,
+        is_used: false,
+      }]);
+    if (error) {
+      this.logger.warn(`Failed to save price quote for booking ${data.booking_id}: ${error.message}`);
+    }
+  }
+
+  async getCommissionRate(): Promise<{ commission_rate: number }> {
+    const DEFAULT = 0.15;
+    try {
+      const { data, error } = await this.supabase
+        .schema('payment')
+        .from('platform_pricing_config')
+        .select('config_value')
+        .eq('config_key', 'commission_rate')
+        .eq('is_active', true)
+        .maybeSingle();
+      if (!error && data) {
+        const parsed = Number(data.config_value);
+        if (Number.isFinite(parsed) && parsed > 0) return { commission_rate: parsed };
+      }
+    } catch {
+      this.logger.warn('getCommissionRate: failed to read platform_pricing_config; using default 0.15');
+    }
+    return { commission_rate: DEFAULT };
+  }
+
+  async checkoutWithQuote(dto: any) {
+    const quoteId = this.toTrimmedString(dto?.quote_id);
+    const paymentMethod = this.normalizePaymentMethod(dto?.payment_method) || 'cash_on_service';
+    const requesterId = this.toTrimmedString(dto?.requester_id);
+
+    if (!quoteId) throw new BadRequestException('quote_id is required');
+    if (!requesterId) throw new BadRequestException('requester_id is required');
+
+    const { data: quote, error: quoteError } = await this.supabase
+      .schema('payment')
+      .from('price_quotes')
+      .select('id, booking_id, base_booking_fee, effort_amount, travel_fee, fuel_adjustment, materials_amount, base_effort_pool, total_amount, expires_at, is_used')
+      .eq('id', quoteId)
+      .maybeSingle();
+    if (quoteError) throw new InternalServerErrorException(quoteError.message);
+    if (!quote) throw new NotFoundException('Quote not found');
+    if (new Date(quote.expires_at).getTime() < Date.now()) throw new BadRequestException('Quote has expired');
+    if (quote.is_used) throw new ConflictException('Quote already used');
+
+    let booking: any;
+    try {
+      const bookingResponse = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, { id: quote.booking_id });
+      booking = bookingResponse?.booking;
+    } catch {
+      throw new InternalServerErrorException('Failed to fetch booking');
+    }
+    if (!booking) throw new NotFoundException('Booking not found');
+    if (this.toTrimmedString(booking.customer_id) !== requesterId) {
+      throw new ForbiddenException('Not your booking');
+    }
+
+    const existingPayment = await this.getLatestPaymentByBookingId(quote.booking_id);
+    if (existingPayment) throw new ConflictException('Payment already exists for this booking');
+
+    const DEFAULT_COMMISSION_RATE = 0.15;
+    let commissionRate = DEFAULT_COMMISSION_RATE;
+    try {
+      const { data: configRow, error: configError } = await this.supabase
+        .schema('payment')
+        .from('platform_pricing_config')
+        .select('config_value')
+        .eq('config_key', 'commission_rate')
+        .eq('is_active', true)
+        .maybeSingle();
+      if (!configError && configRow) {
+        const parsed = this.toPositiveAmount(configRow.config_value);
+        if (parsed !== null) commissionRate = parsed;
+      }
+    } catch {
+      this.logger.warn('Failed to fetch commission_rate from platform_pricing_config; using default 0.15');
+    }
+
+    const baseEffortPool = Number(quote.base_effort_pool);
+    const totalAmount = Number(quote.total_amount);
+    const serveaseIncome = Math.round(baseEffortPool * commissionRate * 100) / 100;
+    const providerEarnings = Math.round((totalAmount - serveaseIncome) * 100) / 100;
+
+    const { data: paymentRows, error: paymentInsertError } = await this.supabase
+      .schema('payment')
+      .from('payments')
+      .insert([{
+        booking_id: quote.booking_id,
+        customer_id: booking.customer_id,
+        provider_id: booking.provider_id,
+        amount: totalAmount,
+        base_booking_fee: Number(quote.base_booking_fee),
+        effort_amount: Number(quote.effort_amount),
+        travel_fee: Number(quote.travel_fee),
+        fuel_adjustment: Number(quote.fuel_adjustment),
+        materials_amount: Number(quote.materials_amount),
+        base_effort_pool: baseEffortPool,
+        total_amount_new: totalAmount,
+        commission_rate: commissionRate,
+        servease_income: serveaseIncome,
+        provider_earnings: providerEarnings,
+        quote_id: quote.id,
+        method: paymentMethod,
+        status: 'pending',
+      }])
+      .select();
+    if (paymentInsertError) throw new InternalServerErrorException(paymentInsertError.message);
+
+    const payment = Array.isArray(paymentRows) ? paymentRows[0] : null;
+    if (!payment) throw new InternalServerErrorException('Failed to create payment');
+
+    await this.supabase
+      .schema('payment')
+      .from('price_quotes')
+      .update({ is_used: true, used_at: new Date().toISOString() })
+      .eq('id', quoteId);
+
+    return {
+      payment_id: payment.id,
+      booking_id: quote.booking_id,
+      total_amount: totalAmount,
+      breakdown: {
+        base_booking_fee: Number(quote.base_booking_fee),
+        effort_amount: Number(quote.effort_amount),
+        travel_fee: Number(quote.travel_fee),
+        fuel_adjustment: Number(quote.fuel_adjustment),
+        materials_amount: Number(quote.materials_amount),
+        base_effort_pool: baseEffortPool,
+        total_amount: totalAmount,
+      },
+      commission: {
+        rate: commissionRate,
+        servease_income: serveaseIncome,
+        provider_earnings: providerEarnings,
+      },
+      status: 'pending',
+      created_at: payment.created_at,
+    };
+  }
+
   async markBookingPaymentPaid(body: any) {
     const bookingId = this.toTrimmedString(body?.bookingId);
     if (!bookingId) throw new BadRequestException('bookingId is required');
+    await this.assertCanMarkBookingPaid(bookingId, body);
 
     const existing = await this.getLatestPaymentByBookingId(bookingId);
     if (!existing) return { payment: null };
@@ -442,6 +658,27 @@ export class PaymentService implements OnModuleInit {
 
     const updatedRows = Array.isArray(data) ? data : [];
     return { payment: updatedRows[0] || { ...existing, ...updates }, pricing: quote };
+  }
+
+  private async assertCanMarkBookingPaid(bookingId: string, body: any) {
+    const requesterRole = this.toTrimmedString(body?.requesterRole);
+    const requesterId = this.toTrimmedString(body?.requesterId);
+
+    if (requesterRole === 'admin') return;
+    if (requesterRole !== 'provider' || !requesterId) {
+      throw new ForbiddenException('Only the assigned provider can mark this booking paid');
+    }
+
+    let booking: any;
+    try {
+      const response = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, { id: bookingId });
+      booking = response?.booking;
+    } catch {
+      throw new InternalServerErrorException('Failed to fetch booking');
+    }
+    if (!booking || this.toTrimmedString(booking.provider_id) !== requesterId) {
+      throw new ForbiddenException('Only the assigned provider can mark this booking paid');
+    }
   }
 
   async cancelBookingPayment(bookingId: string) {

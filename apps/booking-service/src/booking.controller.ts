@@ -14,6 +14,7 @@ export class BookingKafkaController {
     try {
       return await this.bookingService.createBooking(data, data.customerId);
     } catch (error: any) {
+      const response = typeof error?.getResponse === 'function' ? error.getResponse() : undefined;
       console.error('[booking-service.create-booking] failed', {
         customerId: data?.customerId,
         providerId: data?.provider_id,
@@ -21,7 +22,25 @@ export class BookingKafkaController {
         scheduledAt: data?.scheduled_at,
         totalAmount: data?.total_amount,
         message: error?.message,
-        details: error?.response || error,
+        details: response || error?.response || error,
+      });
+      throw error;
+    }
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.GET_PRICING_QUOTE)
+  async getPricingQuote(@Payload() data: any) {
+    try {
+      return await this.bookingService.getPricingQuote(data);
+    } catch (error: any) {
+      const response = typeof error?.getResponse === 'function' ? error.getResponse() : undefined;
+      console.error('[booking-service.get-pricing-quote] failed', {
+        providerId: data?.provider_id,
+        serviceId: data?.service_id,
+        providerServiceId: data?.provider_service_id,
+        bookingId: data?.booking_id,
+        message: error?.message,
+        details: response || error?.response || error,
       });
       throw error;
     }
@@ -39,7 +58,10 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID)
   async getProviderBookingById(@Payload() data: any) {
-    return this.bookingService.getProviderBookingById(data.bookingId);
+    return this.bookingService.getProviderBookingById(
+      data.bookingId,
+      data.providerId,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_CHAT_BOOKINGS)
@@ -84,17 +106,56 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_BY_ID)
   async getBookingById(@Payload() data: any) {
-    return this.bookingService.getBookingById(data.id);
+    return this.bookingService.getBookingById(
+      data.id,
+      data.requesterId || data.providerId || data.userId,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_BY_IDS)
   async getBookingsByIds(@Payload() data: any) {
-    return this.bookingService.getBookingsByIds(data?.ids);
+    return this.bookingService.getBookingsByIds(data?.ids ?? []);
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.GET_FUEL_BASELINE)
+  async getFuelBaseline(@Payload() data: any) {
+    return this.bookingService.getFuelBaselineData(data.fuel_type);
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_ATTACHMENTS)
   async getAttachments(@Payload() data: any) {
-    return this.bookingService.getAttachments(data.bookingId, data.accessToken);
+    return this.bookingService.getAttachments(
+      data.bookingId,
+      data.userId,
+      data.accessToken,
+    );
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.LOCATION_PING)
+  async saveLocationPing(@Payload() data: any) {
+    return this.bookingService.saveLocationPing(
+      data.bookingId,
+      data.providerId,
+      data.latitude,
+      data.longitude,
+    );
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.LOCATION_LATEST)
+  async getLatestLocation(@Payload() data: any) {
+    return this.bookingService.getLatestLocation(
+      data.bookingId,
+      data.requesterId,
+    );
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.LOCATION_TRAIL)
+  async getLocationTrail(@Payload() data: any) {
+    return this.bookingService.getLocationTrail(
+      data.bookingId,
+      data.requesterId,
+      data.limit,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.GET_PROVIDER_AVAILABILITY)
@@ -122,22 +183,6 @@ export class BookingKafkaController {
     );
   }
 
-  @MessagePattern(BOOKING_PATTERNS.CREATE_RESCHEDULE)
-  async createReschedule(@Payload() data: any) {
-    return this.bookingService.createRescheduleRequest(data);
-  }
-
-  @MessagePattern(BOOKING_PATTERNS.GET_RESCHEDULES)
-  async getReschedules(@Payload() data: any) {
-    return this.bookingService.getRescheduleRequests(data.bookingId);
-  }
-
-  @MessagePattern(BOOKING_PATTERNS.REVIEW_RESCHEDULE)
-  async reviewReschedule(@Payload() data: any) {
-    const { requestId, ...body } = data || {};
-    return this.bookingService.reviewRescheduleRequest(requestId, body);
-  }
-
   @MessagePattern(BOOKING_PATTERNS.CREATE_ADDITIONAL_CHARGES)
   async createAdditionalCharges(@Payload() data: any) {
     return this.bookingService.createAdditionalCharges(data);
@@ -145,7 +190,10 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.GET_ADDITIONAL_CHARGES)
   async getAdditionalCharges(@Payload() data: any) {
-    return this.bookingService.getAdditionalCharges(data.bookingId);
+    return this.bookingService.getAdditionalCharges(
+      data.bookingId,
+      data.providerId,
+    );
   }
 
   @MessagePattern(BOOKING_PATTERNS.REVIEW_ADDITIONAL_CHARGES)
@@ -165,12 +213,24 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.CANCEL)
   async cancelBooking(@Payload() data: any) {
-    return this.bookingService.cancelBooking(
-      data.id,
-      data.userId,
-      data.reason,
-      data.explanation,
-    );
+    try {
+      return await this.bookingService.cancelBooking(
+        data.id,
+        data.userId,
+        data.reason,
+        data.explanation,
+      );
+    } catch (error: any) {
+      const response = typeof error?.getResponse === 'function' ? error.getResponse() : undefined;
+      console.error('[booking-service.cancel-booking] failed', {
+        bookingId: data?.id,
+        userId: data?.userId,
+        reason: data?.reason,
+        message: error?.message,
+        details: response || error?.response || error,
+      });
+      throw error;
+    }
   }
 
   @MessagePattern(BOOKING_PATTERNS.SAVE_ATTACHMENTS)
@@ -178,6 +238,7 @@ export class BookingKafkaController {
     return this.bookingService.saveAttachments(
       data.bookingId,
       data.attachments,
+      data.userId,
       data.accessToken,
     );
   }
@@ -188,6 +249,14 @@ export class BookingKafkaController {
       data.bookingId,
       data.userId,
       data.reason,
+    );
+  }
+
+  @EventPattern(BOOKING_PATTERNS.ADD_PROVIDER_STATUS_EVENTS)
+  async addProviderStatusEvents(@Payload() data: any) {
+    return this.bookingService.addProviderStatusEvents(
+      data.provider_id,
+      data.status,
     );
   }
 }

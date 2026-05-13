@@ -11,9 +11,26 @@ export const DEFAULT_KAFKA_TIMEOUT_MS =
     ? parsedTimeoutMs
     : 12_000;
 
+function extractHttpError(error: unknown) {
+  if (!error || typeof error !== 'object') return null;
+  const candidate = error as any;
+  const response = candidate.response;
+  const statusCode = Number(candidate.statusCode ?? response?.statusCode);
+  if (!Number.isInteger(statusCode) || statusCode < 400 || statusCode > 599) {
+    return null;
+  }
+
+  const rawMessage = candidate.message ?? response?.message;
+  const message = Array.isArray(rawMessage)
+    ? rawMessage.join('; ')
+    : String(rawMessage || 'Upstream service failed');
+  return { statusCode, message };
+}
+
 export function sendWithTimeout<T>(
   source: Observable<T>,
   timeoutMs: number = DEFAULT_KAFKA_TIMEOUT_MS,
+  context = 'unknown-pattern',
 ): Promise<T> {
   return lastValueFrom(
     source.pipe(
@@ -22,13 +39,23 @@ export function sendWithTimeout<T>(
         if (err instanceof TimeoutError) {
           const correlationId = getCorrelationId();
           logger.error(
-            `[${correlationId}] Upstream microservice did not reply within ${timeoutMs}ms`,
+            `[${correlationId}] Upstream microservice did not reply to ${context} within ${timeoutMs}ms`,
           );
           return throwError(
             () =>
               new HttpException(
                 'Upstream service unavailable (request timed out)',
                 HttpStatus.GATEWAY_TIMEOUT,
+              ),
+          );
+        }
+        const upstreamError = extractHttpError(err);
+        if (upstreamError) {
+          return throwError(
+            () =>
+              new HttpException(
+                upstreamError.message,
+                upstreamError.statusCode,
               ),
           );
         }

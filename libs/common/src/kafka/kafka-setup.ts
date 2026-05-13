@@ -13,6 +13,32 @@ import {
   TRUST_PATTERNS,
 } from './patterns.js';
 
+async function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+let kafkaGroupReadinessWait: Promise<void> | undefined;
+
+async function waitForKafkaGroupCoordinator() {
+  const delayMs = Math.max(
+    0,
+    Number(process.env.KAFKA_GROUP_READINESS_DELAY_MS) || 12000,
+  );
+
+  if (delayMs <= 0) {
+    return;
+  }
+
+  kafkaGroupReadinessWait ??= (async () => {
+    console.log(
+      `[kafka-setup] Waiting ${delayMs}ms for Kafka consumer groups to become ready`,
+    );
+    await sleep(delayMs);
+  })();
+
+  await kafkaGroupReadinessWait;
+}
+
 export async function ensureKafkaTopics(broker?: string): Promise<void> {
   const brokerUrl = broker ?? process.env.KAFKA_BROKER ?? 'localhost:9092';
   const kafka = new Kafka({
@@ -73,6 +99,8 @@ export async function ensureKafkaTopics(broker?: string): Promise<void> {
     } else {
       console.log('[kafka-setup] All Kafka topics already exist');
     }
+
+    await waitForKafkaGroupCoordinator();
   } finally {
     await admin.disconnect();
   }

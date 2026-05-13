@@ -24,7 +24,6 @@ export class ServicesController implements OnModuleInit {
       CATALOG_PATTERNS.GET_PROVIDER_SERVICES,
       CATALOG_PATTERNS.GET_PROVIDER_PROFILE_DATA,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Get('v1')

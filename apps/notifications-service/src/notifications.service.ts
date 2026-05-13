@@ -27,20 +27,13 @@ export class NotificationsService {
     if (error) throw new InternalServerErrorException(error.message);
 
     const notifications = (data || []).map((row: any) => {
-      const normalizedId =
-        this.toTrimmedString(row?.id) ||
-        this.toTrimmedString(row?.notification_id) ||
-        null;
-      const normalizedBody =
-        this.toTrimmedString(row?.body) || this.toTrimmedString(row?.message);
+      const normalizedId = this.toTrimmedString(row?.id) || null;
+      const normalizedBody = this.toTrimmedString(row?.body);
 
       return {
         ...row,
         id: normalizedId,
-        notification_id:
-          this.toTrimmedString(row?.notification_id) || normalizedId,
         body: normalizedBody,
-        message: this.toTrimmedString(row?.message) || normalizedBody,
       };
     });
 
@@ -52,7 +45,7 @@ export class NotificationsService {
       .schema('notification_and_support')
       .from('notifications')
       .update({ is_read: true })
-      .eq('notification_id', notificationId)
+      .eq('id', notificationId)
       .eq('user_id', userId);
     if (error) throw new InternalServerErrorException(error.message);
     return { ok: true };
@@ -78,6 +71,76 @@ export class NotificationsService {
       .eq('is_read', false);
     if (error) throw new InternalServerErrorException(error.message);
     return { count: count || 0 };
+  }
+
+  async createNotification(
+    userId: string,
+    type: string,
+    payload: {
+      bookingId?: string;
+      title?: string;
+      body?: string;
+      metadata?: any;
+    },
+  ) {
+    const normalizedUserId = this.toTrimmedString(userId);
+    const normalizedType = this.toTrimmedString(type);
+    const normalizedTitle = this.toTrimmedString(payload?.title) || this.getTitleForType(normalizedType);
+    const normalizedBody = this.toTrimmedString(payload?.body) || this.getBodyForType(normalizedType);
+    const bookingId = this.toTrimmedString(payload?.bookingId) || null;
+
+    if (!normalizedUserId) throw new BadRequestException('userId is required');
+
+    const { error } = await this.supabase
+      .schema('notification_and_support')
+      .from('notifications')
+      .insert([
+        {
+          user_id: normalizedUserId,
+          type: normalizedType,
+          title: normalizedTitle,
+          body: normalizedBody,
+          booking_id: bookingId,
+          data: payload?.metadata || {},
+          is_read: false,
+        },
+      ]);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { ok: true };
+  }
+
+  private getTitleForType(type: string): string {
+    const typeMap: { [key: string]: string } = {
+      'notification.booking-created': 'Booking Created',
+      'notification.booking-confirmed': 'Booking Confirmed',
+      'notification.booking-in-progress': 'Service in Progress',
+      'notification.booking-completed': 'Booking Completed',
+      'notification.booking-cancelled': 'Booking Cancelled',
+      'notification.dispute-created': 'Dispute Raised',
+      'notification.dispute-status-changed': 'Dispute Updated',
+      'notification.review-created': 'You Have a New Review',
+      'notification.provider-application-submitted': 'Provider Application Submitted',
+      'notification.provider-application-approved': 'Verification Approved',
+      'notification.provider-application-rejected': 'Verification Needs Updates',
+    };
+    return typeMap[type] || 'Notification';
+  }
+
+  private getBodyForType(type: string): string {
+    const typeMap: { [key: string]: string } = {
+      'notification.booking-created': 'Your booking has been created',
+      'notification.booking-confirmed': 'Your booking has been confirmed',
+      'notification.booking-in-progress': 'Your service is now in progress',
+      'notification.booking-completed': 'Your booking has been completed',
+      'notification.booking-cancelled': 'Your booking has been cancelled',
+      'notification.dispute-created': 'A dispute has been raised',
+      'notification.dispute-status-changed': 'Your dispute status has been updated',
+      'notification.review-created': 'Someone left you a review',
+      'notification.provider-application-submitted': 'A provider submitted documents for review',
+      'notification.provider-application-approved': 'Your provider verification has been approved',
+      'notification.provider-application-rejected': 'Your provider verification was rejected. Please review the reason and resubmit',
+    };
+    return typeMap[type] || 'You have a new notification';
   }
 
   async sendBroadcast(
@@ -107,8 +170,9 @@ export class NotificationsService {
     const payload = targetUserIds.map((userId) => ({
       user_id: userId,
       title: normalizedTitle,
-      message: normalizedMessage,
+      body: normalizedMessage,
       type: normalizedType,
+      data: {},
       is_read: false,
     }));
 

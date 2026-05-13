@@ -41,5 +41,21 @@ export class TrustKafkaController {
   async getComplianceReport(@Payload() data: any) {
     return this.trustService.getComplianceReport(data?.from, data?.to);
   }
+
+  // Review Response handlers
+  @MessagePattern(TRUST_PATTERNS.CREATE_REVIEW_RESPONSE)
+  async createReviewResponse(@Payload() data: any) {
+    return this.trustService.createReviewResponse(data);
+  }
+
+  @MessagePattern(TRUST_PATTERNS.UPDATE_REVIEW_RESPONSE)
+  async updateReviewResponse(@Payload() data: any) {
+    return this.trustService.updateReviewResponse(data);
+  }
+
+  @MessagePattern(TRUST_PATTERNS.GET_REVIEW_WITH_RESPONSE)
+  async getReviewWithResponse(@Payload() data: any) {
+    return this.trustService.getReviewWithResponse(data?.reviewId);
+  }
 }
 

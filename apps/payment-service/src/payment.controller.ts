@@ -1,5 +1,5 @@
 import { Controller, Inject } from '@nestjs/common';
-import { MessagePattern, EventPattern, Payload } from '@nestjs/microservices';
+import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
 import { PAYMENT_PATTERNS } from '@app/common';
 import { PaymentService } from './payments.service.js';
 
@@ -19,7 +19,10 @@ export class PaymentKafkaController {
 
   @MessagePattern(PAYMENT_PATTERNS.GET_BY_BOOKING)
   async getPaymentByBookingId(@Payload() data: any) {
-    return this.paymentService.getPaymentByBookingId(data.bookingId);
+    return this.paymentService.getPaymentByBookingId(
+      data.bookingId,
+      data.requesterId,
+    );
   }
 
   @MessagePattern(PAYMENT_PATTERNS.GET_PROVIDER_HISTORY)
@@ -94,7 +97,10 @@ export class PaymentKafkaController {
   @MessagePattern(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT)
   async ensureBookingPayment(@Payload() data: any) {
     try {
-      return await this.paymentService.ensureBookingPayment(data);
+      return await this.paymentService.ensureBookingPayment(
+        data,
+        data.requesterId,
+      );
     } catch (error: any) {
       console.error('[payment-service.ensure-booking] failed', {
         bookingId: data?.bookingId,
@@ -109,18 +115,44 @@ export class PaymentKafkaController {
     }
   }
 
-  @EventPattern(PAYMENT_PATTERNS.MARK_PAID)
+  @MessagePattern(PAYMENT_PATTERNS.MARK_PAID)
   async markBookingPaymentPaid(@Payload() data: any) {
     return this.paymentService.markBookingPaymentPaid(data);
   }
 
-  @EventPattern(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT)
+  @MessagePattern(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT)
   async cancelBookingPayment(@Payload() data: any) {
     return this.paymentService.cancelBookingPayment(data.bookingId);
   }
 
-  @EventPattern(PAYMENT_PATTERNS.UPDATE_AMOUNT)
+  @MessagePattern(PAYMENT_PATTERNS.UPDATE_AMOUNT)
   async updateBookingPaymentAmount(@Payload() data: any) {
     return this.paymentService.updateBookingPaymentAmount(data.bookingId, data.amount);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.CHECKOUT_WITH_QUOTE)
+  async checkoutWithQuote(@Payload() data: any) {
+    try {
+      return await this.paymentService.checkoutWithQuote(data);
+    } catch (error: any) {
+      console.error('[payment-service.checkout-with-quote] failed', {
+        quoteId: data?.quote_id,
+        requesterId: data?.requester_id,
+        paymentMethod: data?.payment_method,
+        message: error?.message,
+        details: error?.response || error,
+      });
+      throw error;
+    }
+  }
+
+  @EventPattern(PAYMENT_PATTERNS.SAVE_PRICE_QUOTE)
+  async savePriceQuote(@Payload() data: any) {
+    return this.paymentService.savePriceQuote(data);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.GET_COMMISSION_RATE)
+  async getCommissionRate() {
+    return this.paymentService.getCommissionRate();
   }
 }

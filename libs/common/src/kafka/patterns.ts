@@ -40,6 +40,8 @@ export const BOOKING_PATTERNS = {
   GET_REQUESTS: 'booking.get-requests',
   GET_BY_ID: 'booking.get-by-id',
   GET_BY_IDS: 'booking.get-by-ids',
+  GET_FUEL_BASELINE: 'booking.get-fuel-baseline',
+  ADD_PROVIDER_STATUS_EVENTS: 'booking.add-provider-status-events',
   UPDATE_STATUS: 'booking.update-status',
   UPDATE_STATUS_RPC: 'booking.update-status.rpc',
   CANCEL: 'booking.cancel',
@@ -47,15 +49,16 @@ export const BOOKING_PATTERNS = {
   SAVE_PROVIDER_AVAILABILITY: 'booking.save-provider-availability',
   GET_RESERVED_SLOTS: 'booking.get-reserved-slots',
   CHECK_PROVIDER_AVAILABILITY: 'booking.check-provider-availability',
-  CREATE_RESCHEDULE: 'booking.create-reschedule',
-  GET_RESCHEDULES: 'booking.get-reschedules',
-  REVIEW_RESCHEDULE: 'booking.review-reschedule',
+  GET_PRICING_QUOTE: 'booking.get-pricing-quote',
   CREATE_ADDITIONAL_CHARGES: 'booking.create-additional-charges',
   GET_ADDITIONAL_CHARGES: 'booking.get-additional-charges',
   REVIEW_ADDITIONAL_CHARGES: 'booking.review-additional-charges',
   GET_ATTACHMENTS: 'booking.get-attachments',
   SAVE_ATTACHMENTS: 'booking.save-attachments',
   CREATE_DISPUTE: 'booking.create-dispute',
+  LOCATION_PING: 'booking.location.ping',
+  LOCATION_LATEST: 'booking.location.latest',
+  LOCATION_TRAIL: 'booking.location.trail',
 } as const;
 
 export const CHAT_PATTERNS = {
@@ -85,6 +88,9 @@ export const PAYMENT_PATTERNS = {
   GET_ADMIN_FAILED_PAYMENTS: 'payment.admin.get-failed-payments',
   GET_REVENUE_REPORT: 'payment.reports.revenue',
   GET_FINANCIAL_REPORT: 'payment.reports.financial',
+  CHECKOUT_WITH_QUOTE: 'payment.checkout-with-quote',
+  SAVE_PRICE_QUOTE: 'payment.save-price-quote',
+  GET_COMMISSION_RATE: 'payment.get-commission-rate',
   GET_COMMISSION: 'payment.admin.get-commission',
   UPDATE_COMMISSION: 'payment.admin.update-commission',
 } as const;
@@ -106,14 +112,16 @@ export const PROVIDER_PATTERNS = {
   GET_RESERVED_SLOTS: 'provider.get-reserved-slots',
   CHECK_AVAILABILITY: 'provider.check-availability',
   GET_MY_SERVICES: 'provider.get-my-services',
+  GET_PRICING_GUIDANCE: 'provider.get-pricing-guidance',
+  GET_TRAVEL_PROFILE: 'provider.get-travel-profile',
+  GET_LABOR_BASELINE: 'provider.get-labor-baseline',
+  GET_PRICING_LOCATION: 'provider.get-pricing-location',
+  GET_PROVIDER_SERVICE_FOR_BOOKING: 'provider.get-provider-service-for-booking',
   CREATE_MY_SERVICE: 'provider.create-my-service',
   UPDATE_MY_SERVICE: 'provider.update-my-service',
   DELETE_MY_SERVICE: 'provider.delete-my-service',
   GET_PROFILE_DRAFT: 'provider.get-profile-draft',
   SAVE_PROFILE_DRAFT: 'provider.save-profile-draft',
-  CREATE_RESCHEDULE: 'provider.create-reschedule',
-  GET_RESCHEDULES: 'provider.get-reschedules',
-  REVIEW_RESCHEDULE: 'provider.review-reschedule',
   CREATE_ADDITIONAL_CHARGES: 'provider.create-additional-charges',
   GET_ADDITIONAL_CHARGES: 'provider.get-additional-charges',
   REVIEW_ADDITIONAL_CHARGES: 'provider.review-additional-charges',
@@ -125,6 +133,12 @@ export const PROVIDER_PATTERNS = {
   GET_APPLICATION_BY_ID: 'provider.get-application-by-id',
   UPDATE_APPLICATION_STATUS: 'provider.update-application-status',
   UPDATE_DOCUMENT_STATUS: 'provider.update-document-status',
+  GET_REQUIRED_DOCUMENT_TYPES: 'provider.get-required-document-types',
+  GET_MY_VERIFICATION: 'provider.get-my-verification',
+  UPLOAD_DOCUMENT: 'provider.upload-document',
+  GET_MY_DOCUMENTS: 'provider.get-my-documents',
+  DELETE_MY_DOCUMENT: 'provider.delete-my-document',
+  SUBMIT_FOR_REVIEW: 'provider.submit-for-review',
   GET_ADMIN_SERVICES: 'provider.admin.get-services',
   CREATE_ADMIN_SERVICE: 'provider.admin.create-service',
   UPDATE_ADMIN_SERVICE: 'provider.admin.update-service',
@@ -133,6 +147,13 @@ export const PROVIDER_PATTERNS = {
   DELETE_REVIEW: 'provider.delete-review',
   GET_PERFORMANCE_REPORT: 'provider.get-performance-report',
   GET_COMPLIANCE_REPORT: 'provider.get-compliance-report',
+  // Review responses
+  CREATE_REVIEW_RESPONSE: 'provider.create-review-response',
+  UPDATE_REVIEW_RESPONSE: 'provider.update-review-response',
+  GET_REVIEW_WITH_RESPONSE: 'provider.get-review-with-response',
+  // Provider status
+  GET_STATUS: 'provider.get-status',
+  UPDATE_STATUS: 'provider.update-status',
 } as const;
 
 export const CUSTOMER_PATTERNS = {
@@ -257,6 +278,21 @@ export const NOTIFICATION_PATTERNS = {
   MARK_ALL_READ: 'notification.mark-all-read',
   GET_UNREAD_COUNT: 'notification.get-unread-count',
   SEND_BROADCAST: 'notification.send-broadcast',
+  // Booking state notifications
+  BOOKING_CREATED: 'notification.booking-created',
+  BOOKING_CONFIRMED: 'notification.booking-confirmed',
+  BOOKING_IN_PROGRESS: 'notification.booking-in-progress',
+  BOOKING_COMPLETED: 'notification.booking-completed',
+  BOOKING_CANCELLED: 'notification.booking-cancelled',
+  // Event notifications
+  DISPUTE_CREATED: 'notification.dispute-created',
+  DISPUTE_STATUS_CHANGED: 'notification.dispute-status-changed',
+  REVIEW_CREATED: 'notification.review-created',
+  REVIEW_RESPONSE_CREATED: 'notification.review-response-created',
+  REVIEW_RESPONSE_UPDATED: 'notification.review-response-updated',
+  PROVIDER_APPLICATION_SUBMITTED: 'notification.provider-application-submitted',
+  PROVIDER_APPLICATION_APPROVED: 'notification.provider-application-approved',
+  PROVIDER_APPLICATION_REJECTED: 'notification.provider-application-rejected',
 } as const;
 
 export const SUPPORT_PATTERNS = {
@@ -278,4 +314,8 @@ export const TRUST_PATTERNS = {
   DELETE_REVIEW: 'trust.delete-review',
   GET_PERFORMANCE_REPORT: 'trust.get-performance-report',
   GET_COMPLIANCE_REPORT: 'trust.get-compliance-report',
+  // Review responses
+  CREATE_REVIEW_RESPONSE: 'trust.create-review-response',
+  UPDATE_REVIEW_RESPONSE: 'trust.update-review-response',
+  GET_REVIEW_WITH_RESPONSE: 'trust.get-review-with-response',
 } as const;

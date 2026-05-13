@@ -1,6 +1,6 @@
 import 'multer';
-import { Controller, Inject } from '@nestjs/common';
-import { MessagePattern, EventPattern, Payload } from '@nestjs/microservices';
+import { Controller, HttpException, Inject } from '@nestjs/common';
+import { MessagePattern, EventPattern, Payload, RpcException } from '@nestjs/microservices';
 import { AUTH_PATTERNS } from '@app/common';
 import { AuthService } from './auth.service.js';
 import { UsersService } from './users.service.js';
@@ -24,11 +24,25 @@ export class AuthKafkaController {
 
   @MessagePattern(AUTH_PATTERNS.REGISTER_PROVIDER)
   async registerProvider(@Payload() data: any) {
-    const file = data.file
-      ? ({ ...data.file, buffer: Buffer.from(data.file.buffer, 'base64') } as Express.Multer.File)
-      : null;
-    return this.authService.registerProvider(data, file!);
-
+    try {
+      const file = data.file
+        ? ({ ...data.file, buffer: Buffer.from(data.file.buffer, 'base64') } as Express.Multer.File)
+        : null;
+      return await this.authService.registerProvider(data, file!);
+    } catch (error: any) {
+      if (error instanceof HttpException) {
+        const response = error.getResponse();
+        const message =
+          typeof response === 'object' && response && 'message' in response
+            ? (response as { message: unknown }).message
+            : error.message;
+        throw new RpcException({
+          statusCode: error.getStatus(),
+          message,
+        });
+      }
+      throw error;
+    }
   }
 
   @MessagePattern(AUTH_PATTERNS.REFRESH)

@@ -5,6 +5,8 @@ import { AuthService } from './auth.service.js';
 import { UsersService } from './users.service.js';
 import { AuthKafkaController } from './auth.controller.js';
 
+const authClientInstanceId = `${process.pid}-${Date.now()}`;
+
 @Module({
   imports: [
     SupabaseModule,
@@ -14,10 +16,12 @@ import { AuthKafkaController } from './auth.controller.js';
         transport: Transport.KAFKA,
         options: {
           client: {
-            clientId: 'auth-service-client',
+            clientId: `auth-service-client-${authClientInstanceId}`,
             brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
           },
-          consumer: { groupId: 'auth-service-client-consumer' },
+          consumer: {
+            groupId: `auth-service-client-consumer-${authClientInstanceId}`,
+          },
         },
       },
     ]),

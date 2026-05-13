@@ -18,6 +18,8 @@ export class RpcCorrelationInterceptor implements NestInterceptor {
     const correlationId = extractCorrelationIdFromPayload(payload);
     const source = extractSourceFromPayload(payload);
 
-    return runWithCorrelationContext(correlationId, source, () => next.handle());
+    return runWithCorrelationContext(correlationId, source, () =>
+      next.handle(),
+    );
   }
 }
