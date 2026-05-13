@@ -79,7 +79,8 @@ export class ServicesService implements OnModuleInit {
     }
 
     return updatePayload;
-    
+  }
+  
   private allowUnverifiedProviderBooking() {
     return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
       .toLowerCase() === 'true';
