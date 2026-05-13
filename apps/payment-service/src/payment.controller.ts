@@ -59,7 +59,11 @@ export class PaymentKafkaController {
 
   @MessagePattern(PAYMENT_PATTERNS.MARK_ADMIN_REFUND)
   async markAdminRefund(@Payload() data: any) {
-    return this.paymentService.markAdminRefund(data?.id);
+    return this.paymentService.markAdminRefund(
+      data?.id,
+      data?.status,
+      data?.reject_reason,
+    );
   }
 
   @MessagePattern(PAYMENT_PATTERNS.GET_ADMIN_FAILED_PAYMENTS)
@@ -77,6 +81,16 @@ export class PaymentKafkaController {
     return this.paymentService.getFinancialReport(data?.from, data?.to);
   }
 
+  @MessagePattern(PAYMENT_PATTERNS.GET_COMMISSION)
+  async getCommission(@Payload() data: any) {
+    return this.paymentService.getCommission();
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.UPDATE_COMMISSION)
+  async updateCommission(@Payload() data: any) {
+    return this.paymentService.updateCommission(data);
+  }
+  
   @MessagePattern(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT)
   async ensureBookingPayment(@Payload() data: any) {
     try {

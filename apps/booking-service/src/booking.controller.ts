@@ -87,6 +87,11 @@ export class BookingKafkaController {
     return this.bookingService.getBookingById(data.id);
   }
 
+  @MessagePattern(BOOKING_PATTERNS.GET_BY_IDS)
+  async getBookingsByIds(@Payload() data: any) {
+    return this.bookingService.getBookingsByIds(data?.ids);
+  }
+
   @MessagePattern(BOOKING_PATTERNS.GET_ATTACHMENTS)
   async getAttachments(@Payload() data: any) {
     return this.bookingService.getAttachments(data.bookingId, data.accessToken);
@@ -148,7 +153,7 @@ export class BookingKafkaController {
     return this.bookingService.reviewAdditionalCharges(data);
   }
 
-  @EventPattern(BOOKING_PATTERNS.UPDATE_STATUS)
+  @MessagePattern(BOOKING_PATTERNS.UPDATE_STATUS)
   async updateStatus(@Payload() data: any) {
     return this.bookingService.updateStatus(data.id, data.status, data);
   }
