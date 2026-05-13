@@ -120,6 +120,11 @@ export class ProviderKafkaController {
     return this.providerService.getAdminServices(data?.page, data?.limit);
   }
 
+  @MessagePattern(PROVIDER_PATTERNS.CREATE_ADMIN_SERVICE)
+  async createAdminService(@Payload() data: any) {
+    return this.providerService.createAdminService(data);
+  }
+
   @MessagePattern(PROVIDER_PATTERNS.UPDATE_ADMIN_SERVICE)
   async updateAdminService(@Payload() data: any) {
     return this.providerService.updateAdminService(data?.id, data?.body);

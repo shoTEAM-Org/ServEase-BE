@@ -8,12 +8,14 @@ import {
   Logger,
   OnModuleInit,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ClientKafka } from '@nestjs/microservices';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_PATTERNS,
   PROVIDER_PATTERNS,
   PAYMENT_PATTERNS,
+  PricingEngine,
   SUPPORT_PATTERNS,
   NOTIFICATION_PATTERNS,
   calculatePricingQuote,
@@ -42,6 +44,7 @@ export class BookingService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.UPDATE_AMOUNT);
@@ -98,7 +101,6 @@ export class BookingService implements OnModuleInit {
     if (value === null || value === undefined) return null;
     return String(value).trim() || null;
   }
-
   private toBoolean(value: unknown, fallback = false) {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'number') return value !== 0;
@@ -382,6 +384,9 @@ export class BookingService implements OnModuleInit {
         Math.cos(toRad(lat2)) *
         Math.sin(deltaLon / 2) ** 2;
     return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  private allowUnverifiedProviderBooking() {
+    return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
+      .toLowerCase() === 'true';
   }
 
   private isMissingRelationError(error: any) {
@@ -616,6 +621,77 @@ export class BookingService implements OnModuleInit {
     }
 
     return null;
+  private normalizeStatusKey(value: unknown): string {
+    return this.toTrimmedString(value)
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/-/g, '_');
+  }
+
+  private isProviderRejectedBooking(
+    booking: Record<string, unknown> | null | undefined,
+  ) {
+    const normalizedStatus = this.normalizeStatusKey(booking?.status);
+    if (normalizedStatus === 'rejected') return true;
+
+    const normalizedReason = this.normalizeStatusKey(
+      booking?.cancellation_reason,
+    );
+    return (
+      normalizedReason === 'provider_rejected' ||
+      normalizedReason === 'provider_declined'
+    );
+  }
+
+  private decorateCustomerFacingBooking<T extends Record<string, unknown>>(
+    booking: T,
+  ): T {
+    if (!this.isProviderRejectedBooking(booking)) {
+      return booking;
+    }
+
+    return {
+      ...booking,
+      status: 'rejected',
+    };
+  }
+
+  private async updateBookingWithSchemaFallback(
+    bookingId: string,
+    payload: Record<string, unknown>,
+  ) {
+    let nextPayload = { ...payload };
+    let schemaFallbackAttempts = 0;
+
+    while (schemaFallbackAttempts < 8) {
+      const updateResult = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .update(nextPayload)
+        .eq('id', bookingId)
+        .select()
+        .single();
+
+      if (!updateResult.error) {
+        return updateResult.data;
+      }
+
+      if (!this.isSchemaMismatchError(updateResult.error)) {
+        throw updateResult.error;
+      }
+
+      const missingColumn = this.extractMissingColumnFromError(
+        updateResult.error,
+      );
+      if (!missingColumn || !(missingColumn in nextPayload)) {
+        throw updateResult.error;
+      }
+
+      delete nextPayload[missingColumn];
+      schemaFallbackAttempts += 1;
+    }
+
+    throw new BadRequestException('Failed to update booking');
   }
 
   private async getBookingRowByIdentifier(
@@ -1441,6 +1517,14 @@ export class BookingService implements OnModuleInit {
       return;
     }
 
+    if (
+      this.allowUnverifiedProviderBooking() &&
+      ['active', 'pending'].includes(accountStatus) &&
+      verificationStatus === 'pending'
+    ) {
+      return;
+    }
+
     const accountStatusLabel = this.toTrimmedString(userRecord?.status) || 'unknown';
     const profileVerificationLabel =
       this.toTrimmedString(profileRecord?.verification_status) || 'unknown';
@@ -1492,6 +1576,33 @@ export class BookingService implements OnModuleInit {
     }
 
     throw new BadRequestException('Failed to create booking');
+  }
+
+  private async ensurePaymentForBooking(booking: Record<string, any>) {
+    const bookingId = this.toTrimmedString(booking?.id);
+    if (!bookingId) return null;
+
+    try {
+      return await sendKafkaRpcRequest<any>(
+        () =>
+          this.kafka.send(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT, {
+            bookingId,
+            customerId: booking.customer_id,
+            provider_id: booking.provider_id,
+            amount: booking.total_amount,
+            method: booking.payment_method,
+            skipBookingLookup: true,
+          }),
+        { context: PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT },
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `booking.create payment ensure failed for ${bookingId}: ${
+          this.toTrimmedString(error?.message) || 'unknown error'
+        }`,
+      );
+      return null;
+    }
   }
 
   async createBooking(dto: any, customerId: string) {
@@ -1561,7 +1672,9 @@ export class BookingService implements OnModuleInit {
       service_latitude: dto?.service_latitude,
       service_longitude: dto?.service_longitude,
     });
-    const pricingSnapshot = pricingQuoteResult.pricing_quote;
+    const pricingSnapshot = 
+          Result.pricing_quote;
+    const pricingQuote = PricingEngine.quote(dto || {});
     const normalizedServiceLocationType =
       this.toTrimmedString(dto?.service_location_type).toLowerCase() ===
       'in_shop'
@@ -1595,6 +1708,7 @@ export class BookingService implements OnModuleInit {
     const bookingRef = `BKG-${Math.floor(100000 + Math.random() * 900000)}`;
 
     const baseInsertPayload: Record<string, any> = {
+      id: randomUUID(),
       booking_reference: bookingRef,
       customer_id: normalizedCustomerId,
       provider_id: normalizedProviderId,
@@ -1609,6 +1723,11 @@ export class BookingService implements OnModuleInit {
       service_amount: serviceAmount,
       additional_amount: 0,
       total_amount: totalAmount,
+      pricing_mode: pricingQuote.pricing_mode,
+      hourly_rate: pricingQuote.hourly_rate,
+      flat_rate: pricingQuote.flat_rate,
+      hours_required: pricingQuote.hours_required,
+      total_amount: pricingQuote.total_amount,
       payment_method: normalizedPaymentMethod,
       customer_notes: this.toNullableString(dto?.customer_notes),
       service_latitude: this.toNullableNumber(dto?.service_latitude),
@@ -1620,6 +1739,7 @@ export class BookingService implements OnModuleInit {
     const newBooking = await this.insertBookingWithSchemaFallback(
       baseInsertPayload,
     );
+    const paymentResult = await this.ensurePaymentForBooking(newBooking);
 
     return {
       message: 'Booking successfully created!',
@@ -1923,8 +2043,8 @@ export class BookingService implements OnModuleInit {
       throw new NotFoundException('Booking not found');
     }
 
-    return { booking: data };
-  }
+      return { booking: this.decorateCustomerFacingBooking(data) };
+    }
 
   async getAllBookings(page = 1, limit = 20) {
     const normalizedPage = Number.isFinite(Number(page))
@@ -2623,7 +2743,7 @@ export class BookingService implements OnModuleInit {
     ]);
 
     return {
-      booking: {
+      booking: this.decorateCustomerFacingBooking({
         ...data,
         service_title: this.resolveServiceTitle(data),
         timeline: timelineEvents,
@@ -2637,7 +2757,7 @@ export class BookingService implements OnModuleInit {
           full_name: this.toTrimmedString(customerUser?.full_name),
           contact_number: this.toTrimmedString(customerUser?.contact_number),
         },
-      },
+      }),
     };
   }
 
@@ -2724,6 +2844,17 @@ export class BookingService implements OnModuleInit {
     if (normalizedStatus === 'completed') {
       updates.completed_at = now;
     }
+  }
+
+  async getBookingsByIds(ids: unknown) {
+    const normalizedIds = Array.from(
+      new Set(
+        (Array.isArray(ids) ? ids : [])
+          .map((id) => this.toTrimmedString(id))
+          .filter(Boolean),
+      ),
+    );
+    if (!normalizedIds.length) return { bookings: [] };
 
     const { data, error } = await this.supabase
       .schema('booking')
@@ -2735,7 +2866,10 @@ export class BookingService implements OnModuleInit {
     if (error) {
       if (error.code === 'PGRST116')
         throw new NotFoundException(`Booking with id ${id} not found`);
-      throw new BadRequestException(error.message);
+      }
+      throw new BadRequestException(
+        this.toTrimmedString(error?.message) || 'Failed to update booking',
+      );
     }
 
     // Add timeline event for status change (fire and forget)
@@ -2847,8 +2981,11 @@ export class BookingService implements OnModuleInit {
           explanation: normalizedExplanation,
         },
       ]);
-    if (cancellationError)
-      throw new BadRequestException(cancellationError.message);
+    if (cancellationError) {
+      this.logger.warn(
+        `Booking ${bookingId} was cancelled, but cancellation audit insert failed: ${cancellationError.message}`,
+      );
+    }
 
     // Emit notification for cancellation
     await this.emitNotifications(canonicalBookingId, NOTIFICATION_PATTERNS.BOOKING_CANCELLED, {
@@ -3042,3 +3179,4 @@ export class BookingService implements OnModuleInit {
     }
   }
 }
+

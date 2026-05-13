@@ -29,6 +29,7 @@ export class ServicesService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_REVIEWS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_ADMIN_SERVICES);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.CREATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.UPDATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.DELETE_ADMIN_SERVICE);
     await connectKafkaClientWithRetry(this.kafka, {
@@ -42,13 +43,53 @@ export class ServicesService implements OnModuleInit {
       { context: pattern },
     );
   }
-
   private toTrimmedString(value: unknown) {
     if (typeof value === 'string') return value.trim();
     if (typeof value === 'number' || typeof value === 'boolean') {
       return String(value).trim();
     }
     return '';
+  }
+
+  private toSlug(value: unknown) {
+    return this.toTrimmedString(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
+
+  private toCategoryIsActive(value: unknown) {
+    if (typeof value === 'boolean') return value;
+    const normalized = this.toTrimmedString(value).toLowerCase();
+    if (!normalized) return true;
+    return !['inactive', 'disabled', 'false', '0'].includes(normalized);
+  }
+
+  private toCategoryUpdatePayload(body: any) {
+    const updatePayload: Record<string, any> = {};
+
+    if (body?.name !== undefined) {
+      const name = this.toTrimmedString(body.name);
+      updatePayload.name = name;
+      updatePayload.slug = this.toSlug(name);
+    }
+
+    if (body?.status !== undefined || body?.is_active !== undefined) {
+      updatePayload.is_active = this.toCategoryIsActive(
+        body?.status ?? body?.is_active,
+      );
+    }
+
+    if (body?.slug !== undefined && body?.name === undefined) {
+      updatePayload.slug = this.toSlug(body.slug);
+    }
+
+    return updatePayload;
+  }
+  
+  private allowUnverifiedProviderBooking() {
+    return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
+      .toLowerCase() === 'true';
   }
 
   private async getProviderProfilesByIds(userIds: unknown) {
@@ -103,8 +144,15 @@ export class ServicesService implements OnModuleInit {
     const data = (services || [])
       .filter(
         (s: any) =>
-          this.toTrimmedString(s?.provider_profiles?.verification_status) ===
-          'approved',
+          (() => {
+          const verificationStatus = this.toTrimmedString(
+            s?.provider_profiles?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })(),
       )
       .map((s: any) => ({
         ...s,
@@ -133,8 +181,15 @@ export class ServicesService implements OnModuleInit {
     let results = (services || [])
       .filter(
         (s: any) =>
-          this.toTrimmedString(s?.provider_profiles?.verification_status) ===
-          'approved',
+          (() => {
+          const verificationStatus = this.toTrimmedString(
+            s?.provider_profiles?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })(),
       )
       .map((s: any) => ({
         ...s,
@@ -204,8 +259,15 @@ export class ServicesService implements OnModuleInit {
       )
       .filter(
         (service: any) =>
-          this.toTrimmedString(service?.provider_profiles?.verification_status) ===
-          'approved',
+          (() => {
+          const verificationStatus = this.toTrimmedString(
+            service?.provider_profiles?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })(),
       );
 
     return { providers: data };
@@ -285,8 +347,36 @@ export class ServicesService implements OnModuleInit {
       .order('created_at', { ascending: false })
       .range(offset, offset + normalizedLimit - 1);
     if (error) throw new InternalServerErrorException(error.message);
+
+    const categories = data || [];
+    const categoryIds = categories
+      .map((category: any) => this.toTrimmedString(category?.id))
+      .filter(Boolean);
+    const { data: services, error: servicesError } = categoryIds.length
+      ? await this.supabase
+          .schema('provider_catalog')
+          .from('provider_services')
+          .select('category_id')
+          .in('category_id', categoryIds)
+      : { data: [] as any[], error: null };
+    if (servicesError) throw new InternalServerErrorException(servicesError.message);
+
+    const serviceRows = (services || []) as any[];
+    const serviceCountByCategoryId = serviceRows.reduce(
+      (counts: Record<string, number>, service: any) => {
+        const categoryId = this.toTrimmedString(service?.category_id);
+        if (categoryId) counts[categoryId] = (counts[categoryId] || 0) + 1;
+        return counts;
+      },
+      {},
+    );
+
     return {
-      categories: data || [],
+      categories: categories.map((category: any) => ({
+        ...category,
+        service_count:
+          serviceCountByCategoryId[this.toTrimmedString(category?.id)] || 0,
+      })),
       total: count || 0,
       page: normalizedPage,
       limit: normalizedLimit,
@@ -294,10 +384,17 @@ export class ServicesService implements OnModuleInit {
   }
 
   async createCategoryAdmin(body: any) {
+    const name = this.toTrimmedString(body?.name);
+    const insertPayload = {
+      name,
+      slug: this.toSlug(body?.slug || name),
+      is_active: this.toCategoryIsActive(body?.status ?? body?.is_active),
+    };
+
     const { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('service_categories')
-      .insert([body])
+      .insert([insertPayload])
       .select()
       .single();
     if (error) throw new BadRequestException(error.message);
@@ -307,18 +404,23 @@ export class ServicesService implements OnModuleInit {
   async updateCategoryAdmin(id: string, body: any) {
     const normalizedId = this.toTrimmedString(id);
     if (!normalizedId) throw new BadRequestException('id is required');
+    const updatePayload = this.toCategoryUpdatePayload(body);
+    if (Object.keys(updatePayload).length === 0) {
+      throw new BadRequestException('No supported category fields provided');
+    }
 
     const { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('service_categories')
-      .update(body)
+      .update(updatePayload)
       .eq('id', normalizedId)
-      .select('id');
+      .select('*')
+      .single();
     if (error) throw new BadRequestException(error.message);
-    if (!data || data.length === 0) {
+    if (!data) {
       throw new NotFoundException(`Category ${normalizedId} not found`);
     }
-    return { ok: true };
+    return { ok: true, category: data };
   }
 
   async deleteCategoryAdmin(id: string) {
@@ -343,6 +445,10 @@ export class ServicesService implements OnModuleInit {
       page,
       limit,
     });
+  }
+
+  async createServiceAdmin(body: any) {
+    return await this.request<any>(PROVIDER_PATTERNS.CREATE_ADMIN_SERVICE, body);
   }
 
   async updateServiceAdmin(id: string, body: any) {
@@ -418,3 +524,4 @@ export class ServicesService implements OnModuleInit {
     return { ok: true };
   }
 }
+

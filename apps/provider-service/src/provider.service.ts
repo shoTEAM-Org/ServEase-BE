@@ -44,6 +44,7 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.UPDATE_USER_STATUS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKINGS);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_BOOKING_BY_ID);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.UPDATE_STATUS_RPC);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_PROVIDER_AVAILABILITY);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.SAVE_PROVIDER_AVAILABILITY);
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_RESERVED_SLOTS);
@@ -260,6 +261,11 @@ export class ProviderService implements OnModuleInit {
       if (['false', '0', 'no', 'n'].includes(normalized)) return false;
     }
     return fallback;
+  }
+
+  private allowUnverifiedProviderBooking() {
+    return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
+      .toLowerCase() === 'true';
   }
 
   private normalizePricingMode(value: unknown): 'hourly' | 'flat' | null {
@@ -696,7 +702,15 @@ export class ProviderService implements OnModuleInit {
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
 
     const data = (services || [])
-      .filter((s: any) => profileMap[s.provider_id]?.verification_status === 'approved')
+      .filter((s: any) => (() => {
+          const verificationStatus = this.toTrimmedString(
+            profileMap[s.provider_id]?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })())
       .map((s: any) => ({ ...s, provider_profiles: profileMap[s.provider_id] || null }));
 
     return { success: true, data };
@@ -720,6 +734,24 @@ export class ProviderService implements OnModuleInit {
     const profileMap = Object.fromEntries((profiles || []).map((p: any) => [p.user_id, p]));
 
     const lower = this.toTrimmedString(searchTerm).toLowerCase();
+    const filtered = (services || [])
+      .filter((s: any) => (() => {
+          const verificationStatus = this.toTrimmedString(
+            profileMap[s.provider_id]?.verification_status,
+          ).toLowerCase();
+          return (
+            verificationStatus === 'approved' ||
+            (this.allowUnverifiedProviderBooking() && verificationStatus === 'pending')
+          );
+        })())
+      .filter(
+        (s: any) =>
+          !lower ||
+          s.title?.toLowerCase().includes(lower) ||
+          s.description?.toLowerCase().includes(lower) ||
+          profileMap[s.provider_id]?.business_name?.toLowerCase().includes(lower),
+      )
+      .map((s: any) => ({ ...s, provider_profiles: profileMap[s.provider_id] || null }));
 
     // Group active services by provider, keeping the lowest-priced as the representative
     const providerServiceMap = new Map<string, any>();
@@ -852,7 +884,7 @@ export class ProviderService implements OnModuleInit {
     return { profiles: data || [] };
   }
 
-  async getProviderApplications(page = 1, limit = 20, status = 'pending') {
+  async getProviderApplications(page = 1, limit = 20, status = 'all') {
     const normalizedPage = Number.isFinite(Number(page))
       ? Math.max(1, Number(page))
       : 1;
@@ -871,7 +903,7 @@ export class ProviderService implements OnModuleInit {
       .order('created_at', { ascending: false })
       .range(offset, offset + normalizedLimit - 1);
 
-    const normalizedStatus = this.toTrimmedString(status).toLowerCase() || 'pending';
+    const normalizedStatus = this.toTrimmedString(status).toLowerCase() || 'all';
     if (normalizedStatus !== 'all') {
       query.eq('verification_status', normalizedStatus);
     }
@@ -1536,20 +1568,29 @@ export class ProviderService implements OnModuleInit {
       .select('average_rating, total_reviews')
       .eq('user_id', normalizedProviderId)
       .single();
-    const reviewsResponse = await this.request<any>(
-      TRUST_PATTERNS.GET_PROVIDER_REVIEWS,
-      { providerId: normalizedProviderId },
-    );
-    const reviews = Array.isArray(reviewsResponse?.reviews)
-      ? reviewsResponse.reviews
-      : [];
+
+    let reviews: any[] = [];
+    try {
+      const reviewsResponse = await this.request<any>(
+        TRUST_PATTERNS.GET_PROVIDER_REVIEWS,
+        { providerId: normalizedProviderId },
+      );
+      reviews = Array.isArray(reviewsResponse?.reviews)
+        ? reviewsResponse.reviews
+        : [];
+    } catch (error) {
+      this.logger.warn(
+        `provider.get-reviews degraded: ${this.toTrimmedString((error as { message?: unknown })?.message) || 'trust-service unavailable'}`
+      );
+      reviews = [];
+    }
 
     return {
       status: 'success',
       data: {
         provider_id: normalizedProviderId,
         average_rating: Number(profile?.average_rating) || 0,
-        total_reviews: Number(profile?.total_reviews) || 0,
+        total_reviews: Number(profile?.total_reviews) || reviews.length || 0,
         reviews,
       },
     };
@@ -1810,22 +1851,112 @@ export class ProviderService implements OnModuleInit {
     };
   }
 
+  async createAdminService(body: any) {
+    const source = body && typeof body === 'object' ? body : {};
+    const providerId = this.toTrimmedString(source.provider_id ?? source.providerId);
+    const categoryId = this.toTrimmedString(source.category_id ?? source.categoryId);
+    const title = this.toTrimmedString(source.title);
+    const price = this.toPositiveNumber(source.price);
+
+    if (!providerId) throw new BadRequestException('provider_id is required');
+    if (!categoryId) throw new BadRequestException('category_id is required');
+    if (!title) throw new BadRequestException('title is required');
+    if (price === null) {
+      throw new BadRequestException('price must be a number greater than 0');
+    }
+
+    const payload = {
+      provider_id: providerId,
+      category_id: categoryId,
+      title,
+      description: this.toNullableString(source.description),
+      price,
+      is_active: this.toBoolean(source.is_active ?? source.isActive, true),
+    };
+
+    const { data, error } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .insert([payload])
+      .select('*')
+      .single();
+    if (error) {
+      throw new BadRequestException(
+        `Failed to create service: ${error.message}${
+          error.code ? ` (${error.code})` : ''
+        }`,
+      );
+    }
+    return { service: data };
+  }
+
   async updateAdminService(id: string, body: any) {
     const normalizedId = this.toTrimmedString(id);
     if (!normalizedId) throw new BadRequestException('id is required');
 
-    const { provider_id: _providerId, id: _id, ...updates } = body || {};
+    const source = body && typeof body === 'object' ? body : {};
+    const {
+      provider_id: _providerId,
+      id: _id,
+      status,
+      isActive,
+      is_active,
+      active: _active,
+      ...rawUpdates
+    } = source;
+    const updates: Record<string, any> = {};
+
+    const supportedFields = [
+      'title',
+      'description',
+      'category_id',
+      'price',
+    ];
+    for (const field of supportedFields) {
+      if (Object.hasOwn(rawUpdates, field)) updates[field] = rawUpdates[field];
+    }
+    if (Object.hasOwn(rawUpdates, 'categoryId')) {
+      updates.category_id = rawUpdates.categoryId;
+    }
+
+    if (is_active !== undefined) {
+      updates.is_active = this.toBoolean(is_active, true);
+    } else if (isActive !== undefined) {
+      updates.is_active = this.toBoolean(isActive, true);
+    } else if (status !== undefined) {
+      const normalizedStatus = this.toTrimmedString(status).toLowerCase();
+      if (normalizedStatus === 'active') {
+        updates.is_active = true;
+      } else if (normalizedStatus === 'inactive') {
+        updates.is_active = false;
+      } else {
+        throw new BadRequestException(
+          'status must be one of: active, inactive',
+        );
+      }
+    }
+
+    if (Object.keys(updates).length === 0) {
+      throw new BadRequestException('No supported service fields provided');
+    }
+
     const { data, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
       .update(updates)
       .eq('id', normalizedId)
-      .select('id');
-    if (error) throw new BadRequestException(error.message);
+      .select('*');
+    if (error) {
+      throw new BadRequestException(
+        `Failed to update service: ${error.message}${
+          error.code ? ` (${error.code})` : ''
+        }`,
+      );
+    }
     if (!data || data.length === 0) {
       throw new NotFoundException(`Service ${normalizedId} not found`);
     }
-    return { ok: true };
+    return { ok: true, service: data[0] };
   }
 
   async deleteAdminService(id: string) {
@@ -2055,3 +2186,4 @@ export class ProviderService implements OnModuleInit {
     return await this.request<any>(TRUST_PATTERNS.GET_REVIEW_WITH_RESPONSE, body);
   }
 }
+

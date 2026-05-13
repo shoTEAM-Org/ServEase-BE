@@ -22,6 +22,7 @@ import { NotificationsController } from './controllers/notifications.controller.
 import { SupportController } from './controllers/support.controller.js';
 import { UploadsController } from './controllers/uploads.controller.js';
 import { HealthController } from './controllers/health.controller.js';
+import { PricingController } from './controllers/pricing.controller.js';
 import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
 import { AdminRoleGuard } from './guards/admin-role.guard.js';
 import { GatewayKafkaLifecycle } from './kafka/gateway-kafka.lifecycle.js';
@@ -68,6 +69,7 @@ const gatewayKafkaInstanceId = `${process.pid}-${Date.now()}`;
     NotificationsController,
     SupportController,
     UploadsController,
+    PricingController,
     HealthController,
   ],
   providers: [AdminRoleGuard, GatewayKafkaLifecycle, ChatRealtimeGateway],

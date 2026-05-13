@@ -239,7 +239,52 @@ export class AuthService implements OnModuleInit {
       }
 
       const { data, error } = await authClient.auth.signInWithPassword({ email: loginEmail, password });
-      if (error) throw new UnauthorizedException('Invalid Credentials');
+      if (error) {
+        try {
+          const { data: loginUserRecord, error: loginUserLookupError } = await this.supabase
+            .schema('identity_and_user')
+            .from('users')
+            .select('id, email, contact_number, role, status')
+            .eq('email', loginEmail)
+            .order('updated_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+          console.error('[auth] Login signInWithPassword failed:', {
+            identifier,
+            loginEmail,
+            supabaseAuthError: {
+              message: error.message,
+              code: (error as any).code,
+              status: (error as any).status,
+            },
+            userLookup: {
+              found: Boolean(loginUserRecord),
+              error: loginUserLookupError
+                ? {
+                    message: loginUserLookupError.message,
+                    code: loginUserLookupError.code,
+                  }
+                : null,
+              status: loginUserRecord?.status,
+              role: loginUserRecord?.role,
+            },
+          });
+        } catch (logError: any) {
+          console.error('[auth] Login failure logging failed:', {
+            identifier,
+            loginEmail,
+            supabaseAuthError: {
+              message: error.message,
+              code: (error as any).code,
+              status: (error as any).status,
+            },
+            loggingError: logError?.message,
+          });
+        }
+
+        throw new UnauthorizedException('Invalid Credentials');
+      }
 
       const userId = data.user?.id;
       const { data: userData, error: userError } = await this.supabase

@@ -23,7 +23,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { sendWithTimeout } from '../utils/kafka-request.js';
-import { BOOKING_PATTERNS, PROVIDER_PATTERNS } from '@app/common';
+import { BOOKING_PATTERNS, CHAT_PATTERNS, PROVIDER_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 import { VerifiedProviderGuard } from '../guards/verified-provider.guard.js';
 import 'multer';
@@ -73,6 +73,7 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.GET_MY_DOCUMENTS,
       PROVIDER_PATTERNS.DELETE_MY_DOCUMENT,
       PROVIDER_PATTERNS.SUBMIT_FOR_REVIEW,
+      BOOKING_PATTERNS.UPDATE_STATUS_RPC,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
   }
 
@@ -431,7 +432,6 @@ export class ProviderController implements OnModuleInit {
       });
 
     return { message: 'Booking status updated successfully.', booking: updated };
-  }
 
   @Put('v1/availability')
   @UseGuards(SupabaseAuthGuard)

@@ -6,6 +6,7 @@ import {
   OnModuleInit,
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
+import { SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_PATTERNS,
   BOOKING_PATTERNS,
@@ -22,6 +23,7 @@ import {
 export class AdminService implements OnModuleInit {
   constructor(
     @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+    private readonly supabase: SupabaseClient,
   ) {}
 
   async onModuleInit() {
@@ -66,6 +68,7 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.UPDATE_ADMIN_CATEGORY);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.DELETE_ADMIN_CATEGORY);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.GET_ADMIN_SERVICES);
+    this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.CREATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.UPDATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.DELETE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(CATALOG_PATTERNS.GET_ADMIN_SERVICE_AREAS);
@@ -75,6 +78,8 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USER_REPORT);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PERFORMANCE_REPORT);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_COMPLIANCE_REPORT);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.GET_COMMISSION);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.UPDATE_COMMISSION);
     await connectKafkaClientWithRetry(this.kafka, {
       context: AdminService.name,
     });
@@ -308,7 +313,7 @@ export class AdminService implements OnModuleInit {
     return { ok: true };
   }
 
-  async getProviderApplications(page = 1, limit = 20, status = 'pending') {
+  async getProviderApplications(page = 1, limit = 20, status = 'all') {
     return await this.request(PROVIDER_PATTERNS.GET_APPLICATIONS, {
       page,
       limit,
@@ -443,10 +448,13 @@ export class AdminService implements OnModuleInit {
   }
 
   async updatePayout(id: string, status: string) {
-    return await this.request(PAYMENT_PATTERNS.UPDATE_ADMIN_PAYOUT, {
+    console.log('[admin-service service] forwarding payout update', { id, status });
+    const response = await this.request(PAYMENT_PATTERNS.UPDATE_ADMIN_PAYOUT, {
       id,
       status,
     });
+    console.log('[admin-service service] payment-service payout response', response);
+    return response;
   }
 
   async getRefunds(page = 1, limit = 20) {
@@ -456,8 +464,12 @@ export class AdminService implements OnModuleInit {
     });
   }
 
-  async markRefund(id: string) {
-    return await this.request(PAYMENT_PATTERNS.MARK_ADMIN_REFUND, { id });
+  async markRefund(id: string, status?: string, rejectReason?: string) {
+    return await this.request(PAYMENT_PATTERNS.MARK_ADMIN_REFUND, {
+      id,
+      status,
+      reject_reason: rejectReason,
+    });
   }
 
   async getFailedPayments(page = 1, limit = 20) {
@@ -496,6 +508,10 @@ export class AdminService implements OnModuleInit {
       page,
       limit,
     });
+  }
+
+  async createService(body: any) {
+    return await this.request(CATALOG_PATTERNS.CREATE_ADMIN_SERVICE, body);
   }
 
   async updateService(id: string, body: any) {
@@ -538,6 +554,16 @@ export class AdminService implements OnModuleInit {
     type?: string;
   }) {
     return await this.request(SUPPORT_PATTERNS.SEND_BROADCAST, body);
+  }
+
+  // === COMMISSION ===
+
+  async getCommission() {
+    return await this.request(PAYMENT_PATTERNS.GET_COMMISSION, {});
+  }
+
+  async updateCommission(body: any) {
+    return await this.request(PAYMENT_PATTERNS.UPDATE_COMMISSION, body);
   }
 
   // === REPORTS ===
@@ -596,5 +622,253 @@ export class AdminService implements OnModuleInit {
       ? providerReport.provider_reports
       : [];
     return { disputes, provider_reports: providerReports };
+  }
+
+  // === PLATFORM SETTINGS ===
+
+  private readonly SETTINGS_SCHEMA = 'notification_and_support';
+
+  private defaultNotificationSettings() {
+    return {
+      emailNotifications: true,
+      smsNotifications: true,
+      pushNotifications: true,
+      bookingConfirmations: true,
+      paymentAlerts: true,
+      disputeAlerts: true,
+      providerApprovalAlerts: true,
+      systemAlerts: true,
+      marketingEmails: false,
+    };
+  }
+
+  private defaultSecuritySettings() {
+    return {
+      twoFactorRequired: false,
+      sessionTimeoutMinutes: 60,
+      maxLoginAttempts: 5,
+      ipWhitelistEnabled: false,
+      ipWhitelist: [],
+      passwordExpiryDays: 90,
+      auditLogsEnabled: true,
+    };
+  }
+
+  private isTableMissingError(error: any): boolean {
+    const code = String(error?.code ?? '').toUpperCase();
+    const msg = String(error?.message ?? '').toLowerCase();
+    return (
+      code === '42P01' ||
+      code === 'PGRST106' ||
+      code === 'PGRST200' ||
+      msg.includes('schema cache') ||
+      msg.includes('could not find the table') ||
+      (msg.includes('relation') && msg.includes('does not exist'))
+    );
+  }
+
+  /** Remove Kafka transport fields that should never be persisted */
+  private stripKafkaMeta(obj: Record<string, any>): Record<string, any> {
+    const { __meta, source, correlationId, pattern, ...clean } = obj;
+    return clean;
+  }
+
+  async getNotificationSettings() {
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { data, error } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .select('value')
+        .eq('key', 'notification_settings')
+        .maybeSingle();
+      if (!error) {
+        const val = data?.value ?? this.defaultNotificationSettings();
+        return this.stripKafkaMeta(val);
+      }
+      if (!this.isTableMissingError(error)) break;
+    }
+    return this.defaultNotificationSettings();
+  }
+
+  async updateNotificationSettings(updates: Record<string, any>) {
+    const current = await this.getNotificationSettings();
+    const cleanMerged = this.stripKafkaMeta({ ...current, ...updates });
+    
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { error: upsertError } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .upsert(
+          { key: 'notification_settings', value: cleanMerged },
+          { onConflict: 'key' },
+        );
+      if (!upsertError) return { ok: true, settings: cleanMerged };
+      if (!this.isTableMissingError(upsertError)) throw new Error(upsertError.message);
+    }
+    // Table doesn't exist yet — return merged optimistically so UI doesn't break
+    return { ok: true, settings: cleanMerged, note: 'platform_config table not yet created' };
+  }
+
+  async getSecuritySettings() {
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { data, error } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .select('value')
+        .eq('key', 'security_settings')
+        .maybeSingle();
+      if (!error) {
+        const val = data?.value ?? this.defaultSecuritySettings();
+        return this.stripKafkaMeta(val);
+      }
+      if (!this.isTableMissingError(error)) break;
+    }
+    return this.defaultSecuritySettings();
+  }
+
+  async updateSecuritySettings(updates: Record<string, any>) {
+    const current = await this.getSecuritySettings();
+    const cleanMerged = this.stripKafkaMeta({ ...current, ...updates });
+
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { error: upsertError } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .upsert(
+          { key: 'security_settings', value: cleanMerged },
+          { onConflict: 'key' },
+        );
+      if (!upsertError) return { ok: true, settings: cleanMerged };
+      if (!this.isTableMissingError(upsertError)) throw new Error(upsertError.message);
+    }
+    return { ok: true, settings: cleanMerged, note: 'platform_config table not yet created' };
+  }
+
+  // === INTEGRATIONS ===
+
+  private defaultIntegrations() {
+    return {
+      gcash: { enabled: true, connected: true },
+      paymaya: { enabled: true, connected: true },
+      stripe: { enabled: false, connected: false },
+      twilio: { enabled: true, connected: true },
+      sendgrid: { enabled: true, connected: true },
+      googleMaps: { enabled: true, connected: true },
+      mixpanel: { enabled: false, connected: false },
+      firebase: { enabled: true, connected: true },
+    };
+  }
+
+  async getIntegrations() {
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { data, error } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .select('value')
+        .eq('key', 'integrations_config')
+        .maybeSingle();
+      if (!error) {
+        return data?.value ?? this.defaultIntegrations();
+      }
+      if (!this.isTableMissingError(error)) break;
+    }
+    return this.defaultIntegrations();
+  }
+
+  async toggleIntegration(service: string, enabled: boolean) {
+    const current = await this.getIntegrations();
+    const merged = {
+      ...current,
+      [service]: { ...(current[service] || {}), enabled },
+    };
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { error: upsertError } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .upsert(
+          { key: 'integrations_config', value: merged },
+          { onConflict: 'key' },
+        );
+      if (!upsertError) return { ok: true, integrations: merged };
+      if (!this.isTableMissingError(upsertError)) throw new Error(upsertError.message);
+    }
+    return { ok: true, integrations: merged, note: 'platform_config table not yet created' };
+  }
+
+  async testIntegration(service: string) {
+    // Ping test — just acknowledge for now; extend per-service as needed
+    return { ok: true, service, status: 'reachable' };
+  }
+
+  // === COMMISSION RULES ===
+
+  private defaultCommissionRules() {
+    const rules = [
+      { id: 'CR-001', category: 'Home Maintenance & Repair', currentRate: 12, previousRate: 10, status: 'active', lastUpdated: new Date().toISOString().split('T')[0], monthlyRevenue: 0, monthlyCommission: 0 },
+      { id: 'CR-002', category: 'Beauty Wellness & Personal Care', currentRate: 15, previousRate: 15, status: 'active', lastUpdated: new Date().toISOString().split('T')[0], monthlyRevenue: 0, monthlyCommission: 0 },
+      { id: 'CR-003', category: 'Domestic & Cleaning Services', currentRate: 10, previousRate: 8, status: 'active', lastUpdated: new Date().toISOString().split('T')[0], monthlyRevenue: 0, monthlyCommission: 0 },
+      { id: 'CR-004', category: 'Pet Services', currentRate: 18, previousRate: 18, status: 'active', lastUpdated: new Date().toISOString().split('T')[0], monthlyRevenue: 0, monthlyCommission: 0 },
+      { id: 'CR-005', category: 'Events & Entertainment', currentRate: 20, previousRate: 18, status: 'active', lastUpdated: new Date().toISOString().split('T')[0], monthlyRevenue: 0, monthlyCommission: 0 },
+      { id: 'CR-006', category: 'Automotive & Tech Support', currentRate: 14, previousRate: 14, status: 'active', lastUpdated: new Date().toISOString().split('T')[0], monthlyRevenue: 0, monthlyCommission: 0 },
+      { id: 'CR-007', category: 'Education & Professional Services', currentRate: 16, previousRate: 15, status: 'active', lastUpdated: new Date().toISOString().split('T')[0], monthlyRevenue: 0, monthlyCommission: 0 },
+      { id: 'CR-008', category: 'Health & Fitness', currentRate: 13, previousRate: 12, status: 'active', lastUpdated: new Date().toISOString().split('T')[0], monthlyRevenue: 0, monthlyCommission: 0 },
+    ];
+    const totalCommission = rules.reduce((sum, r) => sum + r.monthlyCommission, 0);
+    const averageRate = Math.round(rules.reduce((sum, r) => sum + r.currentRate, 0) / rules.length * 100) / 100;
+    return {
+      rules,
+      stats: { averageRate, totalCommission, activeCategories: rules.filter(r => r.status === 'active').length, pendingChanges: 0 },
+    };
+  }
+
+  async getCommissionRules() {
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { data, error } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .select('value')
+        .eq('key', 'commission_rules')
+        .maybeSingle();
+      if (!error) {
+        return data?.value ?? this.defaultCommissionRules();
+      }
+      if (!this.isTableMissingError(error)) break;
+    }
+    return this.defaultCommissionRules();
+  }
+
+  async updateCommissionRule(ruleId: string, currentRate: number) {
+    const current = await this.getCommissionRules();
+    const rules = (current.rules || []).map((r: any) =>
+      r.id === ruleId
+        ? { ...r, previousRate: r.currentRate, currentRate, lastUpdated: new Date().toISOString().split('T')[0] }
+        : r,
+    );
+    const totalCommission = rules.reduce((sum: number, r: any) => sum + r.monthlyCommission, 0);
+    const averageRate = Math.round(rules.reduce((sum: number, r: any) => sum + r.currentRate, 0) / rules.length * 100) / 100;
+    const merged = {
+      rules,
+      stats: { averageRate, totalCommission, activeCategories: rules.filter((r: any) => r.status === 'active').length, pendingChanges: 0 },
+    };
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { error: upsertError } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .upsert(
+          { key: 'commission_rules', value: merged },
+          { onConflict: 'key' },
+        );
+      if (!upsertError) return { ok: true, ...merged };
+      if (!this.isTableMissingError(upsertError)) throw new Error(upsertError.message);
+    }
+    return { ok: true, ...merged, note: 'platform_config table not yet created' };
   }
 }

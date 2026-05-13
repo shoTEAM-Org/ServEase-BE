@@ -112,6 +112,11 @@ export class BookingKafkaController {
     );
   }
 
+  @MessagePattern(BOOKING_PATTERNS.GET_BY_IDS)
+  async getBookingsByIds(@Payload() data: any) {
+    return this.bookingService.getBookingsByIds(data?.ids);
+  }
+
   @MessagePattern(BOOKING_PATTERNS.GET_ATTACHMENTS)
   async getAttachments(@Payload() data: any) {
     return this.bookingService.getAttachments(
@@ -193,11 +198,12 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.UPDATE_STATUS)
   async updateStatus(@Payload() data: any) {
-    return this.bookingService.updateStatus(
-      data.id,
-      data.status,
-      data.providerId,
-    );
+    return this.bookingService.updateStatus(data.id, data.status, data);
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.UPDATE_STATUS_RPC)
+  async updateStatusRpc(@Payload() data: any) {
+    return this.bookingService.updateStatus(data.id, data.status, data);
   }
 
   @MessagePattern(BOOKING_PATTERNS.CANCEL)
