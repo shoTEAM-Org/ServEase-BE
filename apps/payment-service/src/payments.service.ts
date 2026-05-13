@@ -9,11 +9,13 @@ import {
   OnModuleInit,
   Logger,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ClientKafka } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_PATTERNS,
   BOOKING_PATTERNS,
+  PricingEngine,
   PROVIDER_PATTERNS,
   connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
@@ -30,7 +32,7 @@ export class PaymentService implements OnModuleInit {
 
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_ID);
-    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BOOKINGS_BY_IDS);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_IDS);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
     await connectKafkaClientWithRetry(this.kafka, {
@@ -82,6 +84,82 @@ export class PaymentService implements OnModuleInit {
     return supported.has(method) ? method : null;
   }
 
+  private normalizeAdminPayoutStatus(value: unknown) {
+    const status = this.toTrimmedString(value).toLowerCase();
+    const statusByAction: Record<string, string> = {
+      approve: 'processing',
+      approved: 'processing',
+      reject: 'failed',
+      rejected: 'failed',
+      release: 'completed',
+      released: 'completed',
+    };
+    const normalized = statusByAction[status] || status;
+    const allowed = new Set(['pending', 'processing', 'completed', 'failed']);
+    return allowed.has(normalized) ? normalized : null;
+  }
+
+  private toAdminPayoutStatus(value: unknown) {
+    const status = this.toTrimmedString(value).toLowerCase();
+    const statusByDbValue: Record<string, string> = {
+      processing: 'approved',
+      completed: 'released',
+      failed: 'rejected',
+    };
+    return statusByDbValue[status] || status;
+  }
+
+  private toAdminPayoutResponse(payout: any) {
+    return {
+      ...payout,
+      db_status: payout?.status || null,
+      status: this.toAdminPayoutStatus(payout?.status),
+      requested_date: payout?.requested_date || payout?.created_at || null,
+      processed_date:
+        payout?.processed_date || payout?.processed_at || payout?.updated_at || null,
+    };
+  }
+
+  private normalizeAdminRefundStatus(value: unknown) {
+    const status = this.toTrimmedString(value).toLowerCase() || 'processed';
+    const statusByAction: Record<string, string> = {
+      process: 'refunded',
+      processed: 'refunded',
+      refund: 'refunded',
+      refunded: 'refunded',
+      reject: 'failed',
+      rejected: 'failed',
+    };
+    const normalized = statusByAction[status] || status;
+    const allowed = new Set(['pending', 'refunded', 'failed']);
+    return allowed.has(normalized) ? normalized : null;
+  }
+
+  private toAdminRefundStatus(value: unknown) {
+    const status = this.toTrimmedString(value).toLowerCase();
+    const statusByDbValue: Record<string, string> = {
+      failed: 'Rejected',
+      refunded: 'Processed',
+      pending: 'Pending',
+    };
+    return statusByDbValue[status] || status;
+  }
+
+  private toAdminRefundResponse(payment: any, rejectReason?: string) {
+    return {
+      ...payment,
+      refund_id: payment?.id,
+      amount: Number(payment?.amount || 0),
+      refund_status: this.toAdminRefundStatus(payment?.status),
+      reject_reason:
+        this.toTrimmedString(rejectReason) ||
+        this.toTrimmedString(payment?.reject_reason) ||
+        this.toTrimmedString(payment?.refund_reject_reason) ||
+        null,
+      requested_date: payment?.created_at || null,
+    };
+  }
+
   private async getLatestPaymentByBookingId(bookingId: string) {
     const normalizedBookingId = this.toTrimmedString(bookingId);
     if (!normalizedBookingId) return null;
@@ -103,11 +181,19 @@ export class PaymentService implements OnModuleInit {
     return rows[0] || null;
   }
 
-  private normalizeEnsurePaymentInput(body: any) {
+  private normalizeEnsurePaymentInput(body: any, booking?: any) {
     const bookingId = this.toTrimmedString(body?.bookingId);
-    const customerId = this.toTrimmedString(body?.customerId);
-    const providerId = this.toTrimmedString(body?.provider_id);
-    const amount = this.toPositiveAmount(body?.amount);
+    const customerId = this.toTrimmedString(
+      body?.customerId || booking?.customer_id,
+    );
+    const providerId = this.toTrimmedString(
+      body?.provider_id || booking?.provider_id,
+    );
+    const quote = PricingEngine.quote({
+      ...(booking || {}),
+      amount: body?.amount ?? booking?.total_amount,
+    });
+    const amount = this.toPositiveAmount(quote.total_amount);
     const method = this.normalizePaymentMethod(body?.method) || 'cash_on_service';
 
     if (!bookingId) throw new BadRequestException('bookingId is required');
@@ -123,7 +209,23 @@ export class PaymentService implements OnModuleInit {
       providerId,
       amount,
       method,
+      quote,
     };
+  }
+
+  private async getBookingForPricing(bookingId: string) {
+    try {
+      const response = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
+        id: bookingId,
+      });
+      return response?.booking || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private buildPaymentReference() {
+    return `PAY-${randomUUID().slice(0, 12).toUpperCase()}`;
   }
 
   private async getUsersByIds(userIds: string[]) {
@@ -152,37 +254,59 @@ export class PaymentService implements OnModuleInit {
   }
 
   private async getBookingPublicIds(bookingIds: string[]) {
-    const entries = await Promise.all(
-      bookingIds.map(async (bookingId) => {
-        try {
-          const response = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, {
-            id: bookingId,
-          });
-          const booking = response?.booking;
+    const normalizedIds = Array.from(
+      new Set(bookingIds.map((id) => this.toTrimmedString(id)).filter(Boolean)),
+    );
+    if (!normalizedIds.length) return new Map<string, string>();
+
+    try {
+      const response = await this.request<any>(BOOKING_PATTERNS.GET_BY_IDS, {
+        ids: normalizedIds,
+      });
+      const bookings = Array.isArray(response?.bookings) ? response.bookings : [];
+      return new Map(
+        normalizedIds.map((bookingId) => {
+          const booking = bookings.find(
+            (row: any) => this.toTrimmedString(row?.id) === bookingId,
+          );
           const publicId =
             this.toTrimmedString(booking?.booking_reference) ||
             this.toTrimmedString(booking?.id) ||
             bookingId;
           return [bookingId, publicId] as const;
-        } catch {
-          return [bookingId, bookingId] as const;
-        }
-      }),
-    );
-    return new Map(entries);
+        }),
+      );
+    } catch {
+      return new Map(normalizedIds.map((bookingId) => [bookingId, bookingId]));
+    }
   }
 
   async createPayment(dto: any) {
     const normalizedMethod = this.normalizePaymentMethod(dto?.method) || 'cash_on_service';
+    const bookingId = this.toTrimmedString(dto?.booking_id || dto?.bookingId);
+    const booking = bookingId ? await this.getBookingForPricing(bookingId) : null;
+    const quote = PricingEngine.quote({
+      ...(booking || {}),
+      amount: dto?.amount ?? booking?.total_amount,
+    });
+    const amount = this.toPositiveAmount(quote.total_amount);
+    if (amount === null) {
+      throw new BadRequestException('amount must be a number greater than 0');
+    }
     const payload = {
-      booking_id: dto.booking_id, customer_id: dto.customer_id, provider_id: dto.provider_id,
-      amount: dto.amount, method: normalizedMethod, status: dto.status || 'pending',
+      id: randomUUID(),
+      booking_id: bookingId,
+      customer_id: dto.customer_id || booking?.customer_id,
+      provider_id: dto.provider_id || booking?.provider_id,
+      amount,
+      method: normalizedMethod,
+      status: dto.status || 'pending',
       paid_at: dto.status === 'completed' ? new Date().toISOString() : null,
-      transaction_reference: dto.transaction_reference || null,
+      transaction_reference: dto.transaction_reference || this.buildPaymentReference(),
     };
     const { data, error } = await this.supabase.schema('payment').from('payments').insert([payload]).select().single();
     if (error) throw new InternalServerErrorException(`Failed to process payment: ${error.message}`);
-    return { status: 'success', message: 'Payment processed successfully', data };
+    return { status: 'success', message: 'Payment processed successfully', data, pricing: quote };
   }
 
   async getEarnings(providerId: string) {
@@ -236,7 +360,7 @@ export class PaymentService implements OnModuleInit {
     if (bookingIds.length) {
       try {
         const response = await this.request<{ bookings: any[] }>(
-          BOOKING_PATTERNS.GET_BOOKINGS_BY_IDS,
+          BOOKING_PATTERNS.GET_BY_IDS,
           { ids: bookingIds },
         );
         bookingsById = new Map(
@@ -316,9 +440,9 @@ export class PaymentService implements OnModuleInit {
         if (error) throw new InternalServerErrorException(error.message);
 
         const updatedRows = Array.isArray(data) ? data : [];
-        return { payment: updatedRows[0] || { ...existing, amount } };
+        return { payment: updatedRows[0] || { ...existing, amount }, pricing: quote };
       }
-      return { payment: existing };
+      return { payment: existing, pricing: quote };
     }
 
     const { data, error } = await this.supabase
@@ -326,12 +450,14 @@ export class PaymentService implements OnModuleInit {
       .from('payments')
       .insert([
         {
+          id: randomUUID(),
           booking_id: bookingId,
           customer_id: customerId,
           provider_id: providerId,
           amount,
           method,
           status: 'pending',
+          transaction_reference: this.buildPaymentReference(),
         },
       ])
       .select();
@@ -341,7 +467,7 @@ export class PaymentService implements OnModuleInit {
     if (!insertedRows.length) {
       throw new InternalServerErrorException('Failed to ensure booking payment');
     }
-    return { payment: insertedRows[0] };
+    return { payment: insertedRows[0], pricing: quote };
   }
 
   async savePriceQuote(data: any) {
@@ -511,7 +637,12 @@ export class PaymentService implements OnModuleInit {
     if (!existing) return { payment: null };
 
     const updates: any = { status: 'completed', paid_at: new Date().toISOString() };
-    const amount = this.toPositiveAmount(body?.amount);
+    const booking = await this.getBookingForPricing(bookingId);
+    const quote = PricingEngine.quote({
+      ...(booking || {}),
+      amount: body?.amount ?? existing.amount,
+    });
+    const amount = this.toPositiveAmount(quote.total_amount);
     if (amount !== null) updates.amount = amount;
 
     const method = this.normalizePaymentMethod(body?.method);
@@ -526,7 +657,7 @@ export class PaymentService implements OnModuleInit {
     if (error) throw new InternalServerErrorException(error.message);
 
     const updatedRows = Array.isArray(data) ? data : [];
-    return { payment: updatedRows[0] || { ...existing, ...updates } };
+    return { payment: updatedRows[0] || { ...existing, ...updates }, pricing: quote };
   }
 
   private async assertCanMarkBookingPaid(bookingId: string, body: any) {
@@ -570,7 +701,12 @@ export class PaymentService implements OnModuleInit {
     const existing = await this.getLatestPaymentByBookingId(bookingId);
     if (!existing) return { payment: null };
 
-    const normalizedAmount = this.toPositiveAmount(amount);
+    const booking = await this.getBookingForPricing(bookingId);
+    const quote = PricingEngine.quote({
+      ...(booking || {}),
+      amount: amount ?? existing.amount,
+    });
+    const normalizedAmount = this.toPositiveAmount(quote.total_amount);
     if (normalizedAmount === null) {
       throw new BadRequestException('amount must be a number greater than 0');
     }
@@ -584,7 +720,10 @@ export class PaymentService implements OnModuleInit {
     if (error) throw new InternalServerErrorException(error.message);
 
     const updatedRows = Array.isArray(data) ? data : [];
-    return { payment: updatedRows[0] || { ...existing, amount: normalizedAmount } };
+    return {
+      payment: updatedRows[0] || { ...existing, amount: normalizedAmount },
+      pricing: quote,
+    };
   }
 
   async getAdminTransactions(page = 1, limit = 20) {
@@ -817,7 +956,7 @@ export class PaymentService implements OnModuleInit {
         this.toTrimmedString(payout.user_id);
       const user = providersById.get(providerRef) as any;
       const businessName = businessNameByUserId.get(providerRef) || '';
-      return {
+      return this.toAdminPayoutResponse({
         ...payout,
         amount: Number(payout.amount || 0),
         provider_name:
@@ -828,9 +967,7 @@ export class PaymentService implements OnModuleInit {
         provider_email:
           this.toTrimmedString(user?.email) ||
           this.toTrimmedString(payout.provider_email),
-        requested_date: payout.requested_date || payout.created_at || null,
-        processed_date: payout.processed_date || payout.updated_at || null,
-      };
+      });
     });
 
     return {
@@ -843,21 +980,95 @@ export class PaymentService implements OnModuleInit {
 
   async updateAdminPayout(id: string, status: string) {
     const normalizedId = this.toTrimmedString(id);
-    const normalizedStatus = this.toTrimmedString(status);
+    const normalizedStatus = this.normalizeAdminPayoutStatus(status);
+    this.logger.log(
+      `[payment-service] updateAdminPayout received ${JSON.stringify({
+        id,
+        status,
+        normalizedId,
+        normalizedStatus,
+      })}`,
+    );
     if (!normalizedId) throw new BadRequestException('id is required');
-    if (!normalizedStatus) throw new BadRequestException('status is required');
+    if (!this.toTrimmedString(status)) {
+      throw new BadRequestException('status is required');
+    }
+    if (!normalizedStatus) {
+      throw new BadRequestException(
+        'status must be one of: pending, processing, completed, failed, approved, rejected, released',
+      );
+    }
+
+    const updates: Record<string, any> = { status: normalizedStatus };
+    if (['completed', 'failed'].includes(normalizedStatus)) {
+      updates.processed_at = new Date().toISOString();
+    } else {
+      updates.processed_at = null;
+    }
+    this.logger.log(
+      `[payment-service] updateAdminPayout mapped DB update ${JSON.stringify({
+        normalizedId,
+        normalizedStatus,
+        updates,
+      })}`,
+    );
+
+    const { data: existingRows, error: findError } = await this.supabase
+      .schema('payment')
+      .from('provider_payouts')
+      .select('payout_id, status')
+      .eq('payout_id', normalizedId);
+    this.logger.log(
+      `[payment-service] updateAdminPayout find result ${JSON.stringify({
+        data: existingRows,
+        error: findError,
+        count: existingRows?.length ?? 0,
+      })}`,
+    );
+    if (findError) {
+      throw new BadRequestException(
+        `Failed to find payout: ${findError.message}${
+          findError.code ? ` (${findError.code})` : ''
+        }`,
+      );
+    }
+    if (!existingRows || existingRows.length === 0) {
+      throw new NotFoundException(`Payout ${normalizedId} not found`);
+    }
 
     const { data, error } = await this.supabase
       .schema('payment')
       .from('provider_payouts')
-      .update({ status: normalizedStatus })
-      .eq('id', normalizedId)
-      .select('id');
-    if (error) throw new BadRequestException(error.message);
+      .update(updates)
+      .eq('payout_id', normalizedId)
+      .select('*');
+    this.logger.log(
+      `[payment-service] updateAdminPayout supabase update result ${JSON.stringify({
+        data,
+        error,
+        count: data?.length ?? 0,
+      })}`,
+    );
+    if (error) {
+      throw new BadRequestException(
+        `Failed to update payout status: ${error.message}${
+          error.code ? ` (${error.code})` : ''
+        }`,
+      );
+    }
     if (!data || data.length === 0) {
       throw new NotFoundException(`Payout ${normalizedId} not found`);
     }
-    return { ok: true };
+    const response = {
+      ok: true,
+      previous_status: this.toAdminPayoutStatus(existingRows[0]?.status),
+      previous_db_status: existingRows[0]?.status || null,
+      payout: this.toAdminPayoutResponse(data[0]),
+    };
+    this.logger.log(
+      `[payment-service] updateAdminPayout final response ${JSON.stringify(response)}`,
+    );
+    return response;
   }
 
   async getAdminRefunds(page = 1, limit = 20) {
@@ -873,7 +1084,7 @@ export class PaymentService implements OnModuleInit {
       .schema('payment')
       .from('payments')
       .select('*', { count: 'exact' })
-      .in('status', ['pending', 'refunded', 'cancelled'])
+      .in('status', ['pending', 'refunded', 'failed'])
       .order('created_at', { ascending: false })
       .range(offset, offset + normalizedLimit - 1);
     if (error) throw new InternalServerErrorException(error.message);
@@ -919,10 +1130,6 @@ export class PaymentService implements OnModuleInit {
         this.toTrimmedString(payment.customer_id),
       ) as any;
       const bookingId = this.toTrimmedString(payment.booking_id);
-      const status = this.toTrimmedString(payment.status).toLowerCase();
-      let refundStatus = 'Pending';
-      if (status === 'refunded') refundStatus = 'Processed';
-      else if (status === 'cancelled') refundStatus = 'Approved';
 
       return {
         ...payment,
@@ -932,7 +1139,7 @@ export class PaymentService implements OnModuleInit {
         customer_email: this.toTrimmedString(customer?.email),
         amount: Number(payment.amount || 0),
         reason: this.toTrimmedString(payment.refund_reason) || 'Refund requested',
-        refund_status: refundStatus,
+        refund_status: this.toAdminRefundStatus(payment.status),
         requested_date: payment.created_at || null,
       };
     });
@@ -945,21 +1152,33 @@ export class PaymentService implements OnModuleInit {
     };
   }
 
-  async markAdminRefund(id: string) {
+  async markAdminRefund(id: string, status?: string, rejectReason?: string) {
     const normalizedId = this.toTrimmedString(id);
+    const normalizedStatus = this.normalizeAdminRefundStatus(status);
     if (!normalizedId) throw new BadRequestException('id is required');
+    if (!normalizedStatus) {
+      throw new BadRequestException(
+        'status must be one of: processed, refunded, rejected, pending',
+      );
+    }
 
     const { data, error } = await this.supabase
       .schema('payment')
       .from('payments')
-      .update({ status: 'refunded' })
+      .update({ status: normalizedStatus })
       .eq('id', normalizedId)
-      .select('id');
-    if (error) throw new BadRequestException(error.message);
+      .select('*');
+    if (error) {
+      throw new BadRequestException(
+        `Failed to update refund status: ${error.message}${
+          error.code ? ` (${error.code})` : ''
+        }`,
+      );
+    }
     if (!data || data.length === 0) {
       throw new NotFoundException(`Payment ${normalizedId} not found`);
     }
-    return { ok: true };
+    return { ok: true, payment: this.toAdminRefundResponse(data[0], rejectReason) };
   }
 
   async getAdminFailedPayments(page = 1, limit = 20) {
@@ -1028,5 +1247,35 @@ export class PaymentService implements OnModuleInit {
     if (paymentsError) throw new InternalServerErrorException(paymentsError.message);
     if (payoutsError) throw new InternalServerErrorException(payoutsError.message);
     return { payments: payments || [], payouts: payouts || [] };
+  }
+
+  async getCommission() {
+    const { data, error } = await this.supabase
+      .schema('payment')
+      .from('platform_config')
+      .select('*')
+      .eq('key', 'commission_rate')
+      .single();
+
+    if (error || !data) {
+      return { commission_rate: 10 };
+    }
+
+    return { commission_rate: Number(data.value) };
+  }
+
+  async updateCommission(body: any) {
+    const rate = Number(body?.commission_rate);
+    if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+      throw new BadRequestException('commission_rate must be a number between 0 and 100');
+    }
+
+    const { error } = await this.supabase
+      .schema('payment')
+      .from('platform_config')
+      .upsert({ key: 'commission_rate', value: String(rate) });
+
+    if (error) throw new InternalServerErrorException(error.message);
+    return { ok: true, commission_rate: rate };
   }
 }

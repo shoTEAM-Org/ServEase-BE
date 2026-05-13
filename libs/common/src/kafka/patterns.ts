@@ -39,10 +39,11 @@ export const BOOKING_PATTERNS = {
   GET_HISTORY: 'booking.get-history',
   GET_REQUESTS: 'booking.get-requests',
   GET_BY_ID: 'booking.get-by-id',
-  GET_BOOKINGS_BY_IDS: 'booking.get-by-ids',
+  GET_BY_IDS: 'booking.get-by-ids',
   GET_FUEL_BASELINE: 'booking.get-fuel-baseline',
   ADD_PROVIDER_STATUS_EVENTS: 'booking.add-provider-status-events',
   UPDATE_STATUS: 'booking.update-status',
+  UPDATE_STATUS_RPC: 'booking.update-status.rpc',
   CANCEL: 'booking.cancel',
   GET_PROVIDER_AVAILABILITY: 'booking.get-provider-availability',
   SAVE_PROVIDER_AVAILABILITY: 'booking.save-provider-availability',
@@ -65,6 +66,7 @@ export const CHAT_PATTERNS = {
   GET_MESSAGES: 'chat.get-messages',
   SEND_MESSAGE: 'chat.send-message',
   MARK_READ: 'chat.mark-read',
+  ENSURE_CONVERSATION: 'chat.ensure-conversation',
 } as const;
 
 export const PAYMENT_PATTERNS = {
@@ -89,6 +91,8 @@ export const PAYMENT_PATTERNS = {
   CHECKOUT_WITH_QUOTE: 'payment.checkout-with-quote',
   SAVE_PRICE_QUOTE: 'payment.save-price-quote',
   GET_COMMISSION_RATE: 'payment.get-commission-rate',
+  GET_COMMISSION: 'payment.admin.get-commission',
+  UPDATE_COMMISSION: 'payment.admin.update-commission',
 } as const;
 
 export const PROVIDER_PATTERNS = {
@@ -136,6 +140,7 @@ export const PROVIDER_PATTERNS = {
   DELETE_MY_DOCUMENT: 'provider.delete-my-document',
   SUBMIT_FOR_REVIEW: 'provider.submit-for-review',
   GET_ADMIN_SERVICES: 'provider.admin.get-services',
+  CREATE_ADMIN_SERVICE: 'provider.admin.create-service',
   UPDATE_ADMIN_SERVICE: 'provider.admin.update-service',
   DELETE_ADMIN_SERVICE: 'provider.admin.delete-service',
   GET_ALL_REVIEWS: 'provider.get-all-reviews',
@@ -197,6 +202,8 @@ export const ADMIN_PATTERNS = {
   GET_REFUNDS: 'admin.finance.get-refunds',
   MARK_REFUND: 'admin.finance.mark-refund',
   GET_FAILED_PAYMENTS: 'admin.finance.get-failed-payments',
+  GET_COMMISSION: 'admin.finance.get-commission',
+  UPDATE_COMMISSION: 'admin.finance.update-commission',
 
   // Marketplace
   GET_CATEGORIES: 'admin.marketplace.get-categories',
@@ -204,6 +211,7 @@ export const ADMIN_PATTERNS = {
   UPDATE_CATEGORY: 'admin.marketplace.update-category',
   DELETE_CATEGORY: 'admin.marketplace.delete-category',
   GET_ALL_SERVICES: 'admin.marketplace.get-all-services',
+  CREATE_SERVICE: 'admin.marketplace.create-service',
   UPDATE_SERVICE: 'admin.marketplace.update-service',
   DELETE_SERVICE: 'admin.marketplace.delete-service',
   GET_SERVICE_AREAS: 'admin.marketplace.get-service-areas',
@@ -220,6 +228,21 @@ export const ADMIN_PATTERNS = {
   GET_USER_REPORT: 'admin.reports.users',
   GET_PERFORMANCE_REPORT: 'admin.reports.performance',
   GET_COMPLIANCE_REPORT: 'admin.reports.compliance',
+
+  // Platform Settings
+  GET_NOTIFICATION_SETTINGS: 'admin.settings.notifications.get',
+  UPDATE_NOTIFICATION_SETTINGS: 'admin.settings.notifications.update',
+  GET_SECURITY_SETTINGS: 'admin.settings.security.get',
+  UPDATE_SECURITY_SETTINGS: 'admin.settings.security.update',
+
+  // Integrations
+  GET_INTEGRATIONS: 'admin.settings.integrations.get',
+  TOGGLE_INTEGRATION: 'admin.settings.integrations.toggle',
+  TEST_INTEGRATION: 'admin.settings.integrations.test',
+
+  // Commission Rules
+  GET_COMMISSION_RULES: 'admin.settings.commission.get',
+  UPDATE_COMMISSION_RULE: 'admin.settings.commission.update',
 } as const;
 
 export const CATALOG_PATTERNS = {
@@ -240,6 +263,7 @@ export const CATALOG_PATTERNS = {
   UPDATE_ADMIN_CATEGORY: 'catalog.admin.update-category',
   DELETE_ADMIN_CATEGORY: 'catalog.admin.delete-category',
   GET_ADMIN_SERVICES: 'catalog.admin.get-services',
+  CREATE_ADMIN_SERVICE: 'catalog.admin.create-service',
   UPDATE_ADMIN_SERVICE: 'catalog.admin.update-service',
   DELETE_ADMIN_SERVICE: 'catalog.admin.delete-service',
   GET_ADMIN_SERVICE_AREAS: 'catalog.admin.get-service-areas',

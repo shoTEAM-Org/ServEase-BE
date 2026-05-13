@@ -98,6 +98,11 @@ export class CatalogKafkaController {
     return this.servicesService.getAllServicesAdmin(data?.page, data?.limit);
   }
 
+  @MessagePattern(CATALOG_PATTERNS.CREATE_ADMIN_SERVICE)
+  async createAdminService(@Payload() data: any) {
+    return this.servicesService.createServiceAdmin(data);
+  }
+
   @MessagePattern(CATALOG_PATTERNS.UPDATE_ADMIN_SERVICE)
   async updateAdminService(@Payload() data: any) {
     return this.servicesService.updateServiceAdmin(data?.id, data?.body);

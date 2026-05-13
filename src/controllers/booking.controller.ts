@@ -55,6 +55,7 @@ export class BookingController implements OnModuleInit {
       BOOKING_PATTERNS.LOCATION_PING,
       BOOKING_PATTERNS.LOCATION_LATEST,
       BOOKING_PATTERNS.LOCATION_TRAIL,
+      BOOKING_PATTERNS.CANCEL,
       PROVIDER_PATTERNS.GET_PROFILES_BY_IDS,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
   }
@@ -321,7 +322,6 @@ export class BookingController implements OnModuleInit {
   }
 
   @Patch('v1/:id/cancel')
-  @HttpCode(202)
   async cancel(
     @Param('id') id: string,
     @Request() req: any,

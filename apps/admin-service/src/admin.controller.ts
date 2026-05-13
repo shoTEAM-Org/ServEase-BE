@@ -24,7 +24,7 @@ export class AdminKafkaController {
     return this.adminService.getCustomerById(data.id);
   }
 
-  @EventPattern(ADMIN_PATTERNS.UPDATE_CUSTOMER_STATUS)
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_CUSTOMER_STATUS)
   async updateCustomerStatus(@Payload() data: any) {
     return this.adminService.updateCustomerStatus(data.id, data.status);
   }
@@ -91,7 +91,7 @@ export class AdminKafkaController {
     return this.adminService.getOngoingServices();
   }
 
-  @EventPattern(ADMIN_PATTERNS.UPDATE_BOOKING_STATUS)
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_BOOKING_STATUS)
   async updateBookingStatus(@Payload() data: any) {
     return this.adminService.updateBookingStatus(data.id, data.status);
   }
@@ -137,9 +137,16 @@ export class AdminKafkaController {
     return this.adminService.getPayouts(data.page, data.limit);
   }
 
-  @EventPattern(ADMIN_PATTERNS.UPDATE_PAYOUT)
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_PAYOUT)
   async updatePayout(@Payload() data: any) {
-    return this.adminService.updatePayout(data.id, data.status);
+    console.log('[admin-service controller] UPDATE_PAYOUT received', {
+      id: data?.id,
+      status: data?.status,
+      payload: data,
+    });
+    const response = await this.adminService.updatePayout(data.id, data.status);
+    console.log('[admin-service controller] UPDATE_PAYOUT response', response);
+    return response;
   }
 
   @MessagePattern(ADMIN_PATTERNS.GET_REFUNDS)
@@ -147,9 +154,9 @@ export class AdminKafkaController {
     return this.adminService.getRefunds(data.page, data.limit);
   }
 
-  @EventPattern(ADMIN_PATTERNS.MARK_REFUND)
+  @MessagePattern(ADMIN_PATTERNS.MARK_REFUND)
   async markRefund(@Payload() data: any) {
-    return this.adminService.markRefund(data.id);
+    return this.adminService.markRefund(data.id, data.status, data.reject_reason);
   }
 
   @MessagePattern(ADMIN_PATTERNS.GET_FAILED_PAYMENTS)
@@ -168,7 +175,7 @@ export class AdminKafkaController {
     return this.adminService.createCategory(data);
   }
 
-  @EventPattern(ADMIN_PATTERNS.UPDATE_CATEGORY)
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_CATEGORY)
   async updateCategory(@Payload() data: any) {
     const { id, ...body } = data;
     return this.adminService.updateCategory(id, body);
@@ -184,7 +191,12 @@ export class AdminKafkaController {
     return this.adminService.getAllServicesAdmin(data.page, data.limit);
   }
 
-  @EventPattern(ADMIN_PATTERNS.UPDATE_SERVICE)
+  @MessagePattern(ADMIN_PATTERNS.CREATE_SERVICE)
+  async createService(@Payload() data: any) {
+    return this.adminService.createService(data);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_SERVICE)
   async updateService(@Payload() data: any) {
     const { id, ...body } = data;
     return this.adminService.updateService(id, body);
@@ -255,5 +267,56 @@ export class AdminKafkaController {
   @MessagePattern(ADMIN_PATTERNS.GET_COMPLIANCE_REPORT)
   async getComplianceReport(@Payload() data: any) {
     return this.adminService.getComplianceReport(data.from, data.to);
+  }
+
+  // === PLATFORM SETTINGS ===
+
+  @MessagePattern(ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS)
+  async getNotificationSettings() {
+    return this.adminService.getNotificationSettings();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTINGS)
+  async updateNotificationSettings(@Payload() data: any) {
+    return this.adminService.updateNotificationSettings(data);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.GET_SECURITY_SETTINGS)
+  async getSecuritySettings() {
+    return this.adminService.getSecuritySettings();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_SECURITY_SETTINGS)
+  async updateSecuritySettings(@Payload() data: any) {
+    return this.adminService.updateSecuritySettings(data);
+  }
+
+  // === INTEGRATIONS ===
+
+  @MessagePattern(ADMIN_PATTERNS.GET_INTEGRATIONS)
+  async getIntegrations() {
+    return this.adminService.getIntegrations();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.TOGGLE_INTEGRATION)
+  async toggleIntegration(@Payload() data: any) {
+    return this.adminService.toggleIntegration(data.service, data.enabled);
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.TEST_INTEGRATION)
+  async testIntegration(@Payload() data: any) {
+    return this.adminService.testIntegration(data.service);
+  }
+
+  // === COMMISSION RULES ===
+
+  @MessagePattern(ADMIN_PATTERNS.GET_COMMISSION_RULES)
+  async getCommissionRules() {
+    return this.adminService.getCommissionRules();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_COMMISSION_RULE)
+  async updateCommissionRule(@Payload() data: any) {
+    return this.adminService.updateCommissionRule(data.ruleId, data.currentRate);
   }
 }

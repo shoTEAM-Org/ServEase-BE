@@ -130,6 +130,26 @@ Fields: `full_name`, `email`, `password`, `contact_number`, `role`, `business_na
 
 ---
 
+## Pricing - `api/pricing`
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/pricing/v1/quote` | No | Calculate booking/payment pricing using the backend pricing engine |
+
+### Request Body
+
+```json
+{
+  "pricing_mode": "flat|hourly",
+  "hourly_rate": 0,
+  "flat_rate": 0,
+  "hours_required": 1,
+  "total_amount": 0
+}
+```
+
+---
+
 ## Provider — `api/provider`
 
 ### Discovery & Profile
