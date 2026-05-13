@@ -2,6 +2,7 @@
 export * from './kafka/index.js';
 export * from './utils/kafka-rpc.js';
 export * from './tracing/index.js';
+export * from './pricing/pricing-engine.js';
 
 // DTOs
 export * from './dto/auth/index.js';

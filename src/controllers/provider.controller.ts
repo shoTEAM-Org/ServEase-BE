@@ -20,7 +20,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
 import { sendWithTimeout } from '../utils/kafka-request.js';
-import { PROVIDER_PATTERNS } from '@app/common';
+import { BOOKING_PATTERNS, CHAT_PATTERNS, PROVIDER_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 import 'multer';
 
@@ -53,6 +53,7 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.GET_PROFILE_DRAFT,
       PROVIDER_PATTERNS.GET_RESCHEDULES,
       PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES,
+      BOOKING_PATTERNS.UPDATE_STATUS_RPC,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
     await this.kafka.connect();
   }
@@ -98,13 +99,22 @@ export class ProviderController implements OnModuleInit {
   @HttpCode(202)
   async updateBookingStatus(
     @Param('id') id: string,
+    @Request() req: any,
     @Body('status') status: string,
   ) {
-    this.kafka.emit(PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS, {
-      bookingId: id,
-      status,
-    });
-    return { status: 'accepted' };
+    const result = await sendWithTimeout(
+      this.kafka.send(BOOKING_PATTERNS.UPDATE_STATUS_RPC, {
+        id,
+        status,
+        actorId: req['user'].id,
+        actorRole: 'provider',
+      }),
+    );
+    const normalizedStatus = String(status || '').trim().toLowerCase();
+    if (normalizedStatus === 'confirmed') {
+      this.kafka.emit(CHAT_PATTERNS.ENSURE_CONVERSATION, { bookingId: id });
+    }
+    return result;
   }
 
   @Put('v1/availability')

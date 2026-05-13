@@ -22,6 +22,7 @@ import { NotificationsController } from './controllers/notifications.controller.
 import { SupportController } from './controllers/support.controller.js';
 import { UploadsController } from './controllers/uploads.controller.js';
 import { HealthController } from './controllers/health.controller.js';
+import { PricingController } from './controllers/pricing.controller.js';
 import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
 
 @Module({
@@ -63,6 +64,7 @@ import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
     NotificationsController,
     SupportController,
     UploadsController,
+    PricingController,
     HealthController,
   ],
 })

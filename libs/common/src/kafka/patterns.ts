@@ -41,6 +41,7 @@ export const BOOKING_PATTERNS = {
   GET_BY_ID: 'booking.get-by-id',
   GET_BY_IDS: 'booking.get-by-ids',
   UPDATE_STATUS: 'booking.update-status',
+  UPDATE_STATUS_RPC: 'booking.update-status.rpc',
   CANCEL: 'booking.cancel',
   GET_PROVIDER_AVAILABILITY: 'booking.get-provider-availability',
   SAVE_PROVIDER_AVAILABILITY: 'booking.save-provider-availability',
@@ -62,6 +63,7 @@ export const CHAT_PATTERNS = {
   GET_MESSAGES: 'chat.get-messages',
   SEND_MESSAGE: 'chat.send-message',
   MARK_READ: 'chat.mark-read',
+  ENSURE_CONVERSATION: 'chat.ensure-conversation',
 } as const;
 
 export const PAYMENT_PATTERNS = {

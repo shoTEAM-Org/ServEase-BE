@@ -26,4 +26,9 @@ export class ChatKafkaController {
   async markRead(@Payload() data: any) {
     return this.chatService.markRead(data.bookingId, data.userId);
   }
+
+  @EventPattern(CHAT_PATTERNS.ENSURE_CONVERSATION)
+  async ensureConversation(@Payload() data: any) {
+    return this.chatService.ensureConversation(data.bookingId);
+  }
 }

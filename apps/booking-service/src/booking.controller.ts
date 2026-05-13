@@ -155,10 +155,15 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.UPDATE_STATUS)
   async updateStatus(@Payload() data: any) {
-    return this.bookingService.updateStatus(data.id, data.status);
+    return this.bookingService.updateStatus(data.id, data.status, data);
   }
 
-  @EventPattern(BOOKING_PATTERNS.CANCEL)
+  @MessagePattern(BOOKING_PATTERNS.UPDATE_STATUS_RPC)
+  async updateStatusRpc(@Payload() data: any) {
+    return this.bookingService.updateStatus(data.id, data.status, data);
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.CANCEL)
   async cancelBooking(@Payload() data: any) {
     return this.bookingService.cancelBooking(
       data.id,

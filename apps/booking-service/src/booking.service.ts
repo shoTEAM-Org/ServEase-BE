@@ -7,11 +7,14 @@ import {
   Logger,
   OnModuleInit,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { ClientKafka } from '@nestjs/microservices';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_PATTERNS,
   PROVIDER_PATTERNS,
+  PAYMENT_PATTERNS,
+  PricingEngine,
   SUPPORT_PATTERNS,
   sendKafkaRpcRequest,
 } from '@app/common';
@@ -30,6 +33,7 @@ export class BookingService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
     await this.kafka.connect();
   }
@@ -52,7 +56,6 @@ export class BookingService implements OnModuleInit {
     const parsed = this.toTrimmedString(value);
     return parsed || null;
   }
-
   private toBoolean(value: unknown, fallback = false) {
     if (typeof value === 'boolean') return value;
     if (typeof value === 'number') return value !== 0;
@@ -62,6 +65,11 @@ export class BookingService implements OnModuleInit {
       if (['false', '0', 'no', 'n'].includes(normalized)) return false;
     }
     return fallback;
+  }
+
+  private allowUnverifiedProviderBooking() {
+    return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
+      .toLowerCase() === 'true';
   }
 
   private isMissingRelationError(error: any) {
@@ -128,6 +136,79 @@ export class BookingService implements OnModuleInit {
       this.toTrimmedString(booking?.service_name) ||
       ''
     );
+  }
+
+  private normalizeStatusKey(value: unknown): string {
+    return this.toTrimmedString(value)
+      .toLowerCase()
+      .replace(/\s+/g, '_')
+      .replace(/-/g, '_');
+  }
+
+  private isProviderRejectedBooking(
+    booking: Record<string, unknown> | null | undefined,
+  ) {
+    const normalizedStatus = this.normalizeStatusKey(booking?.status);
+    if (normalizedStatus === 'rejected') return true;
+
+    const normalizedReason = this.normalizeStatusKey(
+      booking?.cancellation_reason,
+    );
+    return (
+      normalizedReason === 'provider_rejected' ||
+      normalizedReason === 'provider_declined'
+    );
+  }
+
+  private decorateCustomerFacingBooking<T extends Record<string, unknown>>(
+    booking: T,
+  ): T {
+    if (!this.isProviderRejectedBooking(booking)) {
+      return booking;
+    }
+
+    return {
+      ...booking,
+      status: 'rejected',
+    };
+  }
+
+  private async updateBookingWithSchemaFallback(
+    bookingId: string,
+    payload: Record<string, unknown>,
+  ) {
+    let nextPayload = { ...payload };
+    let schemaFallbackAttempts = 0;
+
+    while (schemaFallbackAttempts < 8) {
+      const updateResult = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .update(nextPayload)
+        .eq('id', bookingId)
+        .select()
+        .single();
+
+      if (!updateResult.error) {
+        return updateResult.data;
+      }
+
+      if (!this.isSchemaMismatchError(updateResult.error)) {
+        throw updateResult.error;
+      }
+
+      const missingColumn = this.extractMissingColumnFromError(
+        updateResult.error,
+      );
+      if (!missingColumn || !(missingColumn in nextPayload)) {
+        throw updateResult.error;
+      }
+
+      delete nextPayload[missingColumn];
+      schemaFallbackAttempts += 1;
+    }
+
+    throw new BadRequestException('Failed to update booking');
   }
 
   private async getBookingRowByIdentifier(
@@ -838,6 +919,14 @@ export class BookingService implements OnModuleInit {
       return;
     }
 
+    if (
+      this.allowUnverifiedProviderBooking() &&
+      ['active', 'pending'].includes(accountStatus) &&
+      verificationStatus === 'pending'
+    ) {
+      return;
+    }
+
     const accountStatusLabel = this.toTrimmedString(userRecord?.status) || 'unknown';
     const profileVerificationLabel =
       this.toTrimmedString(profileRecord?.verification_status) || 'unknown';
@@ -886,6 +975,33 @@ export class BookingService implements OnModuleInit {
     throw new BadRequestException('Failed to create booking');
   }
 
+  private async ensurePaymentForBooking(booking: Record<string, any>) {
+    const bookingId = this.toTrimmedString(booking?.id);
+    if (!bookingId) return null;
+
+    try {
+      return await sendKafkaRpcRequest<any>(
+        () =>
+          this.kafka.send(PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT, {
+            bookingId,
+            customerId: booking.customer_id,
+            provider_id: booking.provider_id,
+            amount: booking.total_amount,
+            method: booking.payment_method,
+            skipBookingLookup: true,
+          }),
+        { context: PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT },
+      );
+    } catch (error: any) {
+      this.logger.warn(
+        `booking.create payment ensure failed for ${bookingId}: ${
+          this.toTrimmedString(error?.message) || 'unknown error'
+        }`,
+      );
+      return null;
+    }
+  }
+
   async createBooking(dto: any, customerId: string) {
     const normalizedProviderId = this.toTrimmedString(dto?.provider_id);
     const normalizedCustomerId = this.toTrimmedString(customerId);
@@ -899,23 +1015,7 @@ export class BookingService implements OnModuleInit {
     );
     await this.ensureProviderCanBeBooked(normalizedProviderId);
 
-    const normalizedPricingMode = ['hourly', 'flat'].includes(
-      this.toTrimmedString(dto?.pricing_mode).toLowerCase(),
-    )
-      ? this.toTrimmedString(dto?.pricing_mode).toLowerCase()
-      : 'flat';
-    const normalizedHoursRequired = Math.max(
-      1,
-      Number(this.toNullableNumber(dto?.hours_required) || 1),
-    );
-    const hourlyRate = this.toNullableNumber(dto?.hourly_rate);
-    const flatRate = this.toNullableNumber(dto?.flat_rate);
-    const totalAmountCandidate = this.toNullableNumber(dto?.total_amount);
-    const computedAmount =
-      normalizedPricingMode === 'hourly'
-        ? (hourlyRate || 0) * normalizedHoursRequired
-        : flatRate || hourlyRate || 0;
-    const totalAmount = totalAmountCandidate ?? computedAmount;
+    const pricingQuote = PricingEngine.quote(dto || {});
     const normalizedServiceLocationType =
       this.toTrimmedString(dto?.service_location_type).toLowerCase() ===
       'in_shop'
@@ -928,9 +1028,10 @@ export class BookingService implements OnModuleInit {
       this.toTrimmedString(
         dto?.service_description || dto?.service_name || dto?.service_title,
       ) || null;
-    const bookingRef = `BKG-${Math.floor(100000 + Math.random() * 900000)}`;
+    const bookingRef = `BKG-${randomUUID().slice(0, 8).toUpperCase()}`;
 
     const baseInsertPayload: Record<string, any> = {
+      id: randomUUID(),
       booking_reference: bookingRef,
       customer_id: normalizedCustomerId,
       provider_id: normalizedProviderId,
@@ -939,11 +1040,11 @@ export class BookingService implements OnModuleInit {
       service_address: this.toTrimmedString(dto?.service_address),
       service_location_type: normalizedServiceLocationType,
       scheduled_at: normalizedScheduledAt,
-      pricing_mode: normalizedPricingMode,
-      hourly_rate: hourlyRate,
-      flat_rate: flatRate,
-      hours_required: normalizedHoursRequired,
-      total_amount: totalAmount,
+      pricing_mode: pricingQuote.pricing_mode,
+      hourly_rate: pricingQuote.hourly_rate,
+      flat_rate: pricingQuote.flat_rate,
+      hours_required: pricingQuote.hours_required,
+      total_amount: pricingQuote.total_amount,
       payment_method: normalizedPaymentMethod,
       customer_notes: this.toNullableString(dto?.customer_notes),
       status: 'pending',
@@ -952,8 +1053,14 @@ export class BookingService implements OnModuleInit {
     const newBooking = await this.insertBookingWithSchemaFallback(
       baseInsertPayload,
     );
+    const paymentResult = await this.ensurePaymentForBooking(newBooking);
 
-    return { message: 'Booking successfully created!', booking: newBooking };
+    return {
+      message: 'Booking successfully created!',
+      booking: newBooking,
+      pricing: pricingQuote,
+      payment: paymentResult?.payment || null,
+    };
   }
 
   async getCustomerBookings(customerId: string) {
@@ -990,13 +1097,13 @@ export class BookingService implements OnModuleInit {
     );
     const providerById = new Map(providerEntries);
 
-    const bookings = (data || []).map((booking: any) => {
-      const providerId = this.toTrimmedString(booking?.provider_id);
-      return {
-        ...booking,
-        provider: providerById.get(providerId) || {},
-      };
-    });
+      const bookings = (data || []).map((booking: any) => {
+        const providerId = this.toTrimmedString(booking?.provider_id);
+        return this.decorateCustomerFacingBooking({
+          ...booking,
+          provider: providerById.get(providerId) || {},
+        });
+      });
 
     return { bookings };
   }
@@ -1078,7 +1185,7 @@ export class BookingService implements OnModuleInit {
       .from('bookings')
       .select('*')
       .eq(actorColumn, normalizedUserId)
-      .in('status', ['pending', 'confirmed', 'in_progress', 'completed'])
+      .in('status', ['confirmed', 'in_progress', 'completed'])
       .order('created_at', { ascending: false });
 
     if (error) {
@@ -1102,8 +1209,8 @@ export class BookingService implements OnModuleInit {
       throw new NotFoundException('Booking not found');
     }
 
-    return { booking: data };
-  }
+      return { booking: this.decorateCustomerFacingBooking(data) };
+    }
 
   async getAllBookings(page = 1, limit = 20) {
     const normalizedPage = Number.isFinite(Number(page))
@@ -1585,7 +1692,7 @@ export class BookingService implements OnModuleInit {
     ]);
 
     return {
-      booking: {
+      booking: this.decorateCustomerFacingBooking({
         ...data,
         service_title: this.resolveServiceTitle(data),
         provider: {
@@ -1598,7 +1705,7 @@ export class BookingService implements OnModuleInit {
           full_name: this.toTrimmedString(customerUser?.full_name),
           contact_number: this.toTrimmedString(customerUser?.contact_number),
         },
-      },
+      }),
     };
   }
 
@@ -1621,20 +1728,92 @@ export class BookingService implements OnModuleInit {
     return { bookings: data || [] };
   }
 
-  async updateStatus(id: string, status: string) {
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .update({ status })
-      .eq('id', id)
-      .select()
-      .single();
-    if (error) {
-      if (error.code === 'PGRST116')
-        throw new NotFoundException(`Booking with id ${id} not found`);
-      throw new BadRequestException(error.message);
+  async updateStatus(id: string, status: string, metadata?: Record<string, unknown>) {
+    const booking = await this.getBookingRowByIdentifier(id, 'id, provider_id');
+    if (!booking?.id) {
+      throw new NotFoundException(`Booking with id ${id} not found`);
     }
-    return { message: 'Booking status updated successfully.', booking: data };
+
+    const bookingId = this.toTrimmedString(booking.id);
+    const normalizedStatus = this.normalizeStatusKey(status);
+    const actorId = this.toTrimmedString(metadata?.actorId);
+    const actorRole = this.normalizeStatusKey(metadata?.actorRole);
+    const providerId = this.toTrimmedString(booking.provider_id);
+    const nowIso = new Date().toISOString();
+
+    const isProviderRejection =
+      normalizedStatus === 'rejected' &&
+      actorRole === 'provider' &&
+      actorId &&
+      actorId === providerId;
+
+    const basePayload: Record<string, unknown> = {
+      status,
+    };
+
+    if (normalizedStatus === 'cancelled' && actorId) {
+      basePayload.cancelled_at = nowIso;
+      basePayload.cancelled_by = actorId;
+    }
+
+    if (isProviderRejection) {
+      const rejectionPayload: Record<string, unknown> = {
+        status: 'rejected',
+        cancellation_reason: 'provider_rejected',
+        cancelled_at: nowIso,
+        cancelled_by: actorId,
+      };
+
+      try {
+        const data = await this.updateBookingWithSchemaFallback(
+          bookingId,
+          rejectionPayload,
+        );
+        return {
+          message: 'Booking rejected successfully.',
+          booking: this.decorateCustomerFacingBooking(data),
+        };
+      } catch (error: any) {
+        const fallbackPayload: Record<string, unknown> = {
+          status: 'cancelled',
+          cancellation_reason: 'provider_rejected',
+          cancelled_at: nowIso,
+          cancelled_by: actorId,
+        };
+
+        try {
+          const data = await this.updateBookingWithSchemaFallback(
+            bookingId,
+            fallbackPayload,
+          );
+          return {
+            message: 'Booking rejected successfully.',
+            booking: this.decorateCustomerFacingBooking(data),
+          };
+        } catch (fallbackError: any) {
+          const finalError = fallbackError?.message ? fallbackError : error;
+          throw new BadRequestException(
+            this.toTrimmedString(finalError?.message) ||
+              'Failed to reject booking',
+          );
+        }
+      }
+    }
+
+    try {
+      const data = await this.updateBookingWithSchemaFallback(
+        bookingId,
+        basePayload,
+      );
+      return { message: 'Booking status updated successfully.', booking: data };
+    } catch (error: any) {
+      if (error?.code === 'PGRST116') {
+        throw new NotFoundException(`Booking with id ${id} not found`);
+      }
+      throw new BadRequestException(
+        this.toTrimmedString(error?.message) || 'Failed to update booking',
+      );
+    }
   }
 
   async cancelBooking(
@@ -1643,11 +1822,15 @@ export class BookingService implements OnModuleInit {
     reason: string,
     explanation: string,
   ) {
+    const booking = await this.getBookingRowByIdentifier(id, 'id');
+    if (!booking?.id) throw new NotFoundException('Booking not found');
+
+    const bookingId = this.toTrimmedString(booking.id);
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
       .update({ status: 'cancelled' })
-      .eq('id', id)
+      .eq('id', bookingId)
       .select()
       .single();
     if (error) throw new BadRequestException(error.message);
@@ -1657,14 +1840,17 @@ export class BookingService implements OnModuleInit {
       .from('bookings_cancellations')
       .insert([
         {
-          booking_id: id,
+          booking_id: bookingId,
           cancelled_by: userId,
           reason,
           detailed_explanation: explanation,
         },
       ]);
-    if (cancellationError)
-      throw new BadRequestException(cancellationError.message);
+    if (cancellationError) {
+      this.logger.warn(
+        `Booking ${bookingId} was cancelled, but cancellation audit insert failed: ${cancellationError.message}`,
+      );
+    }
 
     return { booking: data };
   }
@@ -1793,3 +1979,4 @@ export class BookingService implements OnModuleInit {
     }
   }
 }
+

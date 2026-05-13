@@ -38,6 +38,7 @@ export class BookingController implements OnModuleInit {
       BOOKING_PATTERNS.GET_BY_ID,
       BOOKING_PATTERNS.GET_ATTACHMENTS,
       BOOKING_PATTERNS.SAVE_ATTACHMENTS,
+      BOOKING_PATTERNS.CANCEL,
       PROVIDER_PATTERNS.GET_PROFILES_BY_IDS,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
     await this.kafka.connect();
@@ -138,19 +139,19 @@ export class BookingController implements OnModuleInit {
   }
 
   @Patch('v1/:id/cancel')
-  @HttpCode(202)
   async cancel(
     @Param('id') id: string,
     @Request() req: any,
     @Body() body: any,
   ) {
-    this.kafka.emit(BOOKING_PATTERNS.CANCEL, {
-      id,
-      userId: req['user'].id,
-      reason: body.reason,
-      explanation: body.explanation,
-    });
-    return { status: 'accepted' };
+    return sendWithTimeout(
+      this.kafka.send(BOOKING_PATTERNS.CANCEL, {
+        id,
+        userId: req['user'].id,
+        reason: body.reason,
+        explanation: body.explanation,
+      }),
+    );
   }
 
   @Get('v1/:id/attachments')
