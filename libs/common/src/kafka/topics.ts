@@ -1,12 +1,12 @@
-export const KAFKA_TOPICS = {
-  AUTH: 'servease.auth',
-  BOOKING: 'servease.booking',
-  CHAT: 'servease.chat',
-  PAYMENT: 'servease.payment',
-  PROVIDER: 'servease.provider',
-  CUSTOMER: 'servease.customer',
-  ADMIN: 'servease.admin',
-  CATALOG: 'servease.catalog',
-  NOTIFICATION: 'servease.notification',
-  SUPPORT: 'servease.support',
+export const TOPICS = {
+  BOOKINGS:  'servease.bookings',
+  PAYMENTS:  'servease.payments',
+  PROVIDERS: 'servease.providers',
+  USERS:     'servease.users',
+  SUPPORT:   'servease.support',
 } as const;
+
+export type TopicKey = keyof typeof TOPICS;
+export type TopicValue = (typeof TOPICS)[TopicKey];
+
+export const KAFKA_TOPICS = TOPICS;

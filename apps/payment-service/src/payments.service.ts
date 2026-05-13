@@ -410,7 +410,7 @@ export class PaymentService implements OnModuleInit {
   }
 
   async ensureBookingPayment(body: any, requesterId?: string) {
-    const { bookingId, customerId, providerId, amount, method } =
+    const { bookingId, customerId, providerId, amount, method, quote } =
       this.normalizeEnsurePaymentInput(body);
 
     let booking: any;

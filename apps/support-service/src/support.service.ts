@@ -112,9 +112,12 @@ export class SupportService implements OnModuleInit {
         type,
         metadata,
       });
-    } catch (error) {}
-    
+    } catch (error) {
       // Silently fail, notifications are non-critical
+    }
+
+  }
+
   private async getBookingsByIds(bookingIds: unknown) {
     const normalizedIds = Array.from(
       new Set(

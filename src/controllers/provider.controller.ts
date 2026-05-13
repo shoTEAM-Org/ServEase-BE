@@ -433,6 +433,8 @@ export class ProviderController implements OnModuleInit {
 
     return { message: 'Booking status updated successfully.', booking: updated };
 
+  }
+
   @Put('v1/availability')
   @UseGuards(SupabaseAuthGuard)
   @HttpCode(202)

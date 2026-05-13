@@ -319,9 +319,13 @@ export class BookingService implements OnModuleInit {
   }> {
     const requestedTier = this.toTrimmedString(dto?.radius_tier);
 
-    let location: { service_radius_km: unknown; home_latitude: unknown; home_longitude: unknown } | null = null;
+    let location: { service_radius_km?: unknown; home_latitude?: unknown; home_longitude?: unknown } | null = null;
     try {
-      location = await sendKafkaRpcRequest<typeof location>(
+      location = await sendKafkaRpcRequest<{
+        service_radius_km?: unknown;
+        home_latitude?: unknown;
+        home_longitude?: unknown;
+      } | null>(
         () => this.kafka.send(PROVIDER_PATTERNS.GET_PRICING_LOCATION, { provider_id: providerId }),
         { context: PROVIDER_PATTERNS.GET_PRICING_LOCATION },
       );
@@ -377,6 +381,8 @@ export class BookingService implements OnModuleInit {
         Math.cos(toRad(lat2)) *
         Math.sin(deltaLon / 2) ** 2;
     return earthRadiusKm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
   private allowUnverifiedProviderBooking() {
     return this.toTrimmedString(process.env.ALLOW_UNVERIFIED_PROVIDER_BOOKINGS)
       .toLowerCase() === 'true';
@@ -586,6 +592,8 @@ export class BookingService implements OnModuleInit {
     }
 
     return null;
+  }
+
   private normalizeStatusKey(value: unknown): string {
     return this.toTrimmedString(value)
       .toLowerCase()
@@ -1637,8 +1645,7 @@ export class BookingService implements OnModuleInit {
       service_latitude: dto?.service_latitude,
       service_longitude: dto?.service_longitude,
     });
-    const pricingSnapshot = 
-          Result.pricing_quote;
+    const pricingSnapshot = pricingQuoteResult?.pricing_quote ?? PricingEngine.quote(dto || {});
     const pricingQuote = PricingEngine.quote(dto || {});
     const normalizedServiceLocationType =
       this.toTrimmedString(dto?.service_location_type).toLowerCase() ===
@@ -1688,11 +1695,9 @@ export class BookingService implements OnModuleInit {
       service_amount: serviceAmount,
       additional_amount: 0,
       total_amount: totalAmount,
-      pricing_mode: pricingQuote.pricing_mode,
-      hourly_rate: pricingQuote.hourly_rate,
-      flat_rate: pricingQuote.flat_rate,
-      hours_required: pricingQuote.hours_required,
-      total_amount: pricingQuote.total_amount,
+      pricing_mode: normalizedPricingMode,
+      hourly_rate: hourlyRate ?? null,
+      flat_rate: flatRate ?? null,
       payment_method: normalizedPaymentMethod,
       customer_notes: this.toNullableString(dto?.customer_notes),
       service_latitude: this.toNullableNumber(dto?.service_latitude),
@@ -2826,18 +2831,7 @@ export class BookingService implements OnModuleInit {
     if (normalizedStatus === 'completed') {
       updates.completed_at = now;
     }
-  }
-
-  async getBookingsByIds(ids: unknown) {
-    const normalizedIds = Array.from(
-      new Set(
-        (Array.isArray(ids) ? ids : [])
-          .map((id) => this.toTrimmedString(id))
-          .filter(Boolean),
-      ),
-    );
-    if (!normalizedIds.length) return { bookings: [] };
-
+    // Perform DB update for booking status
     const { data, error } = await this.supabase
       .schema('booking')
       .from('bookings')
@@ -2846,9 +2840,7 @@ export class BookingService implements OnModuleInit {
       .select()
       .single();
     if (error) {
-      if (error.code === 'PGRST116')
-        throw new NotFoundException(`Booking with id ${id} not found`);
-      }
+      if (error.code === 'PGRST116') throw new NotFoundException(`Booking with id ${id} not found`);
       throw new BadRequestException(
         this.toTrimmedString(error?.message) || 'Failed to update booking',
       );
@@ -2864,10 +2856,10 @@ export class BookingService implements OnModuleInit {
       normalizedStatus === 'confirmed'
         ? NOTIFICATION_PATTERNS.BOOKING_CONFIRMED
         : normalizedStatus === 'in_progress'
-          ? NOTIFICATION_PATTERNS.BOOKING_IN_PROGRESS
-          : normalizedStatus === 'completed'
-            ? NOTIFICATION_PATTERNS.BOOKING_COMPLETED
-            : null;
+        ? NOTIFICATION_PATTERNS.BOOKING_IN_PROGRESS
+        : normalizedStatus === 'completed'
+        ? NOTIFICATION_PATTERNS.BOOKING_COMPLETED
+        : null;
 
     if (notificationPattern) {
       await this.emitNotifications(id, notificationPattern, {
@@ -2965,7 +2957,7 @@ export class BookingService implements OnModuleInit {
       ]);
     if (cancellationError) {
       this.logger.warn(
-        `Booking ${bookingId} was cancelled, but cancellation audit insert failed: ${cancellationError.message}`,
+        `Booking ${canonicalBookingId} was cancelled, but cancellation audit insert failed: ${cancellationError.message}`,
       );
     }
 

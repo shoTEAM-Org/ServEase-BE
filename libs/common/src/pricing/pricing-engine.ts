@@ -285,3 +285,13 @@ export function calculatePricingQuote(input: CalculatePricingQuoteInput): Pricin
     ]
   };
 }
+
+export const PricingEngine = {
+  quote(input: Partial<CalculatePricingQuoteInput> = {} as Partial<CalculatePricingQuoteInput>) : PricingQuote & { total_amount: number } {
+    const result = calculatePricingQuote(input as CalculatePricingQuoteInput);
+    return {
+      ...result,
+      total_amount: Number(result.bookingAmount || 0),
+    } as PricingQuote & { total_amount: number };
+  }
+};
