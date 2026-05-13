@@ -67,6 +67,7 @@ export class ProviderService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.CREATE_REVIEW_RESPONSE);
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.UPDATE_REVIEW_RESPONSE);
     this.kafka.subscribeToResponseOf(TRUST_PATTERNS.GET_REVIEW_WITH_RESPONSE);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_FUEL_BASELINE);
     await connectKafkaClientWithRetry(this.kafka, {
       context: ProviderService.name,
       logger: this.logger,
@@ -308,38 +309,15 @@ export class ProviderService implements OnModuleInit {
   }
 
   private async getFuelBaseline(fuelType: FuelType) {
-    const now = Date.now();
-    const { data } = await this.supabase
-      .schema('booking')
-      .from('fuel_price_cache')
-      .select('fuel_type, price_per_liter, source_name, source_url, fetched_at, valid_until')
-      .eq('country_code', 'PH')
-      .eq('fuel_type', fuelType)
-      .order('fetched_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (data) {
-      const fetchedAt = this.toTrimmedString(data.fetched_at) || new Date().toISOString();
-      const validUntil = this.toTrimmedString(data.valid_until);
-      const ageMs = now - new Date(fetchedAt).getTime();
-      const freshness: FuelFreshness =
-        validUntil && new Date(validUntil).getTime() >= now
-          ? 'fresh'
-          : ageMs <= 24 * 60 * 60 * 1000
-            ? 'cached'
-            : 'stale';
-
-      return {
-        fuelType,
-        pricePerLiter: Number(data.price_per_liter) || this.defaultFuelPrice(fuelType),
-        sourceName: this.toTrimmedString(data.source_name) || 'Fuel price cache',
-        sourceUrl: this.toTrimmedString(data.source_url) || undefined,
-        fetchedAt,
-        freshness,
-      };
+    try {
+      const result = await sendKafkaRpcRequest<{ fuelType: FuelType; pricePerLiter: number; sourceName: string; sourceUrl?: string; fetchedAt: string; freshness: FuelFreshness }>(
+        () => this.kafka.send(BOOKING_PATTERNS.GET_FUEL_BASELINE, { fuel_type: fuelType }),
+        { context: BOOKING_PATTERNS.GET_FUEL_BASELINE },
+      );
+      if (result) return result;
+    } catch {
+      // fall through to default
     }
-
     return {
       fuelType,
       pricePerLiter: this.defaultFuelPrice(fuelType),
@@ -595,9 +573,7 @@ export class ProviderService implements OnModuleInit {
       }
 
       // Create timeline events for active bookings (fire and forget)
-      this.addTimelineEventsForProviderStatus(normalizedProviderId, normalizedStatus).catch(() => {
-        // Silently ignore timeline errors
-      });
+      this.addTimelineEventsForProviderStatus(normalizedProviderId, normalizedStatus);
 
       return {
         status: 'success',
@@ -614,9 +590,7 @@ export class ProviderService implements OnModuleInit {
     }
 
     // Create timeline events for active bookings (fire and forget)
-    this.addTimelineEventsForProviderStatus(normalizedProviderId, normalizedStatus).catch(() => {
-      // Silently ignore timeline errors
-    });
+    this.addTimelineEventsForProviderStatus(normalizedProviderId, normalizedStatus);
 
     return {
       status: 'success',
@@ -628,53 +602,8 @@ export class ProviderService implements OnModuleInit {
     };
   }
 
-  private async addTimelineEventsForProviderStatus(providerId: string, status: string) {
-    try {
-      // Get active bookings for this provider
-      const { data: bookings, error: bookingsError } = await this.supabase
-        .schema('booking')
-        .from('bookings')
-        .select('id')
-        .eq('provider_id', providerId)
-        .in('status', ['confirmed', 'in_progress']);
-
-      if (bookingsError || !bookings || bookings.length === 0) {
-        return;
-      }
-
-      // Map status to label
-      const statusLabels: Record<string, string> = {
-        'online': 'Provider is online',
-        'on_the_way': 'Provider is on the way',
-        'arrived': 'Provider has arrived',
-        'busy': 'Provider started your service',
-        'offline': 'Provider is offline'
-      };
-
-      const label = statusLabels[status] || `Provider status: ${status}`;
-
-      // Insert timeline events for all active bookings
-      const timelineEvents = bookings.map(booking => ({
-        booking_id: booking.id,
-        event_type: 'provider-status',
-        label,
-        icon: status
-      }));
-
-      // Use upsert to avoid conflicts and set timeout
-      const { error: insertError } = await this.supabase
-        .schema('booking')
-        .from('booking_timeline_events')
-        .insert(timelineEvents);
-
-      if (insertError) {
-        // Log error but don't throw - timeline events are non-critical
-        console.warn('Failed to create timeline events:', insertError.message);
-      }
-    } catch (error) {
-      // Log error but don't throw - timeline events are non-critical
-      console.warn('Failed to create timeline events:', error);
-    }
+  private addTimelineEventsForProviderStatus(providerId: string, status: string) {
+    this.kafka.emit(BOOKING_PATTERNS.ADD_PROVIDER_STATUS_EVENTS, { provider_id: providerId, status });
   }
 
   // === Existing: Provider Discovery ===
@@ -1737,6 +1666,70 @@ export class ProviderService implements OnModuleInit {
       return { services: [] };
     }
     return { services: data || [] };
+  }
+
+  async getTravelProfile(providerId: string) {
+    return (await this.getProviderTravelProfile(providerId)) ?? null;
+  }
+
+  async getServiceLaborBaseline(serviceId: string, pricingMode: PricingMode, hoursRequired: number) {
+    return (await this.getLaborBaseline(serviceId, pricingMode, hoursRequired)) ?? null;
+  }
+
+  async getProviderServiceForBooking(providerId: string, providerServiceId?: string, serviceId?: string) {
+    const selectColumns = 'id, provider_id, service_id, title, description, pricing_mode, price, duration_minutes, is_active, base_booking_fee';
+    const isInvalidUuid = (err: any) => {
+      const code = this.toTrimmedString(err?.code).toUpperCase();
+      const msg = this.toTrimmedString(err?.message).toLowerCase();
+      return code === '22P02' || msg.includes('invalid input syntax for type uuid');
+    };
+    const isMissingRelation = (err: any) => {
+      const code = this.toTrimmedString(err?.code).toUpperCase();
+      const msg = this.toTrimmedString(err?.message).toLowerCase();
+      return code === '42P01' || code === 'PGRST106' || ((msg.includes('relation') || msg.includes('schema')) && msg.includes('does not exist'));
+    };
+
+    if (providerServiceId) {
+      const result = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_services')
+        .select(selectColumns)
+        .eq('provider_id', providerId)
+        .eq('id', providerServiceId)
+        .eq('is_active', true)
+        .maybeSingle();
+      if (result.error) {
+        if (isInvalidUuid(result.error) || isMissingRelation(result.error)) return null;
+        throw new InternalServerErrorException(result.error.message);
+      }
+      if (result.data) return result.data;
+    }
+
+    if (!serviceId) return null;
+    const result = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_services')
+      .select(selectColumns)
+      .eq('provider_id', providerId)
+      .eq('service_id', serviceId)
+      .eq('is_active', true)
+      .limit(1)
+      .maybeSingle();
+    if (result.error) {
+      if (isInvalidUuid(result.error) || isMissingRelation(result.error)) return null;
+      throw new InternalServerErrorException(result.error.message);
+    }
+    return result.data ?? null;
+  }
+
+  async getPricingLocation(providerId: string) {
+    const { data } = await this.supabase
+      .schema('provider_catalog')
+      .from('provider_profiles')
+      .select('service_radius_km, home_latitude, home_longitude')
+      .eq('user_id', providerId)
+      .maybeSingle();
+    return data ?? null;
   }
 
   async getPricingGuidance(providerId: string, body: any) {

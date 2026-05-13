@@ -1,5 +1,5 @@
 import { Controller, Inject } from '@nestjs/common';
-import { MessagePattern, Payload } from '@nestjs/microservices';
+import { EventPattern, MessagePattern, Payload } from '@nestjs/microservices';
 import { PAYMENT_PATTERNS } from '@app/common';
 import { PaymentService } from './payments.service.js';
 
@@ -130,5 +130,15 @@ export class PaymentKafkaController {
       });
       throw error;
     }
+  }
+
+  @EventPattern(PAYMENT_PATTERNS.SAVE_PRICE_QUOTE)
+  async savePriceQuote(@Payload() data: any) {
+    return this.paymentService.savePriceQuote(data);
+  }
+
+  @MessagePattern(PAYMENT_PATTERNS.GET_COMMISSION_RATE)
+  async getCommissionRate() {
+    return this.paymentService.getCommissionRate();
   }
 }

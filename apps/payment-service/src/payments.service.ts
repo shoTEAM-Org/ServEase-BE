@@ -30,6 +30,7 @@ export class PaymentService implements OnModuleInit {
 
   async onModuleInit() {
     this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BY_ID);
+    this.kafka.subscribeToResponseOf(BOOKING_PATTERNS.GET_BOOKINGS_BY_IDS);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
     await connectKafkaClientWithRetry(this.kafka, {
@@ -233,23 +234,19 @@ export class PaymentService implements OnModuleInit {
     let bookingsById = new Map<string, any>();
 
     if (bookingIds.length) {
-      const { data: bookings, error: bookingError } = await this.supabase
-        .schema('booking')
-        .from('bookings')
-        .select('id, booking_reference, service_title, service_name, scheduled_at')
-        .in('id', bookingIds);
-
-      if (bookingError) {
-        this.logger.warn(
-          `payment.provider-history booking enrichment degraded: ${this.toTrimmedString(bookingError.message)}`,
+      try {
+        const response = await this.request<{ bookings: any[] }>(
+          BOOKING_PATTERNS.GET_BOOKINGS_BY_IDS,
+          { ids: bookingIds },
         );
-      } else {
         bookingsById = new Map(
-          (bookings || []).map((booking: any) => [
+          (response?.bookings || []).map((booking: any) => [
             this.toTrimmedString(booking?.id),
             booking,
           ]),
         );
+      } catch {
+        this.logger.warn('payment.provider-history: booking enrichment degraded');
       }
     }
 
@@ -292,13 +289,13 @@ export class PaymentService implements OnModuleInit {
     const { bookingId, customerId, providerId, amount, method } =
       this.normalizeEnsurePaymentInput(body);
 
-    const { data: booking, error: bookingError } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('id, customer_id, provider_id')
-      .eq('id', bookingId)
-      .maybeSingle();
-    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    let booking: any;
+    try {
+      const response = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, { id: bookingId });
+      booking = response?.booking;
+    } catch {
+      throw new InternalServerErrorException('Failed to fetch booking');
+    }
     if (!booking) throw new NotFoundException('Booking not found');
     if (this.toTrimmedString(booking.customer_id) !== customerId) {
       throw new NotFoundException('Booking not found');
@@ -347,6 +344,50 @@ export class PaymentService implements OnModuleInit {
     return { payment: insertedRows[0] };
   }
 
+  async savePriceQuote(data: any) {
+    const { error } = await this.supabase
+      .schema('payment')
+      .from('price_quotes')
+      .insert([{
+        booking_id: data.booking_id,
+        service_id: data.service_id ?? null,
+        base_booking_fee: data.base_booking_fee,
+        effort_amount: data.effort_amount,
+        travel_fee: data.travel_fee,
+        fuel_adjustment: data.fuel_adjustment,
+        materials_amount: data.materials_amount,
+        base_effort_pool: data.base_effort_pool,
+        total_amount: data.total_amount,
+        units: data.units ?? null,
+        distance_km: data.distance_km ?? null,
+        expires_at: data.expires_at,
+        is_used: false,
+      }]);
+    if (error) {
+      this.logger.warn(`Failed to save price quote for booking ${data.booking_id}: ${error.message}`);
+    }
+  }
+
+  async getCommissionRate(): Promise<{ commission_rate: number }> {
+    const DEFAULT = 0.15;
+    try {
+      const { data, error } = await this.supabase
+        .schema('payment')
+        .from('platform_pricing_config')
+        .select('config_value')
+        .eq('config_key', 'commission_rate')
+        .eq('is_active', true)
+        .maybeSingle();
+      if (!error && data) {
+        const parsed = Number(data.config_value);
+        if (Number.isFinite(parsed) && parsed > 0) return { commission_rate: parsed };
+      }
+    } catch {
+      this.logger.warn('getCommissionRate: failed to read platform_pricing_config; using default 0.15');
+    }
+    return { commission_rate: DEFAULT };
+  }
+
   async checkoutWithQuote(dto: any) {
     const quoteId = this.toTrimmedString(dto?.quote_id);
     const paymentMethod = this.normalizePaymentMethod(dto?.payment_method) || 'cash_on_service';
@@ -366,13 +407,13 @@ export class PaymentService implements OnModuleInit {
     if (new Date(quote.expires_at).getTime() < Date.now()) throw new BadRequestException('Quote has expired');
     if (quote.is_used) throw new ConflictException('Quote already used');
 
-    const { data: booking, error: bookingError } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('id, customer_id, provider_id')
-      .eq('id', quote.booking_id)
-      .maybeSingle();
-    if (bookingError) throw new InternalServerErrorException(bookingError.message);
+    let booking: any;
+    try {
+      const bookingResponse = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, { id: quote.booking_id });
+      booking = bookingResponse?.booking;
+    } catch {
+      throw new InternalServerErrorException('Failed to fetch booking');
+    }
     if (!booking) throw new NotFoundException('Booking not found');
     if (this.toTrimmedString(booking.customer_id) !== requesterId) {
       throw new ForbiddenException('Not your booking');
@@ -497,15 +538,14 @@ export class PaymentService implements OnModuleInit {
       throw new ForbiddenException('Only the assigned provider can mark this booking paid');
     }
 
-    const { data, error } = await this.supabase
-      .schema('booking')
-      .from('bookings')
-      .select('id, provider_id')
-      .eq('id', bookingId)
-      .maybeSingle();
-
-    if (error) throw new InternalServerErrorException(error.message);
-    if (!data || this.toTrimmedString((data as any).provider_id) !== requesterId) {
+    let booking: any;
+    try {
+      const response = await this.request<any>(BOOKING_PATTERNS.GET_BY_ID, { id: bookingId });
+      booking = response?.booking;
+    } catch {
+      throw new InternalServerErrorException('Failed to fetch booking');
+    }
+    if (!booking || this.toTrimmedString(booking.provider_id) !== requesterId) {
       throw new ForbiddenException('Only the assigned provider can mark this booking paid');
     }
   }

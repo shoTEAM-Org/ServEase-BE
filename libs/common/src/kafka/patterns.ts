@@ -39,6 +39,9 @@ export const BOOKING_PATTERNS = {
   GET_HISTORY: 'booking.get-history',
   GET_REQUESTS: 'booking.get-requests',
   GET_BY_ID: 'booking.get-by-id',
+  GET_BOOKINGS_BY_IDS: 'booking.get-by-ids',
+  GET_FUEL_BASELINE: 'booking.get-fuel-baseline',
+  ADD_PROVIDER_STATUS_EVENTS: 'booking.add-provider-status-events',
   UPDATE_STATUS: 'booking.update-status',
   CANCEL: 'booking.cancel',
   GET_PROVIDER_AVAILABILITY: 'booking.get-provider-availability',
@@ -84,6 +87,8 @@ export const PAYMENT_PATTERNS = {
   GET_REVENUE_REPORT: 'payment.reports.revenue',
   GET_FINANCIAL_REPORT: 'payment.reports.financial',
   CHECKOUT_WITH_QUOTE: 'payment.checkout-with-quote',
+  SAVE_PRICE_QUOTE: 'payment.save-price-quote',
+  GET_COMMISSION_RATE: 'payment.get-commission-rate',
 } as const;
 
 export const PROVIDER_PATTERNS = {
@@ -104,6 +109,10 @@ export const PROVIDER_PATTERNS = {
   CHECK_AVAILABILITY: 'provider.check-availability',
   GET_MY_SERVICES: 'provider.get-my-services',
   GET_PRICING_GUIDANCE: 'provider.get-pricing-guidance',
+  GET_TRAVEL_PROFILE: 'provider.get-travel-profile',
+  GET_LABOR_BASELINE: 'provider.get-labor-baseline',
+  GET_PRICING_LOCATION: 'provider.get-pricing-location',
+  GET_PROVIDER_SERVICE_FOR_BOOKING: 'provider.get-provider-service-for-booking',
   CREATE_MY_SERVICE: 'provider.create-my-service',
   UPDATE_MY_SERVICE: 'provider.update-my-service',
   DELETE_MY_SERVICE: 'provider.delete-my-service',

@@ -42,9 +42,14 @@ export class BookingService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILES_BY_IDS);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_TRAVEL_PROFILE);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_LABOR_BASELINE);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PRICING_LOCATION);
+    this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROVIDER_SERVICE_FOR_BOOKING);
     this.kafka.subscribeToResponseOf(SUPPORT_PATTERNS.CREATE_DISPUTE);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.CANCEL_BOOKING_PAYMENT);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.UPDATE_AMOUNT);
+    this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.GET_COMMISSION_RATE);
     await connectKafkaClientWithRetry(this.kafka, {
       context: BookingService.name,
       logger: this.logger,
@@ -278,43 +283,28 @@ export class BookingService implements OnModuleInit {
   }
 
   private async getProviderTravelProfile(providerId: string) {
-    const { data } = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_travel_profiles')
-      .select('vehicle_type, fuel_type, fuel_efficiency_km_per_liter')
-      .eq('provider_id', providerId)
-      .maybeSingle();
-
-    if (!data) return undefined;
-    return {
-      vehicleType: this.normalizeVehicleType(data.vehicle_type),
-      fuelType: this.normalizeFuelType(data.fuel_type),
-      fuelEfficiencyKmPerLiter:
-        this.toNullableNumber(data.fuel_efficiency_km_per_liter) || 45,
-    };
+    try {
+      const result = await sendKafkaRpcRequest<{ vehicleType: VehicleType; fuelType: FuelType; fuelEfficiencyKmPerLiter: number } | null>(
+        () => this.kafka.send(PROVIDER_PATTERNS.GET_TRAVEL_PROFILE, { provider_id: providerId }),
+        { context: PROVIDER_PATTERNS.GET_TRAVEL_PROFILE },
+      );
+      return result ?? undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async getLaborBaseline(serviceId: string, pricingMode: PricingMode, hoursRequired: number) {
     if (!serviceId) return undefined;
-    const { data } = await this.supabase
-      .schema('provider_catalog')
-      .from('service_pricing_baselines')
-      .select('pricing_mode, min_labor_amount, max_labor_amount, typical_labor_amount, source_note')
-      .eq('service_id', serviceId)
-      .eq('is_active', true)
-      .maybeSingle();
-    if (!data) return undefined;
-
-    const baselineMode = this.normalizePricingMode(data.pricing_mode);
-    const multiplier = baselineMode === 'hourly' && pricingMode === 'hourly'
-      ? Math.max(1, hoursRequired)
-      : 1;
-    return {
-      minLaborAmount: (this.toNullableNumber(data.min_labor_amount) || 0) * multiplier,
-      maxLaborAmount: (this.toNullableNumber(data.max_labor_amount) || 0) * multiplier,
-      typicalLaborAmount: (this.toNullableNumber(data.typical_labor_amount) || 0) * multiplier,
-      sourceNote: this.toTrimmedString(data.source_note) || 'ServEase category baseline',
-    };
+    try {
+      const result = await sendKafkaRpcRequest<{ minLaborAmount: number; maxLaborAmount: number; typicalLaborAmount: number; sourceNote: string } | null>(
+        () => this.kafka.send(PROVIDER_PATTERNS.GET_LABOR_BASELINE, { service_id: serviceId, pricing_mode: pricingMode, hours_required: hoursRequired }),
+        { context: PROVIDER_PATTERNS.GET_LABOR_BASELINE },
+      );
+      return result ?? undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async getProviderTravelContext(providerId: string, dto: any): Promise<{
@@ -327,15 +317,18 @@ export class BookingService implements OnModuleInit {
   }> {
     const requestedTier = this.toTrimmedString(dto?.radius_tier);
 
-    const { data } = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_profiles')
-      .select('service_radius_km, home_latitude, home_longitude')
-      .eq('user_id', providerId)
-      .maybeSingle();
-    const serviceRadius = this.toNullableNumber(data?.service_radius_km) || 10;
-    const providerLat = this.toNullableNumber(data?.home_latitude);
-    const providerLng = this.toNullableNumber(data?.home_longitude);
+    let location: { service_radius_km: unknown; home_latitude: unknown; home_longitude: unknown } | null = null;
+    try {
+      location = await sendKafkaRpcRequest<typeof location>(
+        () => this.kafka.send(PROVIDER_PATTERNS.GET_PRICING_LOCATION, { provider_id: providerId }),
+        { context: PROVIDER_PATTERNS.GET_PRICING_LOCATION },
+      );
+    } catch {
+      // fall through — null location triggers providerBaseMissing path below
+    }
+    const serviceRadius = this.toNullableNumber(location?.service_radius_km) || 10;
+    const providerLat = this.toNullableNumber(location?.home_latitude);
+    const providerLng = this.toNullableNumber(location?.home_longitude);
     const serviceLat = this.toNullableNumber(dto?.service_latitude);
     const serviceLng = this.toNullableNumber(dto?.service_longitude);
     const providerBaseMissing = providerLat === null || providerLng === null;
@@ -455,47 +448,19 @@ export class BookingService implements OnModuleInit {
     providerServiceId: string,
     serviceId: string,
   ) {
-    const selectColumns =
-      'id, provider_id, service_id, title, description, pricing_mode, price, duration_minutes, is_active';
-
-    if (providerServiceId) {
-      const result = await this.supabase
-        .schema('provider_catalog')
-        .from('provider_services')
-        .select(selectColumns)
-        .eq('provider_id', providerId)
-        .eq('id', providerServiceId)
-        .eq('is_active', true)
-        .maybeSingle();
-
-      if (result.error) {
-        if (this.isInvalidUuidError(result.error)) return null;
-        if (!this.isMissingRelationError(result.error)) {
-          throw new InternalServerErrorException(result.error.message);
-        }
-      }
-      if (result.data) return result.data as Record<string, any>;
+    try {
+      const result = await sendKafkaRpcRequest<Record<string, any> | null>(
+        () => this.kafka.send(PROVIDER_PATTERNS.GET_PROVIDER_SERVICE_FOR_BOOKING, {
+          provider_id: providerId,
+          provider_service_id: providerServiceId || undefined,
+          service_id: serviceId || undefined,
+        }),
+        { context: PROVIDER_PATTERNS.GET_PROVIDER_SERVICE_FOR_BOOKING },
+      );
+      return result ?? null;
+    } catch (error: any) {
+      throw new InternalServerErrorException(error?.message || 'Failed to fetch provider service');
     }
-
-    if (!serviceId) return null;
-    const result = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_services')
-      .select(selectColumns)
-      .eq('provider_id', providerId)
-      .eq('service_id', serviceId)
-      .eq('is_active', true)
-      .limit(1)
-      .maybeSingle();
-
-    if (result.error) {
-      if (this.isInvalidUuidError(result.error)) return null;
-      if (!this.isMissingRelationError(result.error)) {
-        throw new InternalServerErrorException(result.error.message);
-      }
-    }
-
-    return (result.data as Record<string, any>) || null;
   }
 
   private timeStringToMinutes(value: unknown): number | null {
@@ -1686,68 +1651,38 @@ export class BookingService implements OnModuleInit {
       pricingQuote.assumptions.push('Provider service base is not set; travel tier uses base-radius fallback.');
     }
 
-    let quoteId: string | undefined;
     const bookingId = this.toTrimmedString(dto?.booking_id);
     if (bookingId) {
       const materialsAmount = this.toNullableNumber(dto?.materials_amount) ?? 0;
-      const resolvedServiceId = this.toTrimmedString(providerService.service_id) || normalizedServiceId || null;
-      let categoryId: string | null = null;
-      let baseBookingFee = 50.00;
-      if (resolvedServiceId) {
-        const { data: categoryRow } = await this.supabase
-          .schema('provider_catalog')
-          .from('service_categories')
-          .select('id, parent_id, base_booking_fee')
-          .eq('id', resolvedServiceId)
-          .maybeSingle();
-        categoryId = this.toTrimmedString(categoryRow?.parent_id) || this.toTrimmedString(categoryRow?.id) || null;
-        baseBookingFee = this.toNullableNumber(categoryRow?.base_booking_fee) ?? 50.00;
-      }
-      const { data: quoteRow, error: quoteError } = await this.supabase
-        .schema('payment')
-        .from('price_quotes')
-        .insert([{
-          booking_id: bookingId,
-          service_id: this.toTrimmedString(providerService.id) || null,
-          category_id: categoryId,
-          base_booking_fee: baseBookingFee,
-          effort_amount: pricingQuote.laborAmount,
-          travel_fee: pricingQuote.travelAdjustment,
-          fuel_adjustment: pricingQuote.operatingBuffer,
-          materials_amount: materialsAmount,
-          base_effort_pool: baseBookingFee + pricingQuote.laborAmount,
-          total_amount: (baseBookingFee + pricingQuote.laborAmount) + pricingQuote.travelAdjustment + pricingQuote.operatingBuffer + materialsAmount,
-          units: hoursRequired,
-          distance_km: pricingQuote.distanceKm ?? null,
-          expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
-          is_used: false,
-        }])
-        .select('id')
-        .single();
-
-      if (quoteError) {
-        this.logger.warn(`Failed to save price quote for booking ${bookingId}: ${JSON.stringify(quoteError)}`);
-      } else {
-        quoteId = quoteRow?.id;
-      }
+      const baseBookingFee = this.toNullableNumber(providerService.base_booking_fee) ?? 50.00;
+      this.kafka.emit(PAYMENT_PATTERNS.SAVE_PRICE_QUOTE, {
+        booking_id: bookingId,
+        service_id: this.toTrimmedString(providerService.id) || null,
+        base_booking_fee: baseBookingFee,
+        effort_amount: pricingQuote.laborAmount,
+        travel_fee: pricingQuote.travelAdjustment,
+        fuel_adjustment: pricingQuote.operatingBuffer,
+        materials_amount: materialsAmount,
+        base_effort_pool: baseBookingFee + pricingQuote.laborAmount,
+        total_amount: (baseBookingFee + pricingQuote.laborAmount) + pricingQuote.travelAdjustment + pricingQuote.operatingBuffer + materialsAmount,
+        units: hoursRequired,
+        distance_km: pricingQuote.distanceKm ?? null,
+        expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+        is_used: false,
+      });
     }
 
     const DEFAULT_COMMISSION_RATE = 0.15;
     let commissionRate = DEFAULT_COMMISSION_RATE;
     try {
-      const { data: configRow, error: configError } = await this.supabase
-        .schema('payment')
-        .from('platform_pricing_config')
-        .select('config_value')
-        .eq('config_key', 'commission_rate')
-        .eq('is_active', true)
-        .maybeSingle();
-      if (!configError && configRow) {
-        const parsed = this.toNullableNumber(configRow.config_value);
-        if (parsed !== null && parsed > 0) commissionRate = parsed;
-      }
+      const rateResponse = await sendKafkaRpcRequest<{ commission_rate: number }>(
+        () => this.kafka.send(PAYMENT_PATTERNS.GET_COMMISSION_RATE, {}),
+        { context: PAYMENT_PATTERNS.GET_COMMISSION_RATE },
+      );
+      const parsed = this.toNullableNumber(rateResponse?.commission_rate);
+      if (parsed !== null && parsed > 0) commissionRate = parsed;
     } catch {
-      this.logger.warn('Failed to fetch commission_rate from platform_pricing_config; using default 0.15');
+      this.logger.warn('Failed to fetch commission_rate via Kafka; using default 0.15');
     }
 
     const baseBookingFeeForCommission = this.toNullableNumber(providerService?.base_booking_fee) ?? 50.00;
@@ -1760,7 +1695,6 @@ export class BookingService implements OnModuleInit {
 
     return {
       pricing_quote: pricingQuote,
-      ...(quoteId !== undefined ? { quote_id: quoteId } : {}),
       commission: {
         rate: commissionRate,
         servease_income: serveaseIncome,
@@ -2641,6 +2575,54 @@ export class BookingService implements OnModuleInit {
     };
   }
 
+  async getFuelBaselineData(fuelType: FuelType) {
+    return this.getFuelBaseline(fuelType);
+  }
+
+  async addProviderStatusEvents(providerId: string, status: string) {
+    try {
+      const { data: bookings, error: bookingsError } = await this.supabase
+        .schema('booking')
+        .from('bookings')
+        .select('id')
+        .eq('provider_id', providerId)
+        .in('status', ['confirmed', 'in_progress']);
+
+      if (bookingsError || !bookings || bookings.length === 0) return;
+
+      const statusLabels: Record<string, string> = {
+        online: 'Provider is online',
+        on_the_way: 'Provider is on the way',
+        arrived: 'Provider has arrived',
+        busy: 'Provider started your service',
+        offline: 'Provider is offline',
+      };
+      const label = statusLabels[status] || `Provider status: ${status}`;
+
+      const { error: insertError } = await this.supabase
+        .schema('booking')
+        .from('booking_timeline_events')
+        .insert(bookings.map(b => ({ booking_id: b.id, event_type: 'provider-status', label, icon: status })));
+
+      if (insertError) {
+        this.logger.warn(`addProviderStatusEvents insert failed: ${insertError.message}`);
+      }
+    } catch (error: any) {
+      this.logger.warn(`addProviderStatusEvents failed: ${error?.message}`);
+    }
+  }
+
+  async getBookingsByIds(ids: string[]) {
+    if (!ids.length) return { bookings: [] };
+    const { data, error } = await this.supabase
+      .schema('booking')
+      .from('bookings')
+      .select('id, booking_reference, service_title, service_name, scheduled_at')
+      .in('id', ids);
+    if (error) throw new InternalServerErrorException(error.message);
+    return { bookings: data || [] };
+  }
+
   private async getBookingTimelineEvents(bookingId: string) {
     try {
       // Set a short timeout for timeline events
@@ -2842,9 +2824,9 @@ export class BookingService implements OnModuleInit {
       .insert([
         {
           booking_id: canonicalBookingId,
-          user_id: normalizedUserId,
+          cancelled_by: normalizedUserId,
           reason: normalizedReason,
-          explanation: normalizedExplanation,
+          detailed_explanation: normalizedExplanation,
         },
       ]);
     if (cancellationError)

@@ -203,6 +203,34 @@ export class ProviderKafkaController {
     return this.providerService.getPricingGuidance(data.providerId, data);
   }
 
+  @MessagePattern(PROVIDER_PATTERNS.GET_TRAVEL_PROFILE)
+  async getTravelProfile(@Payload() data: any) {
+    return this.providerService.getTravelProfile(data.provider_id);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_LABOR_BASELINE)
+  async getLaborBaseline(@Payload() data: any) {
+    return this.providerService.getServiceLaborBaseline(
+      data.service_id,
+      data.pricing_mode,
+      data.hours_required,
+    );
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_PRICING_LOCATION)
+  async getPricingLocation(@Payload() data: any) {
+    return this.providerService.getPricingLocation(data.provider_id);
+  }
+
+  @MessagePattern(PROVIDER_PATTERNS.GET_PROVIDER_SERVICE_FOR_BOOKING)
+  async getProviderServiceForBooking(@Payload() data: any) {
+    return this.providerService.getProviderServiceForBooking(
+      data.provider_id,
+      data.provider_service_id,
+      data.service_id,
+    );
+  }
+
   @MessagePattern(PROVIDER_PATTERNS.GET_PROFILE_DRAFT)
   async getProfileDraft(@Payload() data: any) {
     return this.providerService.getProfileDraft(data.userId);

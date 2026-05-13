@@ -112,6 +112,16 @@ export class BookingKafkaController {
     );
   }
 
+  @MessagePattern(BOOKING_PATTERNS.GET_BOOKINGS_BY_IDS)
+  async getBookingsByIds(@Payload() data: any) {
+    return this.bookingService.getBookingsByIds(data.ids ?? []);
+  }
+
+  @MessagePattern(BOOKING_PATTERNS.GET_FUEL_BASELINE)
+  async getFuelBaseline(@Payload() data: any) {
+    return this.bookingService.getFuelBaselineData(data.fuel_type);
+  }
+
   @MessagePattern(BOOKING_PATTERNS.GET_ATTACHMENTS)
   async getAttachments(@Payload() data: any) {
     return this.bookingService.getAttachments(
@@ -202,12 +212,24 @@ export class BookingKafkaController {
 
   @MessagePattern(BOOKING_PATTERNS.CANCEL)
   async cancelBooking(@Payload() data: any) {
-    return this.bookingService.cancelBooking(
-      data.id,
-      data.userId,
-      data.reason,
-      data.explanation,
-    );
+    try {
+      return await this.bookingService.cancelBooking(
+        data.id,
+        data.userId,
+        data.reason,
+        data.explanation,
+      );
+    } catch (error: any) {
+      const response = typeof error?.getResponse === 'function' ? error.getResponse() : undefined;
+      console.error('[booking-service.cancel-booking] failed', {
+        bookingId: data?.id,
+        userId: data?.userId,
+        reason: data?.reason,
+        message: error?.message,
+        details: response || error?.response || error,
+      });
+      throw error;
+    }
   }
 
   @MessagePattern(BOOKING_PATTERNS.SAVE_ATTACHMENTS)
@@ -226,6 +248,14 @@ export class BookingKafkaController {
       data.bookingId,
       data.userId,
       data.reason,
+    );
+  }
+
+  @EventPattern(BOOKING_PATTERNS.ADD_PROVIDER_STATUS_EVENTS)
+  async addProviderStatusEvents(@Payload() data: any) {
+    return this.bookingService.addProviderStatusEvents(
+      data.provider_id,
+      data.status,
     );
   }
 }
