@@ -120,4 +120,18 @@ export class NotificationsKafkaController {
       metadata: data.metadata,
     });
   }
+
+  @EventPattern(NOTIFICATION_PATTERNS.REVIEW_RESPONSE_CREATED)
+  async handleReviewResponseCreated(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      metadata: data.metadata,
+    });
+  }
+
+  @EventPattern(NOTIFICATION_PATTERNS.REVIEW_RESPONSE_UPDATED)
+  async handleReviewResponseUpdated(@Payload() data: any) {
+    return this.notificationsService.createNotification(data.userId, data.type, {
+      metadata: data.metadata,
+    });
+  }
 }

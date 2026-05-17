@@ -23,7 +23,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { sendWithTimeout } from '../utils/kafka-request.js';
-import { BOOKING_PATTERNS, CHAT_PATTERNS, PROVIDER_PATTERNS } from '@app/common';
+import { CHAT_PATTERNS, PROVIDER_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 import { VerifiedProviderGuard } from '../guards/verified-provider.guard.js';
 import 'multer';
@@ -54,17 +54,12 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.GET_TRUST_SCORE,
       PROVIDER_PATTERNS.GET_REVIEWS,
       PROVIDER_PATTERNS.GET_BOOKINGS,
-      PROVIDER_PATTERNS.GET_BOOKING_BY_ID,
-      PROVIDER_PATTERNS.GET_AVAILABILITY,
       PROVIDER_PATTERNS.GET_RESERVED_SLOTS,
       PROVIDER_PATTERNS.CHECK_AVAILABILITY,
       PROVIDER_PATTERNS.SAVE_AVAILABILITY,
-      BOOKING_PATTERNS.UPDATE_STATUS,
-      PROVIDER_PATTERNS.UPDATE_BOOKING_STATUS,
       PROVIDER_PATTERNS.GET_MY_SERVICES,
       PROVIDER_PATTERNS.GET_PRICING_GUIDANCE,
       PROVIDER_PATTERNS.GET_PROFILE_DRAFT,
-      PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES,
       PROVIDER_PATTERNS.SUBMIT_REVIEW,
       PROVIDER_PATTERNS.SUBMIT_REPORT,
       PROVIDER_PATTERNS.GET_REQUIRED_DOCUMENT_TYPES,
@@ -73,7 +68,6 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.GET_MY_DOCUMENTS,
       PROVIDER_PATTERNS.DELETE_MY_DOCUMENT,
       PROVIDER_PATTERNS.SUBMIT_FOR_REVIEW,
-      BOOKING_PATTERNS.UPDATE_STATUS_RPC,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
   }
 

@@ -19,6 +19,13 @@ import {
   SUPPORT_PATTERNS,
 } from '@app/common';
 
+// Only the NOTIFICATION_PATTERNS the gateway calls as RPC (.send). The rest are
+// @EventPattern fire-and-forget emitted by other services — never by the gateway.
+const GATEWAY_NOTIFICATION_RPC_PATTERNS = [
+  NOTIFICATION_PATTERNS.GET_NOTIFICATIONS,
+  NOTIFICATION_PATTERNS.GET_UNREAD_COUNT,
+];
+
 @Injectable()
 export class GatewayKafkaLifecycle
   implements OnApplicationBootstrap, OnApplicationShutdown
@@ -32,7 +39,7 @@ export class GatewayKafkaLifecycle
     ...Object.values(CATALOG_PATTERNS),
     ...Object.values(CHAT_PATTERNS),
     ...Object.values(CUSTOMER_PATTERNS),
-    ...Object.values(NOTIFICATION_PATTERNS),
+    ...GATEWAY_NOTIFICATION_RPC_PATTERNS,
     ...Object.values(PAYMENT_PATTERNS),
     ...Object.values(PROVIDER_PATTERNS),
     ...Object.values(SUPPORT_PATTERNS),

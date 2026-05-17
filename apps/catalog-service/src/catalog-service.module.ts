@@ -6,6 +6,8 @@ import { ReferenceService } from './reference.service.js';
 import { LocationsService } from './locations.service.js';
 import { CatalogKafkaController } from './catalog.controller.js';
 
+const catalogClientInstanceId = `${process.pid}-${Date.now()}`;
+
 @Module({
   imports: [
     SupabaseModule,
@@ -15,10 +17,10 @@ import { CatalogKafkaController } from './catalog.controller.js';
         transport: Transport.KAFKA,
         options: {
           client: {
-            clientId: 'catalog-service-client',
+            clientId: `catalog-service-client-${catalogClientInstanceId}`,
             brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
           },
-          consumer: { groupId: 'catalog-service-client-consumer' },
+          consumer: { groupId: `catalog-service-client-consumer-${catalogClientInstanceId}` },
         },
       },
     ]),

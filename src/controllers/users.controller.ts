@@ -24,7 +24,6 @@ export class UsersController implements OnModuleInit {
 
   async onModuleInit() {
     [
-      AUTH_PATTERNS.GET_PROFILE,
       AUTH_PATTERNS.GET_CUSTOMER_PROFILE,
       AUTH_PATTERNS.GET_ADDRESSES,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));

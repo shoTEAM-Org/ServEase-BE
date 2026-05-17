@@ -8,7 +8,7 @@ export class AdminKafkaController {
   constructor(@Inject(AdminService) private readonly adminService: AdminService) {}
 
   // Existing
-  @EventPattern(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS)
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_DOCUMENT_STATUS)
   async updateDocumentStatus(@Payload() data: any) {
     return this.adminService.updateDocumentStatus(data.documentId, data);
   }
@@ -175,7 +175,7 @@ export class AdminKafkaController {
     return this.adminService.createCategory(data);
   }
 
-  @MessagePattern(ADMIN_PATTERNS.UPDATE_CATEGORY)
+  @EventPattern(ADMIN_PATTERNS.UPDATE_CATEGORY)
   async updateCategory(@Payload() data: any) {
     const { id, ...body } = data;
     return this.adminService.updateCategory(id, body);
@@ -196,7 +196,7 @@ export class AdminKafkaController {
     return this.adminService.createService(data);
   }
 
-  @MessagePattern(ADMIN_PATTERNS.UPDATE_SERVICE)
+  @EventPattern(ADMIN_PATTERNS.UPDATE_SERVICE)
   async updateService(@Payload() data: any) {
     const { id, ...body } = data;
     return this.adminService.updateService(id, body);
@@ -306,6 +306,18 @@ export class AdminKafkaController {
   @MessagePattern(ADMIN_PATTERNS.TEST_INTEGRATION)
   async testIntegration(@Payload() data: any) {
     return this.adminService.testIntegration(data.service);
+  }
+
+  // === COMMISSION ===
+
+  @MessagePattern(ADMIN_PATTERNS.GET_COMMISSION)
+  async getCommission() {
+    return this.adminService.getCommission();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_COMMISSION)
+  async updateCommission(@Payload() data: any) {
+    return this.adminService.updateCommission(data);
   }
 
   // === COMMISSION RULES ===

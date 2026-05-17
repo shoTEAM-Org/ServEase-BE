@@ -4,6 +4,8 @@ import { SupabaseModule } from '@app/database';
 import { PaymentService } from './payments.service.js';
 import { PaymentKafkaController } from './payment.controller.js';
 
+const paymentClientInstanceId = `${process.pid}-${Date.now()}`;
+
 @Module({
   imports: [
     SupabaseModule,
@@ -13,10 +15,10 @@ import { PaymentKafkaController } from './payment.controller.js';
         transport: Transport.KAFKA,
         options: {
           client: {
-            clientId: 'payment-service-client',
+            clientId: `payment-service-client-${paymentClientInstanceId}`,
             brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
           },
-          consumer: { groupId: 'payment-service-client-consumer' },
+          consumer: { groupId: `payment-service-client-consumer-${paymentClientInstanceId}` },
         },
       },
     ]),

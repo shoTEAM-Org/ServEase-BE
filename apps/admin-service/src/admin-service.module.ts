@@ -4,6 +4,8 @@ import { SupabaseModule } from '@app/database';
 import { AdminService } from './admin.service.js';
 import { AdminKafkaController } from './admin.controller.js';
 
+const adminClientInstanceId = `${process.pid}-${Date.now()}`;
+
 @Module({
   imports: [
     SupabaseModule,
@@ -13,10 +15,10 @@ import { AdminKafkaController } from './admin.controller.js';
         transport: Transport.KAFKA,
         options: {
           client: {
-            clientId: 'admin-service-client',
+            clientId: `admin-service-client-${adminClientInstanceId}`,
             brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
           },
-          consumer: { groupId: 'admin-service-client-consumer' },
+          consumer: { groupId: `admin-service-client-consumer-${adminClientInstanceId}` },
         },
       },
     ]),

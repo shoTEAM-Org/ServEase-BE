@@ -31,7 +31,6 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_ROLE);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.GET_USERS_BY_IDS);
     this.kafka.subscribeToResponseOf(AUTH_PATTERNS.UPDATE_USER_STATUS);
-    this.kafka.subscribeToResponseOf(AUTH_PATTERNS.UPDATE_PROFILE);
     this.kafka.subscribeToResponseOf(CUSTOMER_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_PROFILE);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_MY_SERVICES);

@@ -4,6 +4,8 @@ import { SupabaseModule } from '@app/database';
 import { BookingService } from './booking.service.js';
 import { BookingKafkaController } from './booking.controller.js';
 
+const bookingClientInstanceId = `${process.pid}-${Date.now()}`;
+
 @Module({
   imports: [
     SupabaseModule,
@@ -13,10 +15,10 @@ import { BookingKafkaController } from './booking.controller.js';
         transport: Transport.KAFKA,
         options: {
           client: {
-            clientId: 'booking-service-client',
+            clientId: `booking-service-client-${bookingClientInstanceId}`,
             brokers: [process.env.KAFKA_BROKER || 'localhost:9092'],
           },
-          consumer: { groupId: 'booking-service-client-consumer' },
+          consumer: { groupId: `booking-service-client-consumer-${bookingClientInstanceId}` },
         },
       },
     ]),
