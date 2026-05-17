@@ -23,6 +23,8 @@ import { SupportController } from './controllers/support.controller.js';
 import { UploadsController } from './controllers/uploads.controller.js';
 import { HealthController } from './controllers/health.controller.js';
 import { PricingController } from './controllers/pricing.controller.js';
+import { GeoController } from './controllers/geo.controller.js';
+import { TribeClientModule } from './tribe-client/tribe-client.module.js';
 import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
 import { AdminRoleGuard } from './guards/admin-role.guard.js';
 import { GatewayKafkaLifecycle } from './kafka/gateway-kafka.lifecycle.js';
@@ -34,6 +36,7 @@ const gatewayKafkaInstanceId = `${process.pid}-${Date.now()}`;
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     SupabaseModule,
+    TribeClientModule,
     ClientsModule.registerAsync([
       {
         name: 'KAFKA_CLIENT',
@@ -70,6 +73,7 @@ const gatewayKafkaInstanceId = `${process.pid}-${Date.now()}`;
     SupportController,
     UploadsController,
     PricingController,
+    GeoController,
     HealthController,
   ],
   providers: [AdminRoleGuard, GatewayKafkaLifecycle, ChatRealtimeGateway],
