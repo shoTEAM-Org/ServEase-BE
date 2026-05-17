@@ -60,6 +60,7 @@
     "pricing:baselines": "node scripts/update-pricing-baselines.js"
   },
   "dependencies": {
+    "@implementsprint/sdk": "^1.1.2",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.0.1",
