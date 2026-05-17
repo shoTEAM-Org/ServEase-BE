@@ -293,6 +293,8 @@ export const NOTIFICATION_PATTERNS = {
   PROVIDER_APPLICATION_SUBMITTED: 'notification.provider-application-submitted',
   PROVIDER_APPLICATION_APPROVED: 'notification.provider-application-approved',
   PROVIDER_APPLICATION_REJECTED: 'notification.provider-application-rejected',
+  // Registration emails
+  USER_REGISTERED: 'notification.user-registered',
 } as const;
 
 export const SUPPORT_PATTERNS = {

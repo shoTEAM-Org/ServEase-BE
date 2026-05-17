@@ -13,6 +13,7 @@ import {
   RegisterProviderDto,
   LoginUserDto,
   PROVIDER_PATTERNS,
+  NOTIFICATION_PATTERNS,
   connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
 } from '@app/common';
@@ -195,6 +196,13 @@ export class AuthService implements OnModuleInit {
       if (!signInData?.session?.access_token) {
         throw new Error('Account created but session could not be created. Please log in.');
       }
+
+      this.kafka.emit(NOTIFICATION_PATTERNS.USER_REGISTERED, {
+        userId,
+        email: dto.email,
+        fullName: dto.full_name,
+        role: requestedRole,
+      });
 
       return {
         session: {
@@ -412,6 +420,13 @@ export class AuthService implements OnModuleInit {
     if (!signInData?.session?.access_token) {
       throw new InternalServerErrorException('Provider registered but session could not be created. Please log in.');
     }
+
+    this.kafka.emit(NOTIFICATION_PATTERNS.USER_REGISTERED, {
+      userId: newUserId,
+      email: normalizedEmail,
+      fullName: full_name,
+      role: 'provider',
+    });
 
     return {
       session: {

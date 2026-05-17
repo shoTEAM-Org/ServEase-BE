@@ -102,6 +102,13 @@
       "entryFile": "main",
       "sourceRoot": "apps/trust-service/src",
       "compilerOptions": { "tsConfigPath": "apps/trust-service/tsconfig.app.json" }
+    },
+    "email-service": {
+      "type": "application",
+      "root": "apps/email-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/email-service/src",
+      "compilerOptions": { "tsConfigPath": "apps/email-service/tsconfig.app.json" }
     }
   }
 }
