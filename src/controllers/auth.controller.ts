@@ -16,6 +16,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
+import { SupabaseClient } from '@supabase/supabase-js';
 import { catchError } from 'rxjs';
 import { sendWithTimeout } from '../utils/kafka-request.js';
 import { AUTH_PATTERNS } from '@app/common';
@@ -25,7 +26,10 @@ import 'multer';
 
 @Controller('api/auth')
 export class AuthController implements OnModuleInit {
-  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
+  constructor(
+    @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+    private readonly supabase: SupabaseClient,
+  ) {}
 
   async onModuleInit() {
     [
@@ -97,27 +101,46 @@ export class AuthController implements OnModuleInit {
   @Post('v2/register')
   @UseInterceptors(
     FileInterceptor('document_file', {
-      limits: { fileSize: 10 * 1024 * 1024 },
+      limits: { fileSize: 50 * 1024 * 1024 }, // 50MB — matches Supabase Storage default
     }),
   )
   async registerProvider(
     @Body() dto: any,
     @UploadedFile() file: Express.Multer.File,
   ) {
+    if (!file) {
+      throw new HttpException('document_file is required', 400);
+    }
+
+    // Upload file to Supabase Storage before sending to Kafka so the message
+    // stays small regardless of file size (avoids Kafka message size limits).
+    const filePath = `kyc/pending/${Date.now()}_${file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const { error: uploadError } = await this.supabase.storage
+      .from('verification-docs')
+      .upload(filePath, file.buffer, { contentType: file.mimetype, upsert: false });
+
+    if (uploadError) {
+      throw new HttpException(
+        `File upload failed: ${uploadError.message}`,
+        500,
+      );
+    }
+
     const payload = {
       ...dto,
       role: 'provider',
-      file: file
-        ? {
-            originalname: file.originalname,
-            mimetype: file.mimetype,
-            buffer: file.buffer.toString('base64'),
-          }
-        : null,
+      file: {
+        filePath,
+        originalname: file.originalname,
+        mimetype: file.mimetype,
+      },
     };
+
     return sendWithTimeout(
       this.kafka.send(AUTH_PATTERNS.REGISTER_PROVIDER, payload).pipe(
-        catchError((err) => {
+        catchError(async (err) => {
+          // Clean up the pre-uploaded file if registration fails
+          await this.supabase.storage.from('verification-docs').remove([filePath]);
           console.error('KAFKA_ERROR_REGISTER_PROVIDER:', err);
           const response =
             err?.response && typeof err.response === 'object'

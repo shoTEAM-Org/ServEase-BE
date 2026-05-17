@@ -383,13 +383,14 @@ export class AuthService implements OnModuleInit {
       throw new BadRequestException(`User Profile Error: ${userError.message}`);
     }
 
-    const filePath = `kyc/${newUserId}/${Date.now()}_${file.originalname}`;
-    const { error: uploadError } = await this.supabase.storage.from('verification-docs')
-      .upload(filePath, file.buffer, { contentType: file.mimetype, upsert: false });
-    if (uploadError) {
+    // File was pre-uploaded by the gateway before sending through Kafka.
+    // Use the provided filePath directly instead of re-uploading the buffer.
+    const filePayload = file as unknown as { filePath?: string; file_path?: string };
+    const filePath = String(filePayload?.filePath ?? filePayload?.file_path ?? '').trim();
+    if (!filePath) {
       await this.supabase.schema('identity_and_user').from('users').delete().eq('id', newUserId);
       await this.supabase.auth.admin.deleteUser(newUserId);
-      throw new BadRequestException(`Storage Upload Error: ${uploadError.message}`);
+      throw new BadRequestException('Document file path is missing. Upload may have failed.');
     }
 
     try {

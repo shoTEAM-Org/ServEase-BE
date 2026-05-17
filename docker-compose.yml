@@ -24,6 +24,11 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_MIN_INSYNC_REPLICAS: 1
 
+      # Message size — match Supabase Storage 50 MB default
+      KAFKA_MESSAGE_MAX_BYTES: 52428800
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 52428800
+      KAFKA_MAX_REQUEST_SIZE: 52428800
+
       # Log retention
       KAFKA_LOG_DIRS: /var/lib/kafka/data
       KAFKA_LOG_RETENTION_HOURS: 168
