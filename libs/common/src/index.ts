@@ -1,5 +1,8 @@
 // Kafka
 export * from './kafka/index.js';
+
+// TribeClient
+export * from './tribe-client/index.js';
 export * from './utils/kafka-client-ready.js';
 export * from './utils/kafka-rpc.js';
 export * from './tracing/index.js';

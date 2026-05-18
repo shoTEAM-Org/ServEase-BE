@@ -25,9 +25,9 @@ export class AuthKafkaController {
   @MessagePattern(AUTH_PATTERNS.REGISTER_PROVIDER)
   async registerProvider(@Payload() data: any) {
     try {
-      const file = data.file
-        ? ({ ...data.file, buffer: Buffer.from(data.file.buffer, 'base64') } as Express.Multer.File)
-        : null;
+      // Gateway pre-uploads the file and sends { filePath, originalname, mimetype }.
+      // Pass data.file directly — auth.service.ts reads filePath from it.
+      const file = data.file ?? null;
       return await this.authService.registerProvider(data, file!);
     } catch (error: any) {
       if (error instanceof HttpException) {
@@ -147,5 +147,30 @@ export class AuthKafkaController {
   @MessagePattern(AUTH_PATTERNS.UPDATE_USER_STATUS)
   async updateUserStatus(@Payload() data: any) {
     return this.usersService.updateUserStatus(data?.userId, data?.status);
+  }
+
+  @MessagePattern(AUTH_PATTERNS.GET_GOOGLE_OAUTH_URL)
+  async getGoogleOAuthUrl(@Payload() data: any) {
+    return this.authService.getGoogleOAuthUrl(data.redirectUri);
+  }
+
+  @MessagePattern(AUTH_PATTERNS.EXCHANGE_GOOGLE_CODE)
+  async exchangeGoogleCode(@Payload() data: any) {
+    return this.authService.exchangeGoogleCode(data.code, data.redirectUri, data.role);
+  }
+
+  @MessagePattern(AUTH_PATTERNS.OTP_SEND)
+  async sendOtp(@Payload() data: any) {
+    return this.authService.sendOtp(data.target, data.channel ?? 'sms');
+  }
+
+  @MessagePattern(AUTH_PATTERNS.OTP_VERIFY)
+  async verifyPhoneOtp(@Payload() data: any) {
+    return this.authService.verifyPhoneOtp(data.otpId, data.code, data.userId);
+  }
+
+  @MessagePattern(AUTH_PATTERNS.LOGIN_MFA_VERIFY)
+  async verifyLoginMfa(@Payload() data: any) {
+    return this.authService.verifyLoginMfa(data.otpId, data.code);
   }
 }

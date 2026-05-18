@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Body,
+  Query,
   Request,
   UseGuards,
   UseInterceptors,
@@ -39,6 +40,11 @@ export class AuthController implements OnModuleInit {
       AUTH_PATTERNS.REFRESH,
       AUTH_PATTERNS.GET_ME,
       AUTH_PATTERNS.GET_PROFILE,
+      AUTH_PATTERNS.GET_GOOGLE_OAUTH_URL,
+      AUTH_PATTERNS.EXCHANGE_GOOGLE_CODE,
+      AUTH_PATTERNS.OTP_SEND,
+      AUTH_PATTERNS.OTP_VERIFY,
+      AUTH_PATTERNS.LOGIN_MFA_VERIFY,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
   }
 
@@ -200,5 +206,49 @@ export class AuthController implements OnModuleInit {
   async resetPassword(@Body() body: any) {
     this.kafka.emit(AUTH_PATTERNS.RESET_PASSWORD, body);
     return { status: 'accepted' };
+  }
+
+  @Get('v1/oauth/google/url')
+  async getGoogleOAuthUrl(@Query('redirect_uri') redirectUri: string) {
+    if (!redirectUri) throw new HttpException('redirect_uri is required', 400);
+    return sendWithTimeout(
+      this.kafka.send(AUTH_PATTERNS.GET_GOOGLE_OAUTH_URL, { redirectUri }),
+    );
+  }
+
+  @Post('v1/oauth/google/callback')
+  async exchangeGoogleCode(@Body() body: { code: string; redirect_uri: string; role?: string }) {
+    if (!body.code || !body.redirect_uri) throw new HttpException('code and redirect_uri are required', 400);
+    return sendWithTimeout(
+      this.kafka.send(AUTH_PATTERNS.EXCHANGE_GOOGLE_CODE, {
+        code: body.code,
+        redirectUri: body.redirect_uri,
+        role: body.role,
+      }),
+    );
+  }
+
+  @Post('v1/otp/send')
+  async sendOtp(@Body() body: { target: string; channel?: 'sms' | 'email' }) {
+    if (!body.target) throw new HttpException('target is required', 400);
+    return sendWithTimeout(
+      this.kafka.send(AUTH_PATTERNS.OTP_SEND, { target: body.target, channel: body.channel ?? 'sms' }),
+    );
+  }
+
+  @Post('v1/otp/verify')
+  async verifyPhoneOtp(@Body() body: { otpId: string; code: string; userId: string }) {
+    if (!body.otpId || !body.code || !body.userId) throw new HttpException('otpId, code, and userId are required', 400);
+    return sendWithTimeout(
+      this.kafka.send(AUTH_PATTERNS.OTP_VERIFY, { otpId: body.otpId, code: body.code, userId: body.userId }),
+    );
+  }
+
+  @Post('v1/login/mfa')
+  async verifyLoginMfa(@Body() body: { otpId: string; code: string }) {
+    if (!body.otpId || !body.code) throw new HttpException('otpId and code are required', 400);
+    return sendWithTimeout(
+      this.kafka.send(AUTH_PATTERNS.LOGIN_MFA_VERIFY, { otpId: body.otpId, code: body.code }),
+    );
   }
 }

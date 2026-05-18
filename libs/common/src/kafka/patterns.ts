@@ -23,6 +23,12 @@ export const AUTH_PATTERNS = {
   GET_USERS_BY_ROLE: 'users.get-by-role',
   GET_USERS_BY_IDS: 'users.get-by-ids',
   UPDATE_USER_STATUS: 'users.update-status',
+  // OAuth & OTP
+  GET_GOOGLE_OAUTH_URL: 'auth.get_google_oauth_url',
+  EXCHANGE_GOOGLE_CODE: 'auth.exchange_google_code',
+  OTP_SEND: 'auth.otp_send',
+  OTP_VERIFY: 'auth.otp_verify',
+  LOGIN_MFA_VERIFY: 'auth.login_mfa_verify',
 } as const;
 
 export const BOOKING_PATTERNS = {

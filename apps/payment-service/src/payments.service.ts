@@ -369,8 +369,8 @@ export class PaymentService implements OnModuleInit {
             booking,
           ]),
         );
-      } catch {
-        this.logger.warn('payment.provider-history: booking enrichment degraded');
+      } catch (err: any) {
+        this.logger.warn(`payment.provider-history: booking enrichment degraded — ${err?.message ?? err}`);
       }
     }
 

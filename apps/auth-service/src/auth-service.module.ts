@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 import { SupabaseModule } from '@app/database';
+import { TribeClientModule } from '@app/common';
 import { AuthService } from './auth.service.js';
 import { UsersService } from './users.service.js';
 import { AuthKafkaController } from './auth.controller.js';
@@ -10,6 +11,7 @@ const authClientInstanceId = `${process.pid}-${Date.now()}`;
 @Module({
   imports: [
     SupabaseModule,
+    TribeClientModule,
     ClientsModule.register([
       {
         name: 'KAFKA_CLIENT',

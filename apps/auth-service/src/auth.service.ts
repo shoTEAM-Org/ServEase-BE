@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { TribeClient } from '@implementsprint/sdk';
 import {
   RegisterProviderDto,
   LoginUserDto,
@@ -16,6 +17,7 @@ import {
   NOTIFICATION_PATTERNS,
   connectKafkaClientWithRetry,
   sendKafkaRpcRequest,
+  TRIBE_CLIENT,
 } from '@app/common';
 import 'multer';
 
@@ -24,6 +26,7 @@ export class AuthService implements OnModuleInit {
   constructor(
     private readonly supabase: SupabaseClient,
     @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
+    @Inject(TRIBE_CLIENT) private readonly tribeClient: TribeClient,
   ) {}
 
   async onModuleInit() {
@@ -78,6 +81,155 @@ export class AuthService implements OnModuleInit {
         detectSessionInUrl: false,
       },
     });
+  }
+
+  private decodeJwtPayload(token: string): Record<string, unknown> {
+    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(Buffer.from(base64, 'base64').toString('utf8'));
+  }
+
+  private async createSessionForUser(email: string): Promise<{ access_token: string; refresh_token: string }> {
+    const { data: linkData, error: linkError } = await this.supabase.auth.admin.generateLink({
+      type: 'magiclink',
+      email,
+    });
+    if (linkError) throw new InternalServerErrorException(`Failed to generate session link: ${linkError.message}`);
+
+    const authClient = this.createAuthClient();
+    const { data: sessionData, error: sessionError } = await authClient.auth.verifyOtp({
+      email,
+      token: linkData.properties.email_otp,
+      type: 'email',
+    });
+    if (sessionError || !sessionData.session) {
+      throw new InternalServerErrorException('Failed to create session after OTP verification');
+    }
+    return {
+      access_token: sessionData.session.access_token,
+      refresh_token: sessionData.session.refresh_token,
+    };
+  }
+
+  private async storeChallenge(
+    userId: string,
+    email: string,
+    otpId: string,
+    type: 'phone_verify' | 'login_mfa',
+  ): Promise<void> {
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await this.supabase.schema('identity_and_user').from('auth_challenges')
+      .delete().lt('expires_at', new Date().toISOString());
+    const { error } = await this.supabase.schema('identity_and_user').from('auth_challenges')
+      .insert([{ user_id: userId, email, otp_id: otpId, challenge_type: type, expires_at: expiresAt }]);
+    if (error) throw new InternalServerErrorException(`Failed to store auth challenge: ${error.message}`);
+  }
+
+  async sendOtp(target: string, channel: 'sms' | 'email' = 'sms'): Promise<{ otpId: string; expiresAt: string }> {
+    const result = await this.tribeClient.otpGenerate({ target, channel });
+    return { otpId: result.otpId, expiresAt: result.expiresAt };
+  }
+
+  async verifyPhoneOtp(otpId: string, code: string, userId: string): Promise<{ session: { access_token: string; refresh_token: string } }> {
+    const { data: challenge, error: challengeError } = await this.supabase
+      .schema('identity_and_user').from('auth_challenges')
+      .select('user_id, email, expires_at')
+      .eq('otp_id', otpId).eq('challenge_type', 'phone_verify').single();
+
+    if (challengeError || !challenge) throw new UnauthorizedException('Invalid or expired OTP session');
+    if (new Date(challenge.expires_at) < new Date()) throw new UnauthorizedException('OTP session expired');
+    if (challenge.user_id !== userId) throw new UnauthorizedException('User mismatch');
+
+    const result = await this.tribeClient.otpVerify({ otpId, code });
+    if (!result.valid) throw new UnauthorizedException('Invalid OTP code');
+
+    await this.supabase.schema('identity_and_user').from('users')
+      .update({ contact_number_verified: true }).eq('id', userId);
+    await this.supabase.schema('identity_and_user').from('auth_challenges')
+      .delete().eq('otp_id', otpId);
+
+    const session = await this.createSessionForUser(challenge.email);
+    return { session };
+  }
+
+  async verifyLoginMfa(otpId: string, code: string): Promise<{ session: { access_token: string; refresh_token: string } }> {
+    const { data: challenge, error: challengeError } = await this.supabase
+      .schema('identity_and_user').from('auth_challenges')
+      .select('user_id, email, expires_at')
+      .eq('otp_id', otpId).eq('challenge_type', 'login_mfa').single();
+
+    if (challengeError || !challenge) throw new UnauthorizedException('Invalid or expired MFA session');
+    if (new Date(challenge.expires_at) < new Date()) throw new UnauthorizedException('MFA session expired');
+
+    const result = await this.tribeClient.otpVerify({ otpId, code });
+    if (!result.valid) throw new UnauthorizedException('Invalid OTP code');
+
+    await this.supabase.schema('identity_and_user').from('auth_challenges')
+      .delete().eq('otp_id', otpId);
+
+    const session = await this.createSessionForUser(challenge.email);
+    return { session };
+  }
+
+  async getGoogleOAuthUrl(redirectUri: string): Promise<{ authorizationUrl: string; state?: string }> {
+    const result = await this.tribeClient.gauthGetAuthorizationUrl({
+      redirectUri,
+      scopes: ['openid', 'email', 'profile'],
+      accessType: 'offline',
+    });
+    return { authorizationUrl: result.authorizationUrl, state: result.state };
+  }
+
+  async exchangeGoogleCode(
+    code: string,
+    redirectUri: string,
+    role?: string,
+  ): Promise<{ mfaRequired: boolean; otpId: string; requiresPhone?: boolean; userId?: string }> {
+    const tokens = await this.tribeClient.gauthExchangeCode({ code, redirectUri });
+    const payload = this.decodeJwtPayload(tokens.idToken!);
+    const email = payload.email as string;
+    const name = (payload.name ?? payload.given_name ?? (email as string).split('@')[0]) as string;
+
+    const { data: existingUser } = await this.supabase.schema('identity_and_user')
+      .from('users').select('id, contact_number, role').eq('email', email).single();
+
+    let userId: string;
+
+    if (existingUser) {
+      if (role === 'admin' && existingUser.role !== 'admin') {
+        throw new UnauthorizedException('Admin access only');
+      }
+      userId = existingUser.id;
+
+      if (!existingUser.contact_number) {
+        return { mfaRequired: false, otpId: '', requiresPhone: true, userId };
+      }
+
+      const otp = await this.sendOtp(existingUser.contact_number, 'sms');
+      await this.storeChallenge(userId, email, otp.otpId, 'login_mfa');
+      return { mfaRequired: true, otpId: otp.otpId };
+    }
+
+    const newRole = role ?? 'customer';
+    const { data: authData, error: authError } = await this.supabase.auth.admin.createUser({
+      email,
+      email_confirm: true,
+      user_metadata: { full_name: name, role: newRole },
+    });
+    if (authError) throw new InternalServerErrorException(`Failed to create Google user: ${authError.message}`);
+    userId = authData.user.id;
+
+    await this.supabase.schema('identity_and_user').from('users').insert([{
+      id: userId,
+      email,
+      full_name: name,
+      role: newRole,
+      status: 'active',
+      is_verified: false,
+      verification_status: newRole === 'admin' ? 'verified' : 'unverified',
+      contact_number_verified: false,
+    }]);
+
+    return { mfaRequired: false, otpId: '', requiresPhone: true, userId };
   }
 
   private async getProviderVerificationStatus(userId: string | null | undefined) {
@@ -184,17 +336,12 @@ export class AuthService implements OnModuleInit {
 
       if (requestedRole === 'customer') {
         const { error: profileError } = await this.supabase.schema('identity_and_user').from('customer_profiles')
-          .insert([{ user_id: userId }]);
+          .insert([{ user_id: userId, full_name: dto.full_name }]);
         if (profileError) {
           await this.supabase.schema('identity_and_user').from('users').delete().eq('id', userId);
           await this.supabase.auth.admin.deleteUser(userId);
           throw new Error(`Profile Table Error: ${profileError.message}`);
         }
-      }
-
-      const { data: signInData } = await authClient.auth.signInWithPassword({ email: dto.email, password: dto.password });
-      if (!signInData?.session?.access_token) {
-        throw new Error('Account created but session could not be created. Please log in.');
       }
 
       this.kafka.emit(NOTIFICATION_PATTERNS.USER_REGISTERED, {
@@ -204,18 +351,11 @@ export class AuthService implements OnModuleInit {
         role: requestedRole,
       });
 
-      return {
-        session: {
-          access_token: signInData.session.access_token,
-          refresh_token: signInData.session.refresh_token,
-          user: {
-            id: userId,
-            email: dto.email,
-            full_name: dto.full_name,
-            role: requestedRole,
-          },
-        },
-      };
+      // Send phone OTP — session only returned after verifyPhoneOtp()
+      const otp = await this.sendOtp(dto.contact_number, 'sms');
+      await this.storeChallenge(userId, dto.email, otp.otpId, 'phone_verify');
+
+      return { pendingVerification: true, otpId: otp.otpId, userId };
     } catch (err: any) {
       if (err instanceof BadRequestException) throw err;
       console.error('Registration Crash:', err.message);
@@ -309,26 +449,11 @@ export class AuthService implements OnModuleInit {
 
       await this.assertAccountIsActive(userData, authClient);
 
-      const verificationStatus =
-        userData.role === 'provider'
-          ? await this.getProviderVerificationStatus(userId)
-          : null;
+      // Generate OTP 2FA — session is only returned after verifyLoginMfa()
+      const otp = await this.sendOtp(userData.contact_number, 'sms');
+      await this.storeChallenge(userId!, userData.email, otp.otpId, 'login_mfa');
 
-      return {
-        access_token: data.session?.access_token,
-        refresh_token: data.session?.refresh_token,
-        user: this.buildSessionUser(
-          {
-            id: data.user?.id,
-            email: data.user?.email,
-            full_name: userData.full_name,
-            contact_number: userData.contact_number,
-            role: userData.role,
-            status: userData.status,
-          },
-          verificationStatus,
-        ),
-      };
+      return { mfaRequired: true, otpId: otp.otpId };
     } catch (err: any) {
       if (err instanceof UnauthorizedException) throw err;
       console.error('Login Error:', err.message);
@@ -417,11 +542,6 @@ export class AuthService implements OnModuleInit {
       );
     }
 
-    const { data: signInData } = await authClient.auth.signInWithPassword({ email: normalizedEmail, password });
-    if (!signInData?.session?.access_token) {
-      throw new InternalServerErrorException('Provider registered but session could not be created. Please log in.');
-    }
-
     this.kafka.emit(NOTIFICATION_PATTERNS.USER_REGISTERED, {
       userId: newUserId,
       email: normalizedEmail,
@@ -429,19 +549,11 @@ export class AuthService implements OnModuleInit {
       role: 'provider',
     });
 
-    return {
-      session: {
-        access_token: signInData.session.access_token,
-        refresh_token: signInData.session.refresh_token,
-        user: {
-          id: newUserId,
-          email: normalizedEmail,
-          full_name,
-          role: 'provider',
-          user_metadata: { verification_status: 'pending' },
-        },
-      },
-    };
+    // Send phone OTP — session only returned after verifyPhoneOtp()
+    const otp = await this.sendOtp(contact_number, 'sms');
+    await this.storeChallenge(newUserId, normalizedEmail, otp.otpId, 'phone_verify');
+
+    return { pendingVerification: true, otpId: otp.otpId, userId: newUserId };
   }
 
   async refreshSession(refreshToken: string) {

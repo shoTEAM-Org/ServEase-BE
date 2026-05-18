@@ -32,9 +32,11 @@ export class ServicesService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.CREATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.UPDATE_ADMIN_SERVICE);
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.DELETE_ADMIN_SERVICE);
-    await connectKafkaClientWithRetry(this.kafka, {
-      context: ServicesService.name,
-    });
+    try {
+      await connectKafkaClientWithRetry(this.kafka, { context: ServicesService.name });
+    } catch (err: any) {
+      console.warn(`[CatalogService] Kafka client connect failed on startup — will retry per-request. ${err?.message ?? err}`);
+    }
   }
 
   private async request<T = any>(pattern: string, payload: unknown): Promise<T> {
