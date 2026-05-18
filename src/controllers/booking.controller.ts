@@ -40,7 +40,6 @@ export class BookingController implements OnModuleInit {
       BOOKING_PATTERNS.SAVE_ATTACHMENTS,
       PROVIDER_PATTERNS.GET_PROFILES_BY_IDS,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Post('v1/create')

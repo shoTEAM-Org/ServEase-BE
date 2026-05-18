@@ -295,7 +295,7 @@ export class ProviderService implements OnModuleInit {
     if (Object.hasOwn(source, 'description') || requireCoreFields) {
       payload.description = this.toNullableString(source.description);
     }
-    if (categoryId || requireCoreFields) payload.category_id = categoryId;
+    if (categoryId || requireCoreFields) payload.service_id = categoryId;
     if (resolvedPrice > 0 || requireCoreFields) payload.price = resolvedPrice;
 
     if (options.legacyOnly) return payload;
@@ -324,7 +324,7 @@ export class ProviderService implements OnModuleInit {
       .schema('provider_catalog')
       .from('provider_services')
       .select('id, title, price, provider_id')
-      .eq('category_id', serviceId);
+      .eq('service_id', serviceId);
     if (error) throw new InternalServerErrorException(error.message);
 
     const providerIds = [...new Set((services || []).map((s: any) => s.provider_id))];
@@ -347,7 +347,7 @@ export class ProviderService implements OnModuleInit {
     const { data: services, error } = await this.supabase
       .schema('provider_catalog')
       .from('provider_services')
-      .select('id, title, price, description, category_id, provider_id');
+      .select('id, title, price, description, service_id, provider_id');
     if (error) throw new InternalServerErrorException(error.message);
 
     const providerIds = [...new Set((services || []).map((s: any) => s.provider_id))];
@@ -927,32 +927,54 @@ export class ProviderService implements OnModuleInit {
   }
 
   async getPerformanceReport(from?: string, to?: string) {
-    const trustResponse = await this.request<any>(
-      TRUST_PATTERNS.GET_PERFORMANCE_REPORT,
-      { from, to },
-    );
-    const reviews = Array.isArray(trustResponse?.reviews)
-      ? trustResponse.reviews
-      : [];
-
-    const { data: profiles, error: profilesError } = await this.supabase
-      .schema('provider_catalog')
-      .from('provider_profiles')
-      .select(
-        'user_id, business_name, average_rating, total_reviews, trust_score, verification_status',
+    let reviews = [];
+    try {
+      const trustResponse = await this.request<any>(
+        TRUST_PATTERNS.GET_PERFORMANCE_REPORT,
+        { from, to },
       );
-    if (profilesError) {
-      throw new InternalServerErrorException(profilesError.message);
+      reviews = Array.isArray(trustResponse?.reviews)
+        ? trustResponse.reviews
+        : [];
+    } catch (error) {
+      this.logger.warn(
+        `Failed to fetch performance report from trust service: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      // Continue with empty reviews on error
     }
 
-    return { reviews, provider_profiles: profiles || [] };
+    try {
+      const { data: profiles, error: profilesError } = await this.supabase
+        .schema('provider_catalog')
+        .from('provider_profiles')
+        .select(
+          'user_id, business_name, average_rating, total_reviews, trust_score, verification_status',
+        );
+      if (profilesError) {
+        throw new InternalServerErrorException(profilesError.message);
+      }
+
+      return { reviews, provider_profiles: profiles || [] };
+    } catch (error) {
+      this.logger.error(
+        `Failed to fetch performance report provider profiles: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      return { reviews, provider_profiles: [] };
+    }
   }
 
   async getComplianceReport(from?: string, to?: string) {
-    return await this.request<any>(TRUST_PATTERNS.GET_COMPLIANCE_REPORT, {
-      from,
-      to,
-    });
+    try {
+      return await this.request<any>(TRUST_PATTERNS.GET_COMPLIANCE_REPORT, {
+        from,
+        to,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to fetch compliance report from trust service: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      return { provider_reports: [] };
+    }
   }
 
   async reuploadKycDocument(userId: string, file: Express.Multer.File) {
@@ -1107,7 +1129,7 @@ export class ProviderService implements OnModuleInit {
 
     const payload = {
       provider_id: providerId,
-      category_id: categoryId,
+      service_id: categoryId,
       title,
       description: this.toNullableString(source.description),
       price,
@@ -1149,14 +1171,18 @@ export class ProviderService implements OnModuleInit {
     const supportedFields = [
       'title',
       'description',
-      'category_id',
+      'service_id',
       'price',
     ];
     for (const field of supportedFields) {
       if (Object.hasOwn(rawUpdates, field)) updates[field] = rawUpdates[field];
     }
     if (Object.hasOwn(rawUpdates, 'categoryId')) {
-      updates.category_id = rawUpdates.categoryId;
+      updates.service_id = rawUpdates.categoryId;
+    }
+    if (Object.hasOwn(rawUpdates, 'category_id')) {
+      updates.service_id = rawUpdates.category_id;
+      delete updates.category_id;
     }
 
     if (is_active !== undefined) {

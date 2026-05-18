@@ -2,12 +2,14 @@ import {
   BadRequestException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
 export class TrustService {
+  private readonly logger = new Logger(TrustService.name);
   private readonly trustSchemas = ['trust_and_reputation', 'trust_svc'] as const;
 
   constructor(private readonly supabase: SupabaseClient) {}
@@ -243,19 +245,22 @@ export class TrustService {
   }
 
   async getComplianceReport(from?: string, to?: string) {
-    const { data } = await this.runTrustQuery<any[]>(
-      (schemaName) => {
-        let query = this.supabase
-          .schema(schemaName)
-          .from('provider_profile_reports')
-          .select('*');
-        query = this.buildDateFilter(query, from, to);
-        return query;
-      },
-      'Failed to fetch trust compliance report',
-    );
+    for (const schemaName of this.trustSchemas) {
+      let query = this.supabase
+        .schema(schemaName)
+        .from('provider_profile_reports')
+        .select('*');
+      query = this.buildDateFilter(query, from, to);
 
-    return { provider_reports: data || [] };
+      const { data, error } = await query;
+      if (!error) return { provider_reports: data || [] };
+      this.logger.warn(
+        `Compliance report query failed in schema ${schemaName}: ${this.toTrimmedString(error?.message) || 'unknown error'}`,
+      );
+    }
+
+    // Degrade gracefully for admin/provider report aggregation.
+    return { provider_reports: [] };
   }
 }
 

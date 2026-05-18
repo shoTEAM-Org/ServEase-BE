@@ -144,6 +144,7 @@ export const ADMIN_PATTERNS = {
   UPDATE_DOCUMENT_STATUS: 'admin.update-document-status',
 
   // User Management
+  GET_ADMINS: 'admin.users.get-admins',
   GET_CUSTOMERS: 'admin.users.get-customers',
   GET_CUSTOMER_BY_ID: 'admin.users.get-customer-by-id',
   UPDATE_CUSTOMER_STATUS: 'admin.users.update-customer-status',
@@ -207,6 +208,8 @@ export const ADMIN_PATTERNS = {
   GET_COMPLIANCE_REPORT: 'admin.reports.compliance',
 
   // Platform Settings
+  GET_SETTINGS: 'admin.settings.get',
+  UPDATE_SETTINGS: 'admin.settings.update',
   GET_NOTIFICATION_SETTINGS: 'admin.settings.notifications.get',
   UPDATE_NOTIFICATION_SETTINGS: 'admin.settings.notifications.update',
   GET_SECURITY_SETTINGS: 'admin.settings.security.get',
@@ -220,6 +223,9 @@ export const ADMIN_PATTERNS = {
   // Commission Rules
   GET_COMMISSION_RULES: 'admin.settings.commission.get',
   UPDATE_COMMISSION_RULE: 'admin.settings.commission.update',
+
+  // Audit Logs
+  GET_AUDIT_LOGS: 'admin.settings.audit-logs.get',
 } as const;
 
 export const CATALOG_PATTERNS = {

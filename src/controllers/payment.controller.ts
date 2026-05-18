@@ -30,7 +30,6 @@ export class PaymentController implements OnModuleInit {
       PAYMENT_PATTERNS.GET_EARNINGS_SUMMARY,
       PAYMENT_PATTERNS.ENSURE_BOOKING_PAYMENT,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Post('v1/create')

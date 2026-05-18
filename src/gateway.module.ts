@@ -3,9 +3,11 @@ import {
   Module,
   NestModule,
   RequestMethod,
+  OnApplicationBootstrap,
+  Inject,
 } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ClientsModule, Transport } from '@nestjs/microservices';
+import { ClientsModule, Transport, ClientKafka } from '@nestjs/microservices';
 import { SupabaseModule } from '@app/database';
 import { AuthController } from './controllers/auth.controller.js';
 import { UsersController } from './controllers/users.controller.js';
@@ -66,7 +68,13 @@ import { CorrelationMiddleware } from './middleware/correlation.middleware.js';
     HealthController,
   ],
 })
-export class GatewayModule implements NestModule {
+export class GatewayModule implements NestModule, OnApplicationBootstrap {
+  constructor(@Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka) {}
+
+  async onApplicationBootstrap() {
+    await this.kafka.connect();
+  }
+
   configure(consumer: MiddlewareConsumer) {
     consumer
       .apply(CorrelationMiddleware)

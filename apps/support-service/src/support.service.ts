@@ -56,6 +56,18 @@ export class SupportService implements OnModuleInit {
     return query;
   }
 
+  private isMissingRelationError(error: any) {
+    const code = this.toTrimmedString(error?.code).toUpperCase();
+    const message = this.toTrimmedString(error?.message).toLowerCase();
+    return (
+      code === '42P01' ||
+      code === 'PGRST106' ||
+      code === 'PGRST200' ||
+      ((message.includes('relation') || message.includes('schema')) &&
+        message.includes('does not exist'))
+    );
+  }
+
   private async getUsersByIds(userIds: unknown) {
     const normalizedIds = Array.from(
       new Set(
@@ -357,7 +369,12 @@ export class SupportService implements OnModuleInit {
     query = this.buildDateFilter(query, from, to);
 
     const { data, error } = await query;
-    if (error) throw new InternalServerErrorException(error.message);
+    if (error) {
+      if (this.isMissingRelationError(error)) {
+        return { disputes: [] };
+      }
+      throw new InternalServerErrorException(error.message);
+    }
     return { disputes: data || [] };
   }
 

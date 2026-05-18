@@ -20,7 +20,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ClientKafka } from '@nestjs/microservices';
 import { sendWithTimeout } from '../utils/kafka-request.js';
-import { PROVIDER_PATTERNS } from '@app/common';
+import { PROVIDER_PATTERNS, NOTIFICATION_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 import 'multer';
 
@@ -53,8 +53,9 @@ export class ProviderController implements OnModuleInit {
       PROVIDER_PATTERNS.GET_PROFILE_DRAFT,
       PROVIDER_PATTERNS.GET_RESCHEDULES,
       PROVIDER_PATTERNS.GET_ADDITIONAL_CHARGES,
+      NOTIFICATION_PATTERNS.GET_NOTIFICATIONS,
+      NOTIFICATION_PATTERNS.GET_UNREAD_COUNT,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   // ========== STATIC ROUTES ==========
@@ -73,6 +74,56 @@ export class ProviderController implements OnModuleInit {
         this.kafka.send(PROVIDER_PATTERNS.SEARCH, { searchTerm: search }),
       );
     return { success: true, data: [] };
+  }
+
+  @Get('v1/profile')
+  @UseGuards(SupabaseAuthGuard)
+  async getMyProfile(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(PROVIDER_PATTERNS.GET_PROFILE, { userId: req['user'].id }),
+    );
+  }
+
+  @Patch('v1/profile')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(202)
+  async updateMyProfile(@Request() req: any, @Body() body: any) {
+    this.kafka.emit(PROVIDER_PATTERNS.SAVE_PROFILE_DRAFT, {
+      userId: req['user'].id,
+      ...body,
+    });
+    return { status: 'accepted' };
+  }
+
+  @Get('v1/notifications')
+  @UseGuards(SupabaseAuthGuard)
+  async getMyNotifications(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(NOTIFICATION_PATTERNS.GET_NOTIFICATIONS, {
+        userId: req['user'].id,
+      }),
+    );
+  }
+
+  @Patch('v1/notifications/read-all')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(202)
+  async markAllNotificationsRead(@Request() req: any) {
+    this.kafka.emit(NOTIFICATION_PATTERNS.MARK_ALL_READ, {
+      userId: req['user'].id,
+    });
+    return { status: 'accepted' };
+  }
+
+  @Patch('v1/notifications/:id/read')
+  @UseGuards(SupabaseAuthGuard)
+  @HttpCode(202)
+  async markNotificationRead(@Param('id') id: string, @Request() req: any) {
+    this.kafka.emit(NOTIFICATION_PATTERNS.MARK_READ, {
+      notificationId: id,
+      userId: req['user'].id,
+    });
+    return { status: 'accepted' };
   }
 
   @Get('v1/bookings')

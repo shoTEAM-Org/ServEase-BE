@@ -1,6 +1,7 @@
 import {
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
   OnModuleInit,
@@ -9,6 +10,7 @@ import { ClientKafka } from '@nestjs/microservices';
 import { SupabaseClient } from '@supabase/supabase-js';
 import {
   AUTH_PATTERNS,
+  ADMIN_PATTERNS,
   BOOKING_PATTERNS,
   CATALOG_PATTERNS,
   CUSTOMER_PATTERNS,
@@ -20,6 +22,8 @@ import {
 
 @Injectable()
 export class AdminService implements OnModuleInit {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(
     @Inject('KAFKA_CLIENT') private readonly kafka: ClientKafka,
     private readonly supabase: SupabaseClient,
@@ -78,6 +82,8 @@ export class AdminService implements OnModuleInit {
     this.kafka.subscribeToResponseOf(PROVIDER_PATTERNS.GET_COMPLIANCE_REPORT);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.GET_COMMISSION);
     this.kafka.subscribeToResponseOf(PAYMENT_PATTERNS.UPDATE_COMMISSION);
+    this.kafka.subscribeToResponseOf(ADMIN_PATTERNS.GET_SETTINGS);
+    this.kafka.subscribeToResponseOf(ADMIN_PATTERNS.UPDATE_SETTINGS);
     await this.kafka.connect();
   }
 
@@ -349,7 +355,7 @@ export class AdminService implements OnModuleInit {
     if (!profile || this.toTrimmedString(profile?.role) !== 'admin') {
       throw new NotFoundException('Admin profile not found');
     }
-    return { profile };
+    return profile;
   }
 
   async updateAdminProfile(userId: string, updates: Record<string, any>) {
@@ -579,7 +585,14 @@ export class AdminService implements OnModuleInit {
   }
 
   async getUserReport(from?: string, to?: string) {
-    return await this.request(AUTH_PATTERNS.GET_USER_REPORT, { from, to });
+    try {
+      return await this.request(AUTH_PATTERNS.GET_USER_REPORT, { from, to });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to fetch user report from auth service: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      return { total: 0, by_role: {}, by_status: {} };
+    }
   }
 
   async getBusinessReport(from?: string, to?: string) {
@@ -599,17 +612,27 @@ export class AdminService implements OnModuleInit {
   }
 
   async getPerformanceReport(from?: string, to?: string) {
-    return await this.request(PROVIDER_PATTERNS.GET_PERFORMANCE_REPORT, {
-      from,
-      to,
-    });
+    try {
+      return await this.request(PROVIDER_PATTERNS.GET_PERFORMANCE_REPORT, {
+        from,
+        to,
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Failed to fetch performance report from provider service: ${this.toTrimmedString((error as any)?.message)}`,
+      );
+      return { reviews: [], provider_profiles: [] };
+    }
   }
 
   async getComplianceReport(from?: string, to?: string) {
-    const [supportReport, providerReport] = await Promise.all([
+    const results = await Promise.allSettled([
       this.request<any>(SUPPORT_PATTERNS.GET_COMPLIANCE_REPORT, { from, to }),
       this.request<any>(PROVIDER_PATTERNS.GET_COMPLIANCE_REPORT, { from, to }),
     ]);
+
+    const supportReport = results[0].status === 'fulfilled' ? results[0].value : {};
+    const providerReport = results[1].status === 'fulfilled' ? results[1].value : {};
 
     const disputes = Array.isArray(supportReport?.disputes)
       ? supportReport.disputes
@@ -623,6 +646,20 @@ export class AdminService implements OnModuleInit {
   // === PLATFORM SETTINGS ===
 
   private readonly SETTINGS_SCHEMA = 'notification_and_support';
+
+  private defaultAccountSettings() {
+    return {
+      emailNotifications: true,
+      pushNotifications: false,
+      bookingAlerts: true,
+      paymentAlerts: true,
+      disputeAlerts: true,
+      language: 'en',
+      timezone: 'Asia/Manila',
+      theme: 'light',
+      dataRetention: '90',
+    };
+  }
 
   private defaultNotificationSettings() {
     return {
@@ -650,6 +687,29 @@ export class AdminService implements OnModuleInit {
     };
   }
 
+  async getSettings() {
+    const [general, notifications, security, integrations, commissionRules] =
+      await Promise.all([
+        this.getAccountSettings(),
+        this.getNotificationSettings(),
+        this.getSecuritySettings(),
+        this.getIntegrations(),
+        this.getCommissionRules(),
+      ]);
+
+    return {
+      general,
+      notifications,
+      security,
+      integrations,
+      commissionRules,
+    };
+  }
+
+  async updateSettings(updates: Record<string, any>) {
+    return await this.updateAccountSettings(updates);
+  }
+
   private isTableMissingError(error: any): boolean {
     const code = String(error?.code ?? '').toUpperCase();
     const msg = String(error?.message ?? '').toLowerCase();
@@ -667,6 +727,43 @@ export class AdminService implements OnModuleInit {
   private stripKafkaMeta(obj: Record<string, any>): Record<string, any> {
     const { __meta, source, correlationId, pattern, ...clean } = obj;
     return clean;
+  }
+
+  async getAccountSettings() {
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { data, error } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .select('value')
+        .eq('key', 'account_settings')
+        .maybeSingle();
+      if (!error) {
+        const val = data?.value ?? this.defaultAccountSettings();
+        return this.stripKafkaMeta({ ...this.defaultAccountSettings(), ...val });
+      }
+      if (!this.isTableMissingError(error)) break;
+    }
+    return this.defaultAccountSettings();
+  }
+
+  async updateAccountSettings(updates: Record<string, any>) {
+    const current = await this.getAccountSettings();
+    const cleanMerged = this.stripKafkaMeta({ ...current, ...updates });
+
+    const schemas = ['notification_and_support', 'identity_and_user', 'identity_svc'] as const;
+    for (const schema of schemas) {
+      const { error: upsertError } = await this.supabase
+        .schema(schema as any)
+        .from('platform_config')
+        .upsert(
+          { key: 'account_settings', value: cleanMerged },
+          { onConflict: 'key' },
+        );
+      if (!upsertError) return { ok: true, settings: cleanMerged };
+      if (!this.isTableMissingError(upsertError)) throw new Error(upsertError.message);
+    }
+    return { ok: true, settings: cleanMerged, note: 'platform_config table not yet created' };
   }
 
   async getNotificationSettings() {
@@ -866,5 +963,51 @@ export class AdminService implements OnModuleInit {
       if (!this.isTableMissingError(upsertError)) throw new Error(upsertError.message);
     }
     return { ok: true, ...merged, note: 'platform_config table not yet created' };
+  }
+
+  // === ADMIN ROLES (ADMIN USERS) ===
+
+  async getAdmins(page = 1, limit = 20) {
+    const usersResponse = await this.request<any>(AUTH_PATTERNS.GET_USERS_BY_ROLE, {
+      role: 'admin',
+      page,
+      limit,
+    });
+    const admins = Array.isArray(usersResponse?.users) ? usersResponse.users : [];
+    // The frontend expects a direct array of AdminType[] for this screen.
+    return admins;
+  }
+
+  // === AUDIT LOGS ===
+
+  async getAuditLogs(page = 1, limit = 50, action?: string, userId?: string) {
+    const offset = (page - 1) * limit;
+    const auditSchemas = ['notification_and_support', 'identity_and_user'] as const;
+
+    for (const schema of auditSchemas) {
+      let query = this.supabase
+        .schema(schema as any)
+        .from('platform_audit_logs')
+        .select('*', { count: 'exact' })
+        .order('created_at', { ascending: false })
+        .range(offset, offset + limit - 1);
+
+      if (action) query = query.eq('action', action);
+      if (userId) query = query.eq('user_id', userId);
+
+      const { data, error, count } = await query;
+      if (!error) {
+        return {
+          logs: data || [],
+          total: count || 0,
+          page,
+          limit,
+        };
+      }
+      if (!this.isTableMissingError(error)) throw new Error(error.message);
+    }
+
+    // Table doesn't exist yet — return empty list gracefully
+    return { logs: [], total: 0, page, limit, note: 'platform_audit_logs table not yet created' };
   }
 }

@@ -388,6 +388,9 @@ export class UsersService {
 
     const { data, error } = await query;
     if (error) {
+      if (this.isMissingRelationError(error)) {
+        return { total: 0, by_role: {}, by_status: {} };
+      }
       throw new InternalServerErrorException(
         'Failed to generate user report: ' + error.message,
       );

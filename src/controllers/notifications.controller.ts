@@ -24,7 +24,6 @@ export class NotificationsController implements OnModuleInit {
       NOTIFICATION_PATTERNS.GET_NOTIFICATIONS,
       NOTIFICATION_PATTERNS.GET_UNREAD_COUNT,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   @Get('v1')

@@ -271,6 +271,16 @@ export class AdminKafkaController {
 
   // === PLATFORM SETTINGS ===
 
+  @MessagePattern(ADMIN_PATTERNS.GET_SETTINGS)
+  async getSettings() {
+    return this.adminService.getSettings();
+  }
+
+  @MessagePattern(ADMIN_PATTERNS.UPDATE_SETTINGS)
+  async updateSettings(@Payload() data: any) {
+    return this.adminService.updateSettings(data);
+  }
+
   @MessagePattern(ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS)
   async getNotificationSettings() {
     return this.adminService.getNotificationSettings();
@@ -318,5 +328,17 @@ export class AdminKafkaController {
   @MessagePattern(ADMIN_PATTERNS.UPDATE_COMMISSION_RULE)
   async updateCommissionRule(@Payload() data: any) {
     return this.adminService.updateCommissionRule(data.ruleId, data.currentRate);
+  }
+
+  // === ADMIN ROLES ===
+  @MessagePattern(ADMIN_PATTERNS.GET_ADMINS)
+  async getAdmins(@Payload() data: any) {
+    return this.adminService.getAdmins(data?.page, data?.limit);
+  }
+
+  // === AUDIT LOGS ===
+  @MessagePattern(ADMIN_PATTERNS.GET_AUDIT_LOGS)
+  async getAuditLogs(@Payload() data: any) {
+    return this.adminService.getAuditLogs(data?.page, data?.limit, data?.action, data?.userId);
   }
 }

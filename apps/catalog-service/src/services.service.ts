@@ -119,7 +119,7 @@ export class ServicesService implements OnModuleInit {
   async getAllServices() {
     const services = await this.searchProviderServices('');
 
-    const categoryIds = [...new Set((services || []).map((s: any) => s.category_id))];
+    const categoryIds = [...new Set((services || []).map((s: any) => s.service_id))];
 
     const { data: categories } = categoryIds.length
       ? await this.supabase
@@ -139,7 +139,7 @@ export class ServicesService implements OnModuleInit {
       )
       .map((s: any) => ({
         ...s,
-        service_categories: categoryMap[s.category_id] || null,
+        service_categories: categoryMap[s.service_id] || null,
         provider_profiles: s.provider_profiles || null,
       }));
 
@@ -149,7 +149,7 @@ export class ServicesService implements OnModuleInit {
   async searchServices(keyword?: string) {
     const services = await this.searchProviderServices('');
 
-    const categoryIds = [...new Set((services || []).map((s: any) => s.category_id))];
+    const categoryIds = [...new Set((services || []).map((s: any) => s.service_id))];
 
     const { data: categories } = categoryIds.length
       ? await this.supabase
@@ -169,7 +169,7 @@ export class ServicesService implements OnModuleInit {
       )
       .map((s: any) => ({
         ...s,
-        service_categories: categoryMap[s.category_id] || null,
+        service_categories: categoryMap[s.service_id] || null,
         provider_profiles: s.provider_profiles || null,
       }));
 
@@ -308,7 +308,10 @@ export class ServicesService implements OnModuleInit {
       .select('*', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(offset, offset + normalizedLimit - 1);
-    if (error) throw new InternalServerErrorException(error.message);
+    if (error) {
+      console.error('SUPABASE ERROR in getCategoriesAdmin:', error);
+      throw new InternalServerErrorException(error.message);
+    }
 
     const categories = data || [];
     const categoryIds = categories
@@ -318,15 +321,18 @@ export class ServicesService implements OnModuleInit {
       ? await this.supabase
           .schema('provider_catalog')
           .from('provider_services')
-          .select('category_id')
-          .in('category_id', categoryIds)
+          .select('service_id')
+          .in('service_id', categoryIds)
       : { data: [] as any[], error: null };
-    if (servicesError) throw new InternalServerErrorException(servicesError.message);
+    if (servicesError) {
+      console.error('SUPABASE ERROR in provider_services:', servicesError);
+      throw new InternalServerErrorException(servicesError.message);
+    }
 
     const serviceRows = (services || []) as any[];
     const serviceCountByCategoryId = serviceRows.reduce(
       (counts: Record<string, number>, service: any) => {
-        const categoryId = this.toTrimmedString(service?.category_id);
+        const categoryId = this.toTrimmedString(service?.service_id);
         if (categoryId) counts[categoryId] = (counts[categoryId] || 0) + 1;
         return counts;
       },

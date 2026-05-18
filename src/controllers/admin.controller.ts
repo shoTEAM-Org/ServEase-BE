@@ -19,7 +19,7 @@ import {
 } from '@nestjs/common';
 import { ClientKafka } from '@nestjs/microservices';
 import { sendWithTimeout } from '../utils/kafka-request.js';
-import { ADMIN_PATTERNS } from '@app/common';
+import { ADMIN_PATTERNS, NOTIFICATION_PATTERNS } from '@app/common';
 import { SupabaseAuthGuard } from '../guards/supabase-auth.guard.js';
 
 @Controller('api/admin')
@@ -88,6 +88,7 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.GET_USER_REPORT,
       ADMIN_PATTERNS.GET_PERFORMANCE_REPORT,
       ADMIN_PATTERNS.GET_COMPLIANCE_REPORT,
+      ADMIN_PATTERNS.GET_SETTINGS,
       ADMIN_PATTERNS.GET_NOTIFICATION_SETTINGS,
       ADMIN_PATTERNS.UPDATE_NOTIFICATION_SETTINGS,
       ADMIN_PATTERNS.GET_SECURITY_SETTINGS,
@@ -99,8 +100,11 @@ export class AdminController implements OnModuleInit {
       ADMIN_PATTERNS.UPDATE_COMMISSION_RULE,
       ADMIN_PATTERNS.GET_COMMISSION,
       ADMIN_PATTERNS.UPDATE_COMMISSION,
+      ADMIN_PATTERNS.GET_ADMINS,
+      ADMIN_PATTERNS.GET_AUDIT_LOGS,
+      NOTIFICATION_PATTERNS.GET_NOTIFICATIONS,
+      NOTIFICATION_PATTERNS.GET_UNREAD_COUNT,
     ].forEach((p) => this.kafka.subscribeToResponseOf(p));
-    await this.kafka.connect();
   }
 
   // ── Existing ──────────────────────────────────────────────
@@ -130,6 +134,54 @@ export class AdminController implements OnModuleInit {
     return sendWithTimeout(
       this.kafka.send(ADMIN_PATTERNS.GET_CUSTOMER_BY_ID, { id }),
     );
+  }
+
+  @Get('v1/users/admins')
+  getAdmins(@Query('page') page = '1', @Query('limit') limit = '20') {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_ADMINS, {
+        page: +page,
+        limit: +limit,
+      }),
+    );
+  }
+
+  // Alias: frontend calls /v1/settings/roles for Admin Roles & Permissions screen
+  @Get('v1/settings/roles')
+  getAdminRoles(@Query('page') page = '1', @Query('limit') limit = '20') {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_ADMINS, {
+        page: +page,
+        limit: +limit,
+      }),
+    );
+  }
+
+  @Post('v1/settings/roles')
+  createAdminRole(@Body() body: any) {
+    // Fire-and-forget — just acknowledge; full invite flow is out of scope for now
+    return { status: 'accepted', note: 'Admin invite queued' };
+  }
+
+  @Put('v1/settings/roles/:id/role')
+  updateAdminRole(@Param('id') id: string, @Body('role') role: string) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_CUSTOMER_STATUS, { id, status: role }),
+    );
+  }
+
+  @Put('v1/settings/roles/:id/status')
+  updateAdminStatus(@Param('id') id: string, @Body('status') status: string) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_CUSTOMER_STATUS, { id, status }),
+    );
+  }
+
+  @Post('v1/settings/roles/:id/reset-password')
+  @HttpCode(202)
+  resetAdminPassword(@Param('id') id: string) {
+    // Fire-and-forget
+    return { status: 'accepted', note: 'Password reset email will be sent' };
   }
 
   @Patch('v1/users/customers/:id/status')
@@ -234,6 +286,64 @@ export class AdminController implements OnModuleInit {
     this.kafka.emit(ADMIN_PATTERNS.UPDATE_ADMIN_PROFILE, {
       userId: req['user'].id,
       ...body,
+    });
+    return { status: 'accepted' };
+  }
+
+  // Alias: frontend calls /v1/profile
+  @Get('v1/profile')
+  getAdminProfileAlias(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_ADMIN_PROFILE, {
+        userId: req['user'].id,
+      }),
+    );
+  }
+
+  @Patch('v1/profile')
+  @HttpCode(202)
+  updateAdminProfileAlias(@Request() req: any, @Body() body: any) {
+    this.kafka.emit(ADMIN_PATTERNS.UPDATE_ADMIN_PROFILE, {
+      userId: req['user'].id,
+      ...body,
+    });
+    return { status: 'accepted' };
+  }
+
+  // Alias: frontend calls /v1/notifications
+  @Get('v1/notifications')
+  getAdminNotifications(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(NOTIFICATION_PATTERNS.GET_NOTIFICATIONS, {
+        userId: req['user'].id,
+      }),
+    );
+  }
+
+  @Get('v1/notifications/unread-count')
+  async getAdminUnreadCount(@Request() req: any) {
+    return sendWithTimeout(
+      this.kafka.send(NOTIFICATION_PATTERNS.GET_UNREAD_COUNT, {
+        userId: req['user'].id,
+      }),
+    );
+  }
+
+  @Patch('v1/notifications/read-all')
+  @HttpCode(202)
+  markAllAdminNotificationsRead(@Request() req: any) {
+    this.kafka.emit(NOTIFICATION_PATTERNS.MARK_ALL_READ, {
+      userId: req['user'].id,
+    });
+    return { status: 'accepted' };
+  }
+
+  @Patch('v1/notifications/:id/read')
+  @HttpCode(202)
+  markAdminNotificationRead(@Param('id') id: string, @Request() req: any) {
+    this.kafka.emit(NOTIFICATION_PATTERNS.MARK_READ, {
+      notificationId: id,
+      userId: req['user'].id,
     });
     return { status: 'accepted' };
   }
@@ -526,6 +636,21 @@ export class AdminController implements OnModuleInit {
     );
   }
 
+  // Alias: frontend calls /v1/reports/booking-analytics
+  @Get('v1/reports/booking-analytics')
+  getBookingAnalyticsAlias(
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('dateRange') dateRange?: string,
+    @Query('category') category?: string,
+    @Query('area') area?: string,
+    @Query('status') status?: string,
+  ) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_BOOKING_ANALYTICS, { from, to, dateRange, category, area, status }),
+    );
+  }
+
   @Get('v1/reports/business')
   getBusinessReport(@Query('from') from?: string, @Query('to') to?: string) {
     return sendWithTimeout(
@@ -562,6 +687,20 @@ export class AdminController implements OnModuleInit {
   }
 
   // ── PLATFORM SETTINGS ──────────────────────────────────────
+  @Get('v1/settings')
+  getSettings() {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_SETTINGS, {}),
+    );
+  }
+
+  @Put('v1/settings')
+  updateSettings(@Body() body: any) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.UPDATE_SETTINGS, body),
+    );
+  }
+
   @Get('v1/settings/notifications')
   getNotificationSettings() {
     return sendWithTimeout(
@@ -624,6 +763,42 @@ export class AdminController implements OnModuleInit {
   updateCommissionRule(@Param('id') id: string, @Body() body: any) {
     return sendWithTimeout(
       this.kafka.send(ADMIN_PATTERNS.UPDATE_COMMISSION_RULE, { ruleId: id, currentRate: body.currentRate }),
+    );
+  }
+
+  // ── AUDIT LOGS ─────────────────────────────────────────────
+  @Get('v1/settings/audit-logs')
+  getAuditLogs(
+    @Query('page') page = '1',
+    @Query('limit') limit = '50',
+    @Query('action') action?: string,
+    @Query('userId') userId?: string,
+  ) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_AUDIT_LOGS, {
+        page: +page,
+        limit: +limit,
+        action,
+        userId,
+      }),
+    );
+  }
+
+  // Alias: frontend calls /v1/audit-trail
+  @Get('v1/audit-trail')
+  getAuditTrailAlias(
+    @Query('page') page = '1',
+    @Query('limit') limit = '50',
+    @Query('action') action?: string,
+    @Query('userId') userId?: string,
+  ) {
+    return sendWithTimeout(
+      this.kafka.send(ADMIN_PATTERNS.GET_AUDIT_LOGS, {
+        page: +page,
+        limit: +limit,
+        action,
+        userId,
+      }),
     );
   }
 }

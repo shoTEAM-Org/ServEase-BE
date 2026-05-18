@@ -63,13 +63,17 @@ export async function ensureKafkaTopics(broker?: string): Promise<void> {
       .map((topic) => ({ topic, numPartitions: 3, replicationFactor: 1 }));
 
     if (topicsToCreate.length > 0) {
-      await admin.createTopics({
-        topics: topicsToCreate,
-        waitForLeaders: true,
-      });
-      console.log(
-        `[kafka-setup] Created ${topicsToCreate.length} Kafka topics`,
-      );
+      try {
+        await admin.createTopics({
+          topics: topicsToCreate,
+          waitForLeaders: true,
+        });
+        console.log(
+          `[kafka-setup] Created ${topicsToCreate.length} Kafka topics`,
+        );
+      } catch (err: any) {
+        console.log(`[kafka-setup] Failed to create topics (might exist already): ${err.message}`);
+      }
     } else {
       console.log('[kafka-setup] All Kafka topics already exist');
     }
