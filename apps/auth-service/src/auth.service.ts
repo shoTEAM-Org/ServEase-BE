@@ -344,6 +344,11 @@ export class AuthService implements OnModuleInit {
         }
       }
 
+      const { data: signInData } = await authClient.auth.signInWithPassword({ email: dto.email, password: dto.password });
+      if (!signInData?.session?.access_token) {
+        throw new Error('Account created but session could not be created. Please log in.');
+      }
+
       this.kafka.emit(NOTIFICATION_PATTERNS.USER_REGISTERED, {
         userId,
         email: dto.email,
@@ -351,11 +356,18 @@ export class AuthService implements OnModuleInit {
         role: requestedRole,
       });
 
-      // Send phone OTP — session only returned after verifyPhoneOtp()
-      const otp = await this.sendOtp(dto.contact_number, 'sms');
-      await this.storeChallenge(userId, dto.email, otp.otpId, 'phone_verify');
-
-      return { pendingVerification: true, otpId: otp.otpId, userId };
+      return {
+        session: {
+          access_token: signInData.session.access_token,
+          refresh_token: signInData.session.refresh_token,
+          user: {
+            id: userId,
+            email: dto.email,
+            full_name: dto.full_name,
+            role: requestedRole,
+          },
+        },
+      };
     } catch (err: any) {
       if (err instanceof BadRequestException) throw err;
       console.error('Registration Crash:', err.message);
@@ -449,11 +461,26 @@ export class AuthService implements OnModuleInit {
 
       await this.assertAccountIsActive(userData, authClient);
 
-      // Generate OTP 2FA — session is only returned after verifyLoginMfa()
-      const otp = await this.sendOtp(userData.contact_number, 'sms');
-      await this.storeChallenge(userId!, userData.email, otp.otpId, 'login_mfa');
+      const verificationStatus =
+        userData.role === 'provider'
+          ? await this.getProviderVerificationStatus(userId)
+          : null;
 
-      return { mfaRequired: true, otpId: otp.otpId };
+      return {
+        access_token: data.session?.access_token,
+        refresh_token: data.session?.refresh_token,
+        user: this.buildSessionUser(
+          {
+            id: data.user?.id,
+            email: data.user?.email,
+            full_name: userData.full_name,
+            contact_number: userData.contact_number,
+            role: userData.role,
+            status: userData.status,
+          },
+          verificationStatus,
+        ),
+      };
     } catch (err: any) {
       if (err instanceof UnauthorizedException) throw err;
       console.error('Login Error:', err.message);
@@ -542,6 +569,11 @@ export class AuthService implements OnModuleInit {
       );
     }
 
+    const { data: signInData } = await authClient.auth.signInWithPassword({ email: normalizedEmail, password });
+    if (!signInData?.session?.access_token) {
+      throw new InternalServerErrorException('Provider registered but session could not be created. Please log in.');
+    }
+
     this.kafka.emit(NOTIFICATION_PATTERNS.USER_REGISTERED, {
       userId: newUserId,
       email: normalizedEmail,
@@ -549,11 +581,19 @@ export class AuthService implements OnModuleInit {
       role: 'provider',
     });
 
-    // Send phone OTP — session only returned after verifyPhoneOtp()
-    const otp = await this.sendOtp(contact_number, 'sms');
-    await this.storeChallenge(newUserId, normalizedEmail, otp.otpId, 'phone_verify');
-
-    return { pendingVerification: true, otpId: otp.otpId, userId: newUserId };
+    return {
+      session: {
+        access_token: signInData.session.access_token,
+        refresh_token: signInData.session.refresh_token,
+        user: {
+          id: newUserId,
+          email: normalizedEmail,
+          full_name,
+          role: 'provider',
+          user_metadata: { verification_status: 'pending' },
+        },
+      },
+    };
   }
 
   async refreshSession(refreshToken: string) {
